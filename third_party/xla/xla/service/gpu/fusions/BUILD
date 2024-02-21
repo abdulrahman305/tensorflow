@@ -57,7 +57,6 @@ cc_library(
         ":fusion_emitter",
         "//xla:shape_util",
         "//xla:status",
-        "//xla:status_macros",
         "//xla:statusor",
         "//xla:util",
         "//xla/ffi:ffi_api",
@@ -368,16 +367,14 @@ cc_library(
     deps = [
         "//xla:literal",
         "//xla:shape_util",
-        "//xla:statusor",
         "//xla/hlo/ir:hlo",
         "//xla/service:buffer_assignment",
-        "//xla/service/gpu:gpu_executable",
         "//xla/service/gpu:ir_emitter_context",
         "//xla/service/gpu:thunk",
         "//xla/service/gpu/runtime:memset_thunk",
         "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
-        "@llvm-project//mlir:IR",
     ],
 )
 

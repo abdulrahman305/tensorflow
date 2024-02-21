@@ -13,7 +13,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "xla/stream_executor/gpu/gpu_command_buffer.h"
+
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -22,15 +25,18 @@ limitations under the License.
 #include "absl/strings/ascii.h"
 #include "xla/service/platform_util.h"
 #include "xla/stream_executor/command_buffer.h"
+#include "xla/stream_executor/gpu/gpu_driver.h"
 #include "xla/stream_executor/gpu/gpu_test_kernels.h"
 #include "xla/stream_executor/gpu/gpu_types.h"  // IWYU pragma: keep
 #include "xla/stream_executor/kernel.h"
+#include "xla/stream_executor/kernel_spec.h"
 #include "xla/stream_executor/launch_dim.h"
 #include "xla/stream_executor/platform.h"
 #include "xla/stream_executor/platform_manager.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
 #include "tsl/lib/core/status_test_util.h"
+#include "tsl/platform/errors.h"
 #include "tsl/platform/statusor.h"
 #include "tsl/platform/test.h"
 #include "tsl/platform/test_benchmark.h"
@@ -69,6 +75,11 @@ using AddI32Ptrs3 = TypedKernel<internal::Ptrs3<int32_t>>;
 
 static constexpr auto nested = CommandBuffer::Mode::kNested;    // NOLINT
 static constexpr auto primary = CommandBuffer::Mode::kPrimary;  // NOLINT
+
+template <typename... GpuGraphNodeHandles>
+static std::vector<GpuGraphNodeHandle> Deps(GpuGraphNodeHandles... handle) {
+  return {handle...};
+}
 
 TEST(GpuCommandBufferTest, LaunchSingleKernel) {
   Platform* platform = GpuPlatform();
@@ -335,6 +346,174 @@ TEST(GpuCommandBufferTest, Memset) {
 
   expected = {43, 43, 43, 43};
   ASSERT_EQ(dst, expected);
+}
+
+TEST(GpuCommandBufferTest, Barriers) {
+  Platform* platform = GpuPlatform();
+  StreamExecutor* executor = platform->ExecutorForDevice(0).value();
+
+  Stream stream(executor);
+  TF_ASSERT_OK(stream.Initialize());
+
+  // Allocate device buffers for memset operations.
+  std::vector<DeviceMemory<int32_t>> buffers;
+  for (size_t i = 0; i < 6; ++i) {
+    buffers.push_back(executor->AllocateArray<int32_t>(1, 0));
+  }
+
+  // Transfer buffers data back to host.
+  auto transfer_buffers = [&]() -> std::vector<int32_t> {
+    std::vector<int32_t> dst(buffers.size(), 0);
+    for (size_t i = 0; i < buffers.size(); ++i) {
+      stream.ThenMemcpy(dst.data() + i, buffers[i], sizeof(int32_t));
+    }
+    return dst;
+  };
+
+  auto record = [&](CommandBuffer* cmd_buffer, uint32_t bit_pattern) {
+    // Check that root barrier ignored.
+    TF_RETURN_IF_ERROR(cmd_buffer->Barrier(executor));
+    TF_RETURN_IF_ERROR(cmd_buffer->Memset(&buffers[0], bit_pattern + 0, 1));
+    // Check barrier after a single command.
+    TF_RETURN_IF_ERROR(cmd_buffer->Barrier(executor));
+    TF_RETURN_IF_ERROR(cmd_buffer->Memset(&buffers[1], bit_pattern + 1, 1));
+    // Check that repeated barriers are no-op.
+    TF_RETURN_IF_ERROR(cmd_buffer->Barrier(executor));
+    TF_RETURN_IF_ERROR(cmd_buffer->Barrier(executor));
+    TF_RETURN_IF_ERROR(cmd_buffer->Memset(&buffers[2], bit_pattern + 2, 1));
+    TF_RETURN_IF_ERROR(cmd_buffer->Memset(&buffers[3], bit_pattern + 3, 1));
+    // Check that barrier can have multiple dependencies.
+    TF_RETURN_IF_ERROR(cmd_buffer->Barrier(executor));
+    TF_RETURN_IF_ERROR(cmd_buffer->Memset(&buffers[4], bit_pattern + 4, 1));
+    TF_RETURN_IF_ERROR(cmd_buffer->Memset(&buffers[5], bit_pattern + 5, 1));
+    // Check that barrier can be that last command.
+    TF_RETURN_IF_ERROR(cmd_buffer->Barrier(executor));
+    return cmd_buffer->Finalize();
+  };
+
+  // Create a command buffer with a DAG of memset commands.
+  auto cmd_buffer = CommandBuffer::Create(executor).value();
+  TF_ASSERT_OK(record(cmd_buffer.get(), 42));
+  TF_ASSERT_OK(executor->Submit(&stream, *cmd_buffer));
+
+  std::vector<int32_t> expected = {42, 43, 44, 45, 46, 47};
+  ASSERT_EQ(transfer_buffers(), expected);
+
+  // Check the command buffer structure.
+  GpuCommandBuffer* gpu_cmd_buffer = GpuCommandBuffer::Cast(cmd_buffer.get());
+  ASSERT_EQ(gpu_cmd_buffer->nodes().size(), 6);
+  ASSERT_EQ(gpu_cmd_buffer->barriers().size(), 5);
+
+  auto nodes = gpu_cmd_buffer->nodes();
+  auto barriers = gpu_cmd_buffer->barriers();
+
+  // First barrier reuses first memset node.
+  EXPECT_FALSE(barriers[0].is_barrier_node);
+  EXPECT_EQ(barriers[0].handle, nodes[0].handle);
+
+  // Second and third barriers reuse second memset node.
+  EXPECT_FALSE(barriers[1].is_barrier_node);
+  EXPECT_FALSE(barriers[2].is_barrier_node);
+  EXPECT_EQ(barriers[1].handle, nodes[1].handle);
+  EXPECT_EQ(barriers[2].handle, nodes[1].handle);
+
+  // Fourth and fifth barriers are empty barrier nodes.
+  EXPECT_TRUE(barriers[3].is_barrier_node);
+  EXPECT_TRUE(barriers[4].is_barrier_node);
+
+  // Check fourth barrier dependencies
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto deps3, GpuDriver::GraphNodeGetDependencies(barriers[3].handle));
+  EXPECT_EQ(deps3, Deps(nodes[2].handle, nodes[3].handle));
+
+  // Check fifth barrier dependencies
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto deps4, GpuDriver::GraphNodeGetDependencies(barriers[4].handle));
+  EXPECT_EQ(deps4, Deps(nodes[4].handle, nodes[5].handle));
+
+  // Update command buffer to use a new bit pattern.
+  TF_ASSERT_OK(cmd_buffer->Update());
+  TF_ASSERT_OK(record(cmd_buffer.get(), 43));
+  TF_ASSERT_OK(executor->Submit(&stream, *cmd_buffer));
+
+  expected = {43, 44, 45, 46, 47, 48};
+  ASSERT_EQ(transfer_buffers(), expected);
+}
+
+TEST(GpuCommandBufferTest, IndependentExecutionScopes) {
+  Platform* platform = GpuPlatform();
+  StreamExecutor* executor = platform->ExecutorForDevice(0).value();
+
+  Stream stream(executor);
+  TF_ASSERT_OK(stream.Initialize());
+
+  CommandBuffer::ExecutionScopeId s0 = CommandBuffer::ExecutionScopeId(0);
+  CommandBuffer::ExecutionScopeId s1 = CommandBuffer::ExecutionScopeId(1);
+
+  // Allocate device buffers for memset operations.
+  std::vector<DeviceMemory<int32_t>> buffers;
+  for (size_t i = 0; i < 4; ++i) {
+    buffers.push_back(executor->AllocateArray<int32_t>(1, 0));
+  }
+
+  // Transfer buffers data back to host.
+  auto transfer_buffers = [&]() -> std::vector<int32_t> {
+    std::vector<int32_t> dst(buffers.size(), 0);
+    for (size_t i = 0; i < buffers.size(); ++i) {
+      stream.ThenMemcpy(dst.data() + i, buffers[i], sizeof(int32_t));
+    }
+    return dst;
+  };
+
+  auto record = [&](CommandBuffer* cmd_buffer, uint32_t bit_pattern) {
+    TF_RETURN_IF_ERROR(cmd_buffer->Memset(s0, &buffers[0], bit_pattern + 0, 1));
+    TF_RETURN_IF_ERROR(cmd_buffer->Memset(s0, &buffers[1], bit_pattern + 1, 1));
+    TF_RETURN_IF_ERROR(cmd_buffer->Memset(s1, &buffers[2], bit_pattern + 2, 1));
+    TF_RETURN_IF_ERROR(cmd_buffer->Memset(s1, &buffers[3], bit_pattern + 3, 1));
+    TF_RETURN_IF_ERROR(cmd_buffer->Barrier(executor, s0));
+    TF_RETURN_IF_ERROR(cmd_buffer->Barrier(executor, s1));
+    return cmd_buffer->Finalize();
+  };
+
+  // Create a command buffer with a DAG of memset commands.
+  auto cmd_buffer = CommandBuffer::Create(executor).value();
+  TF_ASSERT_OK(record(cmd_buffer.get(), 42));
+  TF_ASSERT_OK(executor->Submit(&stream, *cmd_buffer));
+
+  std::vector<int32_t> expected = {42, 43, 44, 45};
+  ASSERT_EQ(transfer_buffers(), expected);
+
+  // Check the command buffer structure.
+  GpuCommandBuffer* gpu_cmd_buffer = GpuCommandBuffer::Cast(cmd_buffer.get());
+
+  auto nodes0 = gpu_cmd_buffer->nodes(s0);
+  auto nodes1 = gpu_cmd_buffer->nodes(s1);
+  auto barriers0 = gpu_cmd_buffer->barriers(s0);
+  auto barriers1 = gpu_cmd_buffer->barriers(s1);
+
+  ASSERT_EQ(nodes0.size(), 2);
+  ASSERT_EQ(nodes1.size(), 2);
+  ASSERT_EQ(barriers0.size(), 1);
+  ASSERT_EQ(barriers1.size(), 1);
+
+  EXPECT_TRUE(barriers0[0].is_barrier_node);
+  EXPECT_TRUE(barriers1[0].is_barrier_node);
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto deps0, GpuDriver::GraphNodeGetDependencies(barriers0[0].handle));
+  EXPECT_EQ(deps0, Deps(nodes0[0].handle, nodes0[1].handle));
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto deps1, GpuDriver::GraphNodeGetDependencies(barriers1[0].handle));
+  EXPECT_EQ(deps1, Deps(nodes1[0].handle, nodes1[1].handle));
+
+  // Update command buffer to use a new bit pattern.
+  TF_ASSERT_OK(cmd_buffer->Update());
+  TF_ASSERT_OK(record(cmd_buffer.get(), 43));
+  TF_ASSERT_OK(executor->Submit(&stream, *cmd_buffer));
+
+  expected = {43, 44, 45, 46};
+  ASSERT_EQ(transfer_buffers(), expected);
 }
 
 TEST(GpuCommandBufferTest, ConditionalIf) {

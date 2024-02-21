@@ -4275,8 +4275,11 @@ class Subgraph {
         CheckTensorFloat32OrQUInt8Type(delegate, logging_context, output_tensor,
                                        node->outputs->data[0], node_index));
     int expected_output_dims = 4;
+    uint32_t flags = 0;
     if (!reducer_params->keep_dims) {
       expected_output_dims -= num_reduction_axes;
+    } else {
+      flags = XNN_FLAG_KEEP_DIMS;
     }
     TF_LITE_ENSURE_STATUS(CheckTensorShape(
         logging_context, output_tensor, expected_output_dims,
@@ -4284,7 +4287,6 @@ class Subgraph {
     TF_LITE_ENSURE_STATUS(CheckTensorNonDynamicAllocation(
         logging_context, output_tensor, node->outputs->data[0], node_index));
 
-    uint32_t flags = 0;
     const float output_min = -std::numeric_limits<float>::infinity();
     const float output_max = +std::numeric_limits<float>::infinity();
 
