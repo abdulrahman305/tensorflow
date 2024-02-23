@@ -1231,7 +1231,7 @@ absl::Status ReductionFusion::ReductionEmitter::EmitKernel(
       gpu::TargetIntrinsicID::kBlockIdy, {}, {}, builder_);
   llvm_ir::AddRangeMetadata(0, instr_index_groups.size(),
                             llvm::cast<llvm::Instruction>(block_id_y),
-                            builder_);
+                            builder_->GetInsertBlock()->getModule());
   block_id_y = builder_->CreateZExtOrTrunc(block_id_y, builder_->getInt32Ty());
   block_id_y->setName("block.id.y");
   for (int i = 0; i < instr_index_groups.size(); ++i) {
@@ -1453,7 +1453,7 @@ std::optional<IndexingMap> ReductionFusion::ComputeThreadIdToInputIndexing(
     mlir::MLIRContext* ctx) const {
   const auto& groups = reduction_codegen_info_.GetIndexGroups();
 
-  auto* hero = analysis_.fusion_heroes()[hero_operand_index];
+  auto* hero = analysis_.fusion_heroes()[root_index];
   if (groups.is_reduction_root[root_index] &&
       hero_operand_index >= hero->operand_count() / 2) {
     // We don't have indexing for the init values.

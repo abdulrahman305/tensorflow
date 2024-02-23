@@ -426,6 +426,13 @@ class RewriteQuantizedDotGeneralOpToTflFullyConnectedOrBatchMatmulOp
       stablehlo::DotGeneralOp op,
       const stablehlo::DotDimensionNumbersAttr dot_dimension_nums,
       const bool has_i32_output) {
+    if (has_i32_output && !HasOneUseByQuantizeOp(op)) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "When output type of dot_general is qi32, it should have "
+                    "only one use of requantization.\n");
+      return failure();
+    }
+
     const int num_lhs_batching_dims =
         dot_dimension_nums.getLhsBatchingDimensions().size();
     const int num_lhs_contracting_dims =
@@ -612,9 +619,16 @@ class RewriteQuantizedDotGeneralOpToTflFullyConnectedOrBatchMatmulOp
         (rhs_contracting_dims[0] == rhs_rank - 1 ? rewriter.getBoolAttr(true)
                                                  : rewriter.getBoolAttr(false));
 
+    Value result = op.getResult();
+    Operation* result_user_op = *op->getUsers().begin();
+    if (isa<TFL::QuantizeOp>(result_user_op) ||
+        isa<stablehlo::UniformQuantizeOp>(result_user_op)) {
+      result = result_user_op->getResult(0);
+    }
+
     // Create BMM assuming rhs is activation.
     auto tfl_batchmatmul_op = rewriter.create<TFL::BatchMatMulOp>(
-        op.getLoc(), /*output=*/op.getResult().getType(),
+        op.getLoc(), /*output=*/result.getType(),
         /*input=*/lhs_value,
         /*filter=*/rhs_value, adj_x, adj_y, asymmetric_quantize_inputs);
 
@@ -629,13 +643,14 @@ class RewriteQuantizedDotGeneralOpToTflFullyConnectedOrBatchMatmulOp
           /*output=*/TypeAttr::get(rhs_uniform_quantized_type),
           rhs_constant_value_attr);
       tfl_batchmatmul_op = rewriter.create<TFL::BatchMatMulOp>(
-          op.getLoc(), /*output=*/op.getResult().getType(),
+          op.getLoc(), /*output=*/result.getType(),
           /*input=*/lhs_value, /*filter=*/rhs_constant_op.getResult(), adj_x,
           adj_y, asymmetric_quantize_inputs);
     }
 
-    rewriter.replaceAllUsesWith(op.getResult(), tfl_batchmatmul_op.getResult());
+    rewriter.replaceAllUsesWith(result, tfl_batchmatmul_op.getResult());
   }
+
   static void RewriteDotGeneralToTflFullyConnectedOp(
       stablehlo::DotGeneralOp op, PatternRewriter& rewriter,
       const stablehlo::DotDimensionNumbersAttr dot_dimension_nums,
@@ -758,6 +773,12 @@ class RewriteQuantizedDotGeneralOpToTflFullyConnectedOrBatchMatmulOp
       output_type = op->getResult(0).getType().cast<TensorType>();
     }
     return output_type;
+  }
+
+  static bool HasOneUseByQuantizeOp(Operation* op) {
+    return op->hasOneUse() &&
+           (FindUserOfType<stablehlo::UniformQuantizeOp>(op) != nullptr ||
+            FindUserOfType<TFL::QuantizeOp>(op) != nullptr);
   }
 };
 
@@ -1268,7 +1289,6 @@ class RewriteQuantizedConvolutionOp
 };
 
 // Rewrites quantized stablehlo.transpose to tfl.transpose.
-// TODO: b/322428814 - Add StableHLO quantizer integration tests for ODML.
 class RewriteQuantizedTransposeOp
     : public OpRewritePattern<stablehlo::TransposeOp> {
  public:
@@ -1299,7 +1319,6 @@ class RewriteQuantizedTransposeOp
 };
 
 // Rewrites quantized stablehlo.reshape to tfl.reshape.
-// TODO: b/322428814 - Add StableHLO quantizer integration tests for ODML.
 class RewriteQuantizedReshapeOp
     : public OpRewritePattern<stablehlo::ReshapeOp> {
  public:
@@ -1452,7 +1471,6 @@ class RewriteQuantizedPadOp : public OpRewritePattern<stablehlo::PadOp> {
 };
 
 // Rewrites quantized stablehlo.slice to tfl.slice or tfl.strided_slice.
-// TODO: b/322428814 - Add StableHLO quantizer integration tests for ODML.
 class RewriteQuantizedSliceOp : public OpRewritePattern<stablehlo::SliceOp> {
  public:
   using OpRewritePattern<stablehlo::SliceOp>::OpRewritePattern;
@@ -1611,7 +1629,6 @@ class RewriteQuantizedBroadcastInDimOp
 };
 
 // Rewrites quantized stablehlo.reduce_window with max to tfl.max_pool_2d.
-// TODO: b/322428814 - Add StableHLO quantizer integration tests for ODML.
 class RewriteQuantizedReduceWindowOpWithMax
     : public OpRewritePattern<stablehlo::ReduceWindowOp> {
  public:

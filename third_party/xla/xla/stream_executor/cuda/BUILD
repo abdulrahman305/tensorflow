@@ -1,5 +1,4 @@
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
-load("@local_config_cuda//cuda:build_defs.bzl", "cuda_library", "if_cuda")
 load(
     "//xla:xla.bzl",
     "xla_cc_test",
@@ -36,20 +35,6 @@ package(
 package_group(
     name = "friends",
     packages = stream_executor_friends(),
-)
-
-# Add `--//third_party/tensorflow/compiler/xla/stream_executor/cuda:enable_graph_conditional` to
-# build command to enable CUDA graph conditional nodes support. Requires CUDA >=12.3.
-#
-# See: https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#conditional-graph-nodes
-bool_flag(
-    name = "enable_graph_conditional",
-    build_setting_default = False,
-)
-
-config_setting(
-    name = "graph_conditional_enabled",
-    flag_values = {":enable_graph_conditional": "True"},
 )
 
 bool_flag(
@@ -252,7 +237,7 @@ xla_cc_test(
         "//xla/stream_executor",
         "//xla/stream_executor:device_memory",
         "//xla/stream_executor:platform_manager",
-        "@com_google_absl//absl/memory",
+        "@local_tsl//tsl/lib/core:status_test_util",
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_main",
@@ -434,6 +419,7 @@ cuda_only_cc_library(
         ":cuda_executor",
         ":cuda_platform_id",
         ":cuda_stream",
+        ":cudnn_frontend_helpers",
         "//xla/stream_executor",
         "//xla/stream_executor:dnn",
         "//xla/stream_executor:plugin_registry",
@@ -492,20 +478,9 @@ cuda_only_cc_library(
     ],
 )
 
-cuda_library(
+cc_library(
     name = "cuda_conditional_kernels",
-    srcs = if_cuda(
-        ["cuda_conditional_kernels.cu.cc"],
-        ["cuda_conditional_kernels.cc"],
-    ),
-    local_defines = select({
-        ":graph_conditional_enabled": ["STREAM_EXECUTOR_CUDA_ENABLE_GRAPH_CONDITIONAL=1"],
-        "//conditions:default": [],
-    }),
-    deps = [
-        "@com_google_absl//absl/log",
-        "@local_config_cuda//cuda:cuda_headers",
-    ],
+    srcs = ["cuda_conditional_kernels.cc"],
 )
 
 # TODO(leary) we likely need to canonicalize/eliminate this.
@@ -586,6 +561,30 @@ cuda_only_cc_library(
         "@local_tsl//tsl/platform:status",
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:subprocess",
+    ],
+)
+
+xla_cc_test(
+    name = "cuda_asm_compiler_test",
+    srcs = ["cuda_asm_compiler_test.cc"],
+    local_defines = select({
+        ":libnvptxcompiler_support_enabled": [
+            "ENABLE_LIBNVPTXCOMPILER_SUPPORT=1",
+        ],
+        "//conditions:default": [],
+    }),
+    tags = tf_cuda_tests_tags(),
+    deps = [
+        ":cuda_asm_compiler",  # buildcleaner: keep
+        "//xla/stream_executor:device_description",
+        "//xla/stream_executor/gpu:asm_compiler",  # buildcleaner: keep
+        "//xla/stream_executor/gpu:gpu_asm_opts",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest",
+        "@local_tsl//tsl/platform:status_matchers",
+        "@local_tsl//tsl/platform:test",
+        "@local_tsl//tsl/platform:test_main",
     ],
 )
 
@@ -677,4 +676,10 @@ cc_library(
             "//conditions:default": [],
         }),
     ),
+)
+
+cc_library(
+    name = "cudnn_frontend_helpers",
+    srcs = ["cudnn_frontend_helpers.cc"],
+    hdrs = ["cudnn_frontend_helpers.h"],
 )

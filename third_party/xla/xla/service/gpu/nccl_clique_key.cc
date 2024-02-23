@@ -37,12 +37,16 @@ namespace xla::gpu {
 //===----------------------------------------------------------------------===//
 
 NcclCliqueKey::NcclCliqueKey(std::vector<GlobalDeviceId> devices,
-                             int64_t stream_id)
-    : devices_(std::move(devices)), stream_id_(stream_id) {}
+                             int64_t stream_id, AsyncStreamKind stream_kind)
+    : devices_(std::move(devices)),
+      stream_id_(stream_id),
+      stream_kind_(stream_kind) {}
 
 absl::Span<const GlobalDeviceId> NcclCliqueKey::devices() const {
   return devices_;
 }
+
+int64_t NcclCliqueKey::stream_id() const { return stream_id_; }
 
 std::optional<int64_t> NcclCliqueKey::rank(GlobalDeviceId id) const {
   if (auto it = absl::c_find(devices_, id); it != devices_.end()) {
@@ -74,18 +78,6 @@ bool operator<(const NcclCliqueKey& a, const NcclCliqueKey& b) {
   if (a.devices_ < b.devices_) return true;
   if (b.devices_ < a.devices_) return false;
 
-  return a.stream_id_ < b.stream_id_;
-}
-
-bool operator>(const NcclCliqueKey& a, const NcclCliqueKey& b) {
-  if (a.devices_.size() > b.devices_.size()) return true;
-  if (b.devices_.size() > a.devices_.size()) return false;
-
-  if (a.devices_ > b.devices_) return true;
-  if (b.devices_ > a.devices_) return false;
-
-  // We still use `<` to order by stream id as we want to acquire sync cliques
-  // before async ones.
   return a.stream_id_ < b.stream_id_;
 }
 

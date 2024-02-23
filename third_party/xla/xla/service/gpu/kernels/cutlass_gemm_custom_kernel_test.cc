@@ -39,7 +39,7 @@ TEST(CutlassGemmKernelTest, SimpleGemm) {
   se::StreamExecutor* executor = platform->ExecutorForDevice(0).value();
 
   se::Stream stream(executor);
-  stream.Init();
+  TF_ASSERT_OK(stream.Initialize());
   ASSERT_TRUE(stream.ok());
 
   // Load [4, 4] x [4, 4] gemm kernel written in CUDA C++ with CUTLASS.
@@ -62,9 +62,9 @@ TEST(CutlassGemmKernelTest, SimpleGemm) {
   uint32_t pattern;
   std::memcpy(&pattern, &value, sizeof(pattern));
 
-  stream.ThenMemset32(&a, pattern, byte_length);
-  stream.ThenMemset32(&b, pattern, byte_length);
-  stream.ThenMemZero(&c, byte_length);
+  TF_ASSERT_OK(stream.Memset32(&a, pattern, byte_length));
+  TF_ASSERT_OK(stream.Memset32(&b, pattern, byte_length));
+  TF_ASSERT_OK(stream.MemZero(&c, byte_length));
 
   // Launch gemm kernel with device memory arguments.
   se::KernelArgsDeviceMemoryArray arr(
@@ -75,7 +75,7 @@ TEST(CutlassGemmKernelTest, SimpleGemm) {
 
   // Copy `c` data back to host.
   std::vector<float> dst(length, -1.0f);
-  stream.ThenMemcpy(dst.data(), c, byte_length);
+  TF_ASSERT_OK(stream.Memcpy(dst.data(), c, byte_length));
 
   std::vector<float> expected(length, 16.0);
   ASSERT_EQ(dst, expected);
@@ -91,7 +91,7 @@ TEST(CutlassGemmKernelTest, LoadFromSharedLibrary) {
   se::StreamExecutor* executor = platform->ExecutorForDevice(0).value();
 
   se::Stream stream(executor);
-  stream.Init();
+  TF_ASSERT_OK(stream.Initialize());
   ASSERT_TRUE(stream.ok());
 
   // Load [4, 4] x [4, 4] gemm kernel written in CUDA C++ with CUTLASS.
@@ -113,9 +113,9 @@ TEST(CutlassGemmKernelTest, LoadFromSharedLibrary) {
   uint32_t pattern;
   std::memcpy(&pattern, &value, sizeof(pattern));
 
-  stream.ThenMemset32(&a, pattern, byte_length);
-  stream.ThenMemset32(&b, pattern, byte_length);
-  stream.ThenMemZero(&c, byte_length);
+  TF_ASSERT_OK(stream.Memset32(&a, pattern, byte_length));
+  TF_ASSERT_OK(stream.Memset32(&b, pattern, byte_length));
+  TF_ASSERT_OK(stream.MemZero(&c, byte_length));
 
   // Launch gemm kernel with device memory arguments.
   se::KernelArgsDeviceMemoryArray arr(
@@ -126,7 +126,7 @@ TEST(CutlassGemmKernelTest, LoadFromSharedLibrary) {
 
   // Copy `c` data back to host.
   std::vector<float> dst(length, -1.0f);
-  stream.ThenMemcpy(dst.data(), c, byte_length);
+  TF_ASSERT_OK(stream.Memcpy(dst.data(), c, byte_length));
 
   std::vector<float> expected(length, 16.0);
   ASSERT_EQ(dst, expected);

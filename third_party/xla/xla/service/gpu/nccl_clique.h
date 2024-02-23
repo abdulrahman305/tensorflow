@@ -116,8 +116,7 @@ struct NcclClique : public Lockable<NcclCliqueCommunicators, NcclCliqueName> {
   // We keep acquired cliques in a sorted container to guarantee that all
   // participants iterate over cliques in the same order.
   using AcquiredCliquesMap =
-      absl::btree_map<NcclCliqueKey, std::shared_ptr<NcclClique::Lock>,
-                      std::greater<NcclCliqueKey>>;
+      absl::btree_map<NcclCliqueKey, std::shared_ptr<NcclClique::Lock>>;
 
   NcclClique(NcclCliqueKey clique_key, std::optional<NcclCliqueId> clique_id,
              absl::btree_map<int32_t, NcclApi::OwnedNcclComm> communicators)
@@ -137,7 +136,8 @@ absl::StatusOr<std::shared_ptr<NcclClique::Lock>> AcquireNcclClique(
     se::StreamExecutor* device, RunId run_id, NcclCliqueKey clique_key,
     const NcclCliqueIdCallback& clique_id_callback, int32_t rank,
     size_t num_local_participants,
-    const NcclClique::AcquiredCliquesMap& acquired_cliques);
+    const NcclClique::AcquiredCliquesMap& acquired_cliques,
+    int64_t max_nchannels = 0);
 
 }  // namespace xla::gpu
 

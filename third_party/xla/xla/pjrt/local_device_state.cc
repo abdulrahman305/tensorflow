@@ -139,15 +139,14 @@ Status LocalDeviceState::SynchronizeAllActivity() {
 Status LocalDeviceState::ThenMemcpyDeviceToDevice(
     se::Stream* transfer_stream, se::Stream* dst_stream,
     se::DeviceMemoryBase src_buffer, se::DeviceMemoryBase dst_buffer) {
-  // The default implementation simply calls ThenMemcpyD2D, and assumes that
+  // The default implementation simply calls MemcpyD2D, and assumes that
   // the buffer addresses identify the devices. This does not work
   // on all platforms; this method is virtual so it can be overridden.
-  transfer_stream->ThenMemcpyD2D(&dst_buffer, src_buffer, dst_buffer.size());
-  return OkStatus();
+  return transfer_stream->MemcpyD2D(&dst_buffer, src_buffer, dst_buffer.size());
 }
 
-void LocalDeviceState::ThenExecuteCallback(se::Stream* stream,
-                                           std::function<void()> callback) {
+absl::Status LocalDeviceState::ThenExecuteCallback(
+    se::Stream* stream, std::function<void()> callback) {
   tsl::profiler::TraceMe traceme("ThenExecuteCallback");
   if (callback_stream_map_.has_value()) {
     // Prevent concurrent updates to the callback stream map.
@@ -155,16 +154,17 @@ void LocalDeviceState::ThenExecuteCallback(se::Stream* stream,
     auto callback_stream = callback_stream_map_->find(stream);
     if (callback_stream == callback_stream_map_->end()) {
       auto new_stream = std::make_unique<se::Stream>(executor_);
-      new_stream->Init();
+      TF_RETURN_IF_ERROR(new_stream->Initialize());
       callback_stream =
           callback_stream_map_->insert({stream, std::move(new_stream)}).first;
     }
-    callback_stream->second->ThenWaitFor(stream);
+    TF_RETURN_IF_ERROR(callback_stream->second->WaitFor(stream));
     stream = callback_stream->second.get();
   }
-  stream->ThenDoHostCallback([this, callback{std::move(callback)}]() mutable {
-    callback_thread_->Schedule(std::move(callback));
-  });
+  return stream->DoHostCallback(
+      [this, callback{std::move(callback)}]() mutable {
+        callback_thread_->Schedule(std::move(callback));
+      });
 }
 
 se::Stream* LocalDeviceState::GetDeviceToHostStream() {
@@ -234,7 +234,7 @@ std::unique_ptr<se::Stream> LocalDeviceState::BorrowStreamFromPool() {
 
   // The stream pool is empty, create a new stream.
   auto stream = std::make_unique<se::Stream>(compute_stream_->parent());
-  stream->Init();
+  CHECK(stream->Initialize().ok());
   return stream;
 }
 

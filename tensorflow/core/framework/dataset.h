@@ -18,6 +18,7 @@ limitations under the License.
 #include <deque>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -789,6 +790,10 @@ class IteratorContext {
     // given an index i, returns the permuted index p(i) for the iterator. Used
     // to support global shuffling of datasets that support random access.
     std::function<int64_t(int64_t)> index_mapper = nullptr;
+
+    // This is set when restoring a globally shuffled iterator. Records the
+    // number of elements that have been produced prior to the checkpoint.
+    std::optional<int64_t> element_count = std::nullopt;
   };
 
   explicit IteratorContext(IteratorContext* ctx)
@@ -880,6 +885,8 @@ class IteratorContext {
   std::function<int64_t(int64_t)> index_mapper() const {
     return params_.index_mapper;
   }
+
+  std::optional<int64_t> element_count() const { return params_.element_count; }
 
   void SetModel(std::shared_ptr<model::Model> model) { params_.model = model; }
 
@@ -1040,6 +1047,10 @@ class IteratorBase : public Checkpointable {
   // Returns a string that identifies the sequence of iterators leading up to
   // this iterator.
   virtual const string& prefix() const = 0;
+
+  // Returns a string identifying the iterator, e.g. "ParallelMapDatasetV2:<id>"
+  // or "ParallelMapDatasetV2:<user defined name>".
+  virtual const string& name() const = 0;
 
   // Indicates whether the iterator is compatible with symbolic checkpointing.
   virtual bool SymbolicCheckpointCompatible() const { return false; }
@@ -1437,6 +1448,8 @@ class DatasetBaseIterator : public IteratorBase {
 
   const string& prefix() const override { return params_.prefix; }
 
+  const string& name() const override { return dataset()->metadata().name(); }
+
   // Returns a name to be used for the TraceMe event.
   //
   // NOTE: TraceMe supports passing key-value pairs of "arguments" using the
@@ -1458,6 +1471,16 @@ class DatasetBaseIterator : public IteratorBase {
     VLOG(2) << "Attempting to save checkpoints on iterator (prefix: "
             << prefix() << ") from " << dataset()->DebugString();
     return IteratorBase::Save(ctx, writer);
+  }
+
+  // Returns a copy of the `status` where the error message is prepended with
+  // dataset name and the iterator prefix.
+  Status AddErrorContext(const Status& status) const {
+    return Status(status.code(),
+                  strings::StrCat("Error in user-defined function passed to ",
+                                  dataset()->metadata().name(),
+                                  " transformation with iterator: ", prefix(),
+                                  ": ", status.message()));
   }
 
  protected:
@@ -1564,16 +1587,6 @@ class DatasetBaseIterator : public IteratorBase {
   // currently between a `RecordStart` and a `RecordStop`.
   bool IsRecording(IteratorContext* ctx) {
     return node_ && node_->is_recording();
-  }
-
-  // Returns a copy of the `status` where the error message is prepended with
-  // dataset name and the iterator prefix.
-  Status AddErrorContext(const Status& status) {
-    return Status(status.code(),
-                  strings::StrCat("Error in user-defined function passed to ",
-                                  dataset()->metadata().name(),
-                                  " transformation with iterator: ", prefix(),
-                                  ": ", status.message()));
   }
 
  private:

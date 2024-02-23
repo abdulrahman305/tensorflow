@@ -55,14 +55,19 @@ static se::StreamExecutor* GpuExecutor() {
   return platform->ExecutorForDevice(0).value();
 }
 
+// Give a short aliases to execution threads.
+static constexpr auto s0 = ExecutionStreamId(0);
+static constexpr auto s1 = ExecutionStreamId(1);
+
 // A command buffer cmd for testing automatic barriers insertion by the command
 // buffer cmd sequence. We never execute this command, we need it only to pass
 // buffer usage vector to the command buffer cmd sequence.
 struct TestOnlyCommandBufferCmd : public CommandBufferCmd {
-  explicit TestOnlyCommandBufferCmd(BufferUsageVector buffer_usage)
-      : buffer_usage(buffer_usage) {}
+  TestOnlyCommandBufferCmd(ExecutionStreamId execution_stream_id,
+                           BufferUsageVector buffer_usage)
+      : CommandBufferCmd(execution_stream_id), buffer_usage(buffer_usage) {}
 
-  absl::Status Record(const Thunk::ExecuteParams&, StateManager&,
+  absl::Status Record(const Thunk::ExecuteParams&, const RecordParams&,
                       se::CommandBuffer*) override {
     return absl::OkStatus();
   }
@@ -72,7 +77,7 @@ struct TestOnlyCommandBufferCmd : public CommandBufferCmd {
   BufferUsageVector buffer_usage;
 };
 
-TEST(CommandBufferCmdTest, ForceBarriers) {
+TEST(CommandBufferCmdTest, SerializeExecution) {
   BufferAllocation alloc0(/*index=*/0, /*size=*/1024, /*color=*/0);
 
   auto slice0 = BufferAllocation::Slice(&alloc0, 0, 100);
@@ -82,9 +87,10 @@ TEST(CommandBufferCmdTest, ForceBarriers) {
   auto use0 = BufferUsage(slice0, MemoryAccess::kRead);
   auto use1 = BufferUsage(slice1, MemoryAccess::kRead);
 
-  CommandBufferCmdSequence commands(/*force_barriers=*/true);
-  commands.Emplace<TestOnlyCommandBufferCmd>(BufferUsageVector{use0});
-  commands.Emplace<TestOnlyCommandBufferCmd>(BufferUsageVector{use1});
+  CommandBufferCmdSequence commands(
+      CommandBufferCmdSequence::SynchronizationMode::kSerialize);
+  commands.Emplace<TestOnlyCommandBufferCmd>(s0, BufferUsageVector{use0});
+  commands.Emplace<TestOnlyCommandBufferCmd>(s0, BufferUsageVector{use1});
 
   ASSERT_EQ(commands.barriers().size(), 2);
   EXPECT_EQ(commands.barriers().at(0), false);
@@ -102,8 +108,8 @@ TEST(CommandBufferCmdTest, NoReadBarrier) {
   auto use1 = BufferUsage(slice1, MemoryAccess::kRead);
 
   CommandBufferCmdSequence commands;
-  commands.Emplace<TestOnlyCommandBufferCmd>(BufferUsageVector{use0});
-  commands.Emplace<TestOnlyCommandBufferCmd>(BufferUsageVector{use1});
+  commands.Emplace<TestOnlyCommandBufferCmd>(s0, BufferUsageVector{use0});
+  commands.Emplace<TestOnlyCommandBufferCmd>(s0, BufferUsageVector{use1});
 
   ASSERT_EQ(commands.barriers().size(), 2);
   EXPECT_EQ(commands.barriers().at(0), false);
@@ -121,8 +127,8 @@ TEST(CommandBufferCmdTest, NoWriteBarrier) {
   auto use1 = BufferUsage(slice1, MemoryAccess::kWrite);
 
   CommandBufferCmdSequence commands;
-  commands.Emplace<TestOnlyCommandBufferCmd>(BufferUsageVector{use0});
-  commands.Emplace<TestOnlyCommandBufferCmd>(BufferUsageVector{use1});
+  commands.Emplace<TestOnlyCommandBufferCmd>(s0, BufferUsageVector{use0});
+  commands.Emplace<TestOnlyCommandBufferCmd>(s0, BufferUsageVector{use1});
 
   ASSERT_EQ(commands.barriers().size(), 2);
   EXPECT_EQ(commands.barriers().at(0), false);
@@ -142,14 +148,34 @@ TEST(CommandBufferCmdTest, WriteConflictBarrier) {
   auto use2 = BufferUsage(slice1, MemoryAccess::kWrite);
 
   CommandBufferCmdSequence commands;
-  commands.Emplace<TestOnlyCommandBufferCmd>(BufferUsageVector{use0});
-  commands.Emplace<TestOnlyCommandBufferCmd>(BufferUsageVector{use1});
-  commands.Emplace<TestOnlyCommandBufferCmd>(BufferUsageVector{use2});
+  commands.Emplace<TestOnlyCommandBufferCmd>(s0, BufferUsageVector{use0});
+  commands.Emplace<TestOnlyCommandBufferCmd>(s0, BufferUsageVector{use1});
+  commands.Emplace<TestOnlyCommandBufferCmd>(s0, BufferUsageVector{use2});
 
   ASSERT_EQ(commands.barriers().size(), 3);
   EXPECT_EQ(commands.barriers().at(0), false);
   EXPECT_EQ(commands.barriers().at(1), false);
   EXPECT_EQ(commands.barriers().at(2), true);
+}
+
+TEST(CommandBufferCmdTest, NoWriteConflictsAcrossStreams) {
+  BufferAllocation alloc0(/*index=*/0, /*size=*/1024, /*color=*/0);
+
+  auto slice0 = BufferAllocation::Slice(&alloc0, 0, 100);
+  auto slice1 = BufferAllocation::Slice(&alloc0, 50, 100);
+
+  // Read and write happens on different execution streams and we do not insert
+  // any automatic barriers between streams.
+  auto use0 = BufferUsage(slice0, MemoryAccess::kRead);
+  auto use1 = BufferUsage(slice1, MemoryAccess::kWrite);
+
+  CommandBufferCmdSequence commands;
+  commands.Emplace<TestOnlyCommandBufferCmd>(s0, BufferUsageVector{use0});
+  commands.Emplace<TestOnlyCommandBufferCmd>(s1, BufferUsageVector{use1});
+
+  ASSERT_EQ(commands.barriers().size(), 2);
+  EXPECT_EQ(commands.barriers().at(0), false);
+  EXPECT_EQ(commands.barriers().at(1), false);
 }
 
 TEST(CommandBufferCmdTest, MemcpyCmd) {
@@ -164,8 +190,8 @@ TEST(CommandBufferCmdTest, MemcpyCmd) {
   se::DeviceMemory<int32_t> a = executor->AllocateArray<int32_t>(length, 0);
   se::DeviceMemory<int32_t> b = executor->AllocateArray<int32_t>(length, 0);
 
-  stream.ThenMemset32(&a, 42, byte_length);
-  stream.ThenMemZero(&b, byte_length);
+  TF_ASSERT_OK(stream.Memset32(&a, 42, byte_length));
+  TF_ASSERT_OK(stream.MemZero(&b, byte_length));
 
   // Prepare buffer allocations for recording command buffer.
   BufferAllocation alloc_a(/*index=*/0, byte_length, /*color=*/0);
@@ -176,25 +202,27 @@ TEST(CommandBufferCmdTest, MemcpyCmd) {
 
   // Prepare commands sequence for constructing command buffer.
   CommandBufferCmdSequence commands;
-  commands.Emplace<MemcpyDeviceToDeviceCmd>(slice_b, slice_a, byte_length);
+  commands.Emplace<MemcpyDeviceToDeviceCmd>(s0, slice_b, slice_a, byte_length);
 
   ServiceExecutableRunOptions run_options;
   BufferAllocations allocations({a, b}, 0, executor->GetAllocator());
 
+  CommandBufferCmd::StateManager state;
+
   Thunk::ExecuteParams params = Thunk::ExecuteParams::Create(
       run_options, allocations, &stream, &stream, {}, nullptr, nullptr);
 
-  CommandBufferCmd::StateManager state;
+  CommandBufferCmd::RecordParams record_params = {state};
 
   auto command_buffer = se::CommandBuffer::Create(executor).value();
-  TF_ASSERT_OK(commands.Record(params, state, command_buffer.get()));
+  TF_ASSERT_OK(commands.Record(params, record_params, command_buffer.get()));
 
   // Execute command buffer and verify that it copied the memory.
   TF_ASSERT_OK(executor->Submit(&stream, *command_buffer));
 
   // Copy `b` data back to host.
   std::vector<int32_t> dst(4, 0);
-  stream.ThenMemcpy(dst.data(), b, byte_length);
+  TF_ASSERT_OK(stream.Memcpy(dst.data(), b, byte_length));
 
   ASSERT_EQ(dst, std::vector<int32_t>(4, 42));
 }
@@ -211,8 +239,8 @@ TEST(CommandBufferCmdTest, LaunchCmd) {
   se::DeviceMemory<int32_t> a = executor->AllocateArray<int32_t>(length, 0);
   se::DeviceMemory<int32_t> b = executor->AllocateArray<int32_t>(length, 0);
 
-  stream.ThenMemset32(&a, 42, byte_length);
-  stream.ThenMemZero(&b, byte_length);
+  TF_ASSERT_OK(stream.Memset32(&a, 42, byte_length));
+  TF_ASSERT_OK(stream.MemZero(&b, byte_length));
 
   // Prepare buffer allocations for recording command buffer.
   BufferAllocation alloc_a(/*index=*/0, byte_length, /*color=*/0);
@@ -227,7 +255,8 @@ TEST(CommandBufferCmdTest, LaunchCmd) {
 
   // Prepare commands sequence for constructing command buffer.
   CommandBufferCmdSequence commands;
-  commands.Emplace<LaunchCmd>("add", args, args_access, LaunchDimensions(1, 4),
+  commands.Emplace<LaunchCmd>(s0, "add", args, args_access,
+                              LaunchDimensions(1, 4),
                               /*shmem_bytes=*/0);
 
   // Initialize command sequence and load device kernels.
@@ -250,15 +279,17 @@ TEST(CommandBufferCmdTest, LaunchCmd) {
   Thunk::ExecuteParams params = Thunk::ExecuteParams::Create(
       run_options, allocations, &stream, &stream, {}, nullptr, nullptr);
 
+  CommandBufferCmd::RecordParams record_params = {state};
+
   auto command_buffer = se::CommandBuffer::Create(executor).value();
-  TF_ASSERT_OK(commands.Record(params, state, command_buffer.get()));
+  TF_ASSERT_OK(commands.Record(params, record_params, command_buffer.get()));
 
   // Execute command buffer and verify that it copied the memory.
   TF_ASSERT_OK(executor->Submit(&stream, *command_buffer));
 
   // Copy `b` data back to host.
   std::vector<int32_t> dst(4, 0);
-  stream.ThenMemcpy(dst.data(), b, byte_length);
+  TF_ASSERT_OK(stream.Memcpy(dst.data(), b, byte_length));
 
   ASSERT_EQ(dst, std::vector<int32_t>(4, 42 + 42));
 }
@@ -371,7 +402,7 @@ static void BM_GetOrTraceCommandBuffer(benchmark::State& state) {
   se::StreamExecutor* executor = GpuExecutor();
 
   se::Stream stream(executor);
-  stream.Init();
+  TF_ASSERT_OK(stream.Initialize());
   CHECK(stream.ok());
 
   BufferAllocation alloc0(/*index=*/0, /*size=*/1024, /*color=*/0);

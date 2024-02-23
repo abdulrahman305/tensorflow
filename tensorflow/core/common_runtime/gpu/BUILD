@@ -374,6 +374,7 @@ tf_cuda_cc_test(
         "//tensorflow/core/common_runtime:core_cpu_internal",
         "//tensorflow/core/common_runtime:direct_session_internal",
         "//tensorflow/core/kernels:ops_util",
+        "@local_xla//xla/stream_executor:platform_manager",
         "@local_xla//xla/stream_executor/gpu:gpu_init",
     ],
 )
@@ -464,7 +465,6 @@ cc_library(
     hdrs = ["gpu_serving_device_selector.h"],
     features = ["-layering_check"],
     deps = [
-        "//tensorflow/core/common_runtime:serving_device_selector",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:fixed_array",
         "@com_google_absl//absl/container:node_hash_map",
@@ -473,6 +473,7 @@ cc_library(
         "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/time",
+        "@local_tsl//tsl/framework:serving_device_selector",
     ],
 )
 
@@ -482,9 +483,9 @@ tf_cc_test(
     srcs = ["gpu_serving_device_selector_test.cc"],
     deps = [
         ":gpu_serving_device_selector",
-        "//tensorflow/core/common_runtime:serving_device_selector",
-        "//tensorflow/core/common_runtime:serving_device_selector_policies",
         "@com_google_absl//absl/time",
         "@com_google_googletest//:gtest_main",
+        "@local_tsl//tsl/framework:serving_device_selector",
+        "@local_tsl//tsl/framework:serving_device_selector_policies",
     ],
 )
