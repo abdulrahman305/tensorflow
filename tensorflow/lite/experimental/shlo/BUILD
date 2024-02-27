@@ -20,6 +20,7 @@ cc_library(
         ":data_type",
         ":quantized_tensor_element_type",
         ":shape",
+        "@com_google_absl//absl/types:span",
     ],
 )
 
@@ -96,4 +97,56 @@ cc_library(
     hdrs = ["dispatch.h"],
     visibility = ["//visibility:private"],
     deps = [":data_type"],
+)
+
+cc_library(
+    name = "quantize",
+    hdrs = ["quantize.h"],
+    deps = [":data_type"],
+)
+
+cc_test(
+    name = "quantize_test",
+    srcs = ["quantize_test.cc"],
+    deps = [
+        ":data_type",
+        ":quantize",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_library(
+    name = "tensor_with_data",
+    testonly = True,
+    hdrs = ["tensor_with_data.h"],
+    deps = [
+        ":data_type",
+        ":quantize",
+        ":quantized_tensor_element_type",
+        ":shape",
+        ":tensor",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_library(
+    name = "tensor_matcher",
+    testonly = True,
+    hdrs = ["tensor_matcher.h"],
+    deps = [
+        ":data_type",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "tensor_matcher_test",
+    srcs = ["tensor_matcher_test.cc"],
+    deps = [
+        ":data_type",
+        ":shape",
+        ":tensor_matcher",
+        ":tensor_with_data",
+        "@com_google_googletest//:gtest_main",
+    ],
 )
