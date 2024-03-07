@@ -13,7 +13,7 @@ package(
         "//tensorflow/compiler/mlir/quantization/tensorflow:internal_visibility_allowlist_package",
         "//tensorflow/lite:__subpackages__",
         "//tensorflow/python:__subpackages__",
-        "//tensorflow/tools/pip_package/v2:__subpackages__",
+        "//tensorflow/tools/pip_package:__subpackages__",
     ],
     licenses = ["notice"],
 )
@@ -85,7 +85,6 @@ cc_library(
     deps = [
         "//tensorflow/compiler/mlir/quantization/tensorflow:exported_model_proto_cc",
         "//tensorflow/compiler/mlir/quantization/tensorflow:quantization_options_proto_cc",
-        "//tensorflow/core:protos_all_cc",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -203,7 +202,7 @@ tf_python_pybind_extension(
     pytype_srcs = ["pywrap_function_lib.pyi"],
     visibility = [
         "__subpackages__",
-        "//tensorflow/tools/pip_package/v2:__subpackages__",
+        "//tensorflow/tools/pip_package:__subpackages__",
     ],
     deps = [
         ":py_function_lib",

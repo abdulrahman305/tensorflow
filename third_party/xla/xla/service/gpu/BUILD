@@ -578,7 +578,6 @@ xla_test(
         "//xla:literal",
         "//xla:literal_util",
         "//xla:status_macros",
-        "//xla:statusor",
         "//xla:xla_proto_cc",
         "//xla/hlo/ir:hlo",
         "//xla/service:pattern_matcher",
@@ -860,12 +859,14 @@ cc_library(
 cc_library(
     name = "nccl_collective_thunks",
     srcs = [
+        "nccl_collective_broadcast_thunk.cc",
         "nccl_collective_thunk.cc",
         "nccl_p2p_thunk_common.cc",
         "nccl_recv_thunk.cc",
         "nccl_send_thunk.cc",
     ],
     hdrs = [
+        "nccl_collective_broadcast_thunk.h",
         "nccl_collective_thunk.h",
         "nccl_p2p_thunk_common.h",
         "nccl_recv_thunk.h",
@@ -1518,6 +1519,22 @@ cc_library(
     ]),
 )
 
+xla_cc_test(
+    name = "gemm_rewriter_test",
+    srcs = ["gemm_rewriter_test.cc"],
+    deps = [
+        ":gemm_rewriter",
+        "//xla:autotuning_proto_cc",
+        "//xla:xla_data_proto_cc",
+        "//xla:xla_proto_cc",
+        "//xla/stream_executor:device_description",
+        "//xla/tests:hlo_test_base",
+        "//xla/tests:xla_internal_test_main",  # fixdeps: keep
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest",
+    ],
+)
+
 cc_library(
     name = "triton_support",
     srcs = ["triton_support.cc"],
@@ -1564,7 +1581,6 @@ cc_library(
         "//xla:shape_util",
         "//xla:status",
         "//xla:status_macros",
-        "//xla:statusor",
         "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
         "//xla/hlo/utils:hlo_query",
@@ -3835,10 +3851,12 @@ cc_library(
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/synchronization",
+        "@llvm-project//llvm:ir_headers",
         "@llvm-project//llvm:IRReader",
         "@llvm-project//llvm:Support",
         "//xla:autotune_results_proto_cc",
@@ -3873,8 +3891,11 @@ cc_library(
         "//xla/service/llvm_ir:llvm_util",
         "//xla:status",
         "//xla/stream_executor",
+        "//xla/stream_executor:stream_executor_headers",
         "//xla/stream_executor/cuda:cuda_diagnostics",
         "//xla/stream_executor/cuda:cuda_platform_id",
+        "//xla/stream_executor/cuda:ptx_compiler",
+        "//xla/stream_executor/cuda:ptx_compiler_support",
         "//xla/stream_executor/gpu:asm_compiler",
         "//xla/stream_executor/gpu:gpu_asm_opts",
         "//xla/stream_executor/gpu:gpu_driver_header",
@@ -3887,11 +3908,7 @@ cc_library(
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/profiler/lib:traceme",
         "@local_tsl//tsl/util:env_var",
-    ]) + [
-        "//xla/stream_executor:stream_executor_headers",
-        "@com_google_absl//absl/status:statusor",
-        "@llvm-project//llvm:ir_headers",
-    ],
+    ]),
 )
 
 xla_cc_test(
@@ -4556,6 +4573,7 @@ xla_test(
             "requires-gpu-sm80-only",
             "noasan",
             "nomsan",
+            "no_rocm",
         ],
     },
     backends = [
@@ -4717,6 +4735,7 @@ xla_test(
     srcs = ["cudnn_fused_mha_rewriter_test.cc"],
     backend_tags = {"gpu": [
         "requires-gpu-nvidia",
+        "no_rocm",
     ]},
     backends = [
         "gpu",

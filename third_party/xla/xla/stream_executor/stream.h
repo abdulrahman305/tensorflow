@@ -110,8 +110,6 @@ class Stream {
 
   // Initialize the stream. This must be performed before entraining any other
   // operations.
-  ABSL_DEPRECATED("Use absl::Status Stream::Initialize instead.")
-  Stream &Init() TF_LOCKS_EXCLUDED(mu_);
   absl::Status Initialize();
 
   // Get or create a sub-stream from this stream. If there is any sub-stream in
@@ -293,9 +291,6 @@ class Stream {
   RocmComputeCapability GetRocmComputeCapability() const {
     return parent()->GetDeviceDescription().rocm_compute_capability();
   }
-
-  // Returns a debugging string "[stream=0x...,impl=0x...]".
-  std::string DebugStreamPointers() const;
 
   void SetPriority(StreamPriority priority);
   void SetPriority(int priority);

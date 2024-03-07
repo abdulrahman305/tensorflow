@@ -18,6 +18,7 @@ limitations under the License.
 #include <cstdint>
 #include <optional>
 
+#include "absl/container/flat_hash_set.h"
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/ImplicitLocOpBuilder.h"  // from @llvm-project
@@ -68,9 +69,7 @@ class MlirTransposeFusion : public MlirFusionEmitterBase {
       const HloFusionInstruction& fusion) const override;
 
   absl::flat_hash_set<const HloInstruction*> GetInstructionsWithCustomCodegen(
-      const HloFusionInstruction& fusion) const override {
-    return shmem_transposes_;
-  }
+      const HloFusionInstruction& fusion) const override;
 
   absl::StatusOr<llvm::SmallVector<mlir::Value, 4>> EmitWriteToShMemMlir(
       mlir::ImplicitLocOpBuilder& builder, mlir::func::FuncOp entry_function,
