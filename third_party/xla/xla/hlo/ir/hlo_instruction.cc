@@ -234,7 +234,7 @@ HloInstruction* HloInstruction::AddInstruction(
 }
 
 /* static */
-StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
+absl::StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
     const HloInstructionProto& proto,
     const absl::flat_hash_map<int64_t, HloInstruction*>& instruction_map,
     const absl::flat_hash_map<int64_t, HloComputation*>& computation_map,
@@ -2098,6 +2098,11 @@ void HloInstruction::SetupDerivedInstruction(
   } else if (derived_instruction->has_rare()) {
     derived_instruction->mutable_rare()->frontend_attributes.Clear();
     derived_instruction->mutable_rare()->statistics_viz.Clear();
+  }
+  // If the derived instruction has the same opcode as current,
+  // then the backend config is also applicable.
+  if (opcode() == derived_instruction->opcode() && has_backend_config()) {
+    derived_instruction->CopyBackendConfigFrom(this);
   }
 }
 
@@ -4580,7 +4585,7 @@ absl::string_view ToString(HloInstruction::FusionKind kind) {
   }
 }
 
-StatusOr<HloInstruction::FusionKind> StringToFusionKind(
+absl::StatusOr<HloInstruction::FusionKind> StringToFusionKind(
     absl::string_view kind_name) {
   if (kind_name == "kLoop") {
     return HloInstruction::FusionKind::kLoop;
@@ -4739,7 +4744,8 @@ std::string ReplicaGroupsToString(
   return StrCat("{", StrJoin(replica_group_str, ","), "}");
 }
 
-StatusOr<RandomAlgorithm> StringToRandomAlgorithm(const std::string& name) {
+absl::StatusOr<RandomAlgorithm> StringToRandomAlgorithm(
+    const std::string& name) {
   static absl::flat_hash_map<std::string, RandomAlgorithm>* map = [] {
     static auto* map = new absl::flat_hash_map<std::string, RandomAlgorithm>;
     for (int i = 0; i < RandomAlgorithm_ARRAYSIZE; i++) {
@@ -4757,7 +4763,7 @@ StatusOr<RandomAlgorithm> StringToRandomAlgorithm(const std::string& name) {
   return found->second;
 }
 
-StatusOr<RandomDistribution> StringToRandomDistribution(
+absl::StatusOr<RandomDistribution> StringToRandomDistribution(
     const std::string& name) {
   static absl::flat_hash_map<std::string, RandomDistribution>* map = [] {
     static auto* map = new absl::flat_hash_map<std::string, RandomDistribution>;
@@ -4776,7 +4782,7 @@ StatusOr<RandomDistribution> StringToRandomDistribution(
   return found->second;
 }
 
-StatusOr<PrecisionConfig::Precision> StringToPrecision(
+absl::StatusOr<PrecisionConfig::Precision> StringToPrecision(
     const std::string& name) {
   static absl::flat_hash_map<std::string, PrecisionConfig::Precision>* map =
       [] {
@@ -4818,7 +4824,7 @@ absl::StatusOr<PrecisionConfig::Algorithm> StringToAlgorithm(
   return found->second;
 }
 
-StatusOr<CustomCallSchedule> StringToCustomCallSchedule(
+absl::StatusOr<CustomCallSchedule> StringToCustomCallSchedule(
     absl::string_view name) {
   static const absl::flat_hash_map<std::string, CustomCallSchedule>* map = [] {
     static auto* map = new absl::flat_hash_map<std::string, CustomCallSchedule>;
@@ -4837,7 +4843,7 @@ StatusOr<CustomCallSchedule> StringToCustomCallSchedule(
   return found->second;
 }
 
-StatusOr<CustomCallApiVersion> StringToCustomCallApiVersion(
+absl::StatusOr<CustomCallApiVersion> StringToCustomCallApiVersion(
     absl::string_view name) {
   static const absl::flat_hash_map<std::string, CustomCallApiVersion>* map =
       [] {
@@ -4960,8 +4966,8 @@ bool HloInstruction::BackendConfigRep::operator==(
   return GetRawString() == other.GetRawString();
 }
 
-/* static */ StatusOr<std::string> HloInstruction::BackendConfigToRawString(
-    const tsl::protobuf::Message& proto) {
+/* static */ absl::StatusOr<std::string>
+HloInstruction::BackendConfigToRawString(const tsl::protobuf::Message& proto) {
   std::string ret;
   // Pass ignore_accuracy_loss = true because estimated_cycles field can be
   // INT64_MAX. If ignore_accuracy_loss = false and estimated_cycles =

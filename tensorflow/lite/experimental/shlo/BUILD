@@ -25,6 +25,21 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "i4",
+    hdrs = ["i4.h"],
+    deps = [],
+)
+
+cc_test(
+    name = "i4_test",
+    srcs = ["i4_test.cc"],
+    deps = [
+        ":i4",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 cc_test(
     name = "tensor_test",
     srcs = ["tensor_test.cc"],
@@ -86,7 +101,6 @@ cc_library(
     name = "bf16",
     hdrs = ["bf16.h"],
     deps = [
-        ":has_keyword",
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/log:absl_check",
     ],
@@ -106,12 +120,6 @@ cc_test(
 cc_library(
     name = "f16",
     hdrs = ["f16.h"],
-    deps = [":has_keyword"],
-)
-
-cc_library(
-    name = "has_keyword",
-    hdrs = ["has_keyword.h"],
 )
 
 cc_library(
@@ -120,6 +128,7 @@ cc_library(
     deps = [
         ":bf16",
         ":f16",
+        ":i4",
     ],
 )
 
@@ -127,7 +136,6 @@ cc_library(
     name = "dispatch",
     hdrs = ["dispatch.h"],
     visibility = ["//tensorflow/lite/experimental/shlo:__subpackages__"],
-    deps = [":data_type"],
 )
 
 cc_test(

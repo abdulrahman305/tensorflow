@@ -50,6 +50,7 @@ limitations under the License.
 #include "xla/python/sharding.h"
 #include "xla/python/types.h"
 #include "xla/shape.h"
+#include "xla/tsl/python/lib/core/numpy.h"
 #include "xla/types.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
@@ -57,7 +58,6 @@ limitations under the License.
 #include "tsl/platform/ml_dtypes.h"
 #include "tsl/platform/statusor.h"
 #include "tsl/profiler/lib/traceme.h"
-#include "tsl/python/lib/core/numpy.h"
 
 namespace nb = nanobind;
 
@@ -257,7 +257,8 @@ absl::StatusOr<DevicePutResult> HandleNumpyArray(
     on_done_with_host_buffer =
         [py_buffer_ref{
             std::move(py_buffer_ref)}]() { /* keeps py_buffer_ref alive */ };
-    host_buffer_semantics = ifrt::Client::HostBufferSemantics::kZeroCopy;
+    host_buffer_semantics =
+        ifrt::Client::HostBufferSemantics::kImmutableZeroCopy;
   }
   // Must release the GIL before BufferFromHostBuffer because backends may
   // decide to block/sleep for device buffer allocation.

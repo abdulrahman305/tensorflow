@@ -36,7 +36,7 @@ class CustomFusion : public FusionInterface {
 
 // Emitter for custom fusions implementing address computation. An address
 // computation contains a custom call hero, with at least one of its operands
-// comes from a static contiguous slice. E.g. operand `%cast` of `%gemm` coming
+// coming from a static contiguous slice. E.g. operand `%cast` of `%gemm` coming
 // from `%slice`:
 // %address_computation {
 //   %p0 = f32[2, 1024, 1024]

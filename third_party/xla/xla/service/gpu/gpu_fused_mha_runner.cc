@@ -15,18 +15,25 @@ limitations under the License.
 
 #include "xla/service/gpu/gpu_fused_mha_runner.h"
 
+#include <cstdint>
 #include <optional>
 #include <string>
 
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
-#include "absl/strings/string_view.h"
-#include "xla/layout_util.h"
+#include "absl/strings/str_format.h"
+#include "Eigen/Core"  // from @eigen_archive
 #include "xla/service/gpu/backend_configs.pb.h"
+#include "xla/service/gpu/cublas_cudnn.h"
 #include "xla/service/gpu/stream_executor_util.h"
-#include "xla/shape_util.h"
-#include "xla/status_macros.h"
+#include "xla/shape.h"
+#include "xla/stream_executor/device_memory.h"
+#include "xla/stream_executor/dnn.h"
+#include "xla/stream_executor/lazy_op_runner.h"
+#include "xla/stream_executor/stream.h"
 #include "xla/util.h"
+#include "tsl/platform/statusor.h"
 
 namespace xla {
 namespace gpu {
@@ -158,58 +165,6 @@ absl::Status RunGpuFMHAImpl(const GpufMHAParams &params, se::Stream *stream,
   }
 
   return absl::OkStatus();
-}
-
-void AssignScale(GpufMHAConfig &config,
-                 const CudnnfMHABackendConfig &backend_config) {
-  double fmha_scale = 0.0;
-
-  switch (config.kind) {
-    case CudnnfMHAKind::kScaleBiasMaskSoftmax:
-    case CudnnfMHAKind::kScaleBiasMaskSoftmaxDropout:
-    case CudnnfMHAKind::kScaleMaskSoftmax:
-    case CudnnfMHAKind::kScaleMaskSoftmaxDropout:
-    case CudnnfMHAKind::kScaleBiasSoftmaxDropout:
-    case CudnnfMHAKind::kScaleBiasSoftmax:
-      fmha_scale = backend_config.fmha_scale();
-      config.fmha_scale.emplace(fmha_scale);
-      break;
-    default:
-      break;
-  }
-}
-
-void AssignDropoutRate(GpufMHAConfig &config,
-                       const CudnnfMHABackendConfig &backend_config) {
-  double dropout_rate = 0.0;
-  switch (config.kind) {
-    case CudnnfMHAKind::kScaleBiasMaskSoftmaxDropout:
-    case CudnnfMHAKind::kScaleMaskSoftmaxDropout:
-    case CudnnfMHAKind::kSoftmaxDropout:
-    case CudnnfMHAKind::kScaleBiasSoftmaxDropout:
-      dropout_rate = backend_config.dropout_rate();
-      config.dropout_rate.emplace(dropout_rate);
-      break;
-    default:
-      break;
-  }
-}
-
-void AssignSeed(GpufMHAConfig &config,
-                const CudnnfMHABackendConfig &backend_config) {
-  int64_t seed_value = 0;
-
-  switch (config.kind) {
-    case CudnnfMHAKind::kScaleBiasMaskSoftmaxDropout:
-    case CudnnfMHAKind::kScaleMaskSoftmaxDropout:
-    case CudnnfMHAKind::kSoftmaxDropout:
-    case CudnnfMHAKind::kScaleBiasSoftmaxDropout:
-      seed_value = backend_config.seed();
-      config.seed.emplace(seed_value);
-      break;
-    default:
-      break;
-  }
 }
 
 template <typename ElementType, typename OutputType>
@@ -479,10 +434,9 @@ absl::Status RunGpuFMHABackwardImpl(const GpufMHABackwardParams &params,
   config.is_causal_mask = desc.is_causal_mask;
   const CudnnfMHABackendConfig &backend_config = desc.backend_config;
   config.algorithm = se::dnn::AlgorithmDesc(backend_config.algorithm());
-
-  AssignScale(config, backend_config);
-  AssignDropoutRate(config, backend_config);
-  AssignSeed(config, backend_config);
+  config.fmha_scale.emplace(backend_config.fmha_scale());
+  config.dropout_rate.emplace(backend_config.dropout_rate());
+  config.seed.emplace(backend_config.seed());
   return config;
 }
 
@@ -623,19 +577,9 @@ absl::Status RunGpuFMHABackwardImpl(const GpufMHABackwardParams &params,
   config.is_causal_mask = desc.is_causal_mask;
   const CudnnfMHABackendConfig &backend_config = desc.backend_config;
   config.algorithm = se::dnn::AlgorithmDesc(backend_config.algorithm());
-
-  auto assign_scale = [&]() {
-    config.fmha_scale.emplace(backend_config.fmha_scale());
-  };
-
-  auto assign_dropout_rate = [&]() {
-    config.dropout_rate.emplace(backend_config.dropout_rate());
-  };
-
-  auto assign_seed = [&]() { config.seed.emplace(backend_config.seed()); };
-  assign_scale();
-  assign_dropout_rate();
-  assign_seed();
+  config.fmha_scale.emplace(backend_config.fmha_scale());
+  config.dropout_rate.emplace(backend_config.dropout_rate());
+  config.seed.emplace(backend_config.seed());
   return config;
 }
 

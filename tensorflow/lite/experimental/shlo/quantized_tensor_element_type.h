@@ -17,6 +17,8 @@ limitations under the License.
 #define TENSORFLOW_LITE_EXPERIMENTAL_SHLO_QUANTIZED_TENSOR_ELEMENT_TYPE_H_
 
 #include <optional>
+#include <sstream>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -113,13 +115,14 @@ class QuantizedTensorElementType {
     std::visit(
         [](auto& scales) -> void {
           using Container = std::remove_reference_t<decltype(scales)>;
-          absl::c_fill(scales, static_cast<Container::value_type>(1));
+          absl::c_fill(scales, static_cast<typename Container::value_type>(1));
         },
         baseline.scales_);
     std::visit(
         [](auto& zero_points) -> void {
           using Container = std::remove_reference_t<decltype(zero_points)>;
-          absl::c_fill(zero_points, static_cast<Container::value_type>(0));
+          absl::c_fill(zero_points,
+                       static_cast<typename Container::value_type>(0));
         },
         baseline.zero_points_);
     return baseline;
@@ -153,14 +156,26 @@ class QuantizedTensorElementType {
                SmallInlinedVector<Storage<DataType::kF32>::Type>>
       scales_;
 
-  // There is no need for kSI4 because it currently uses the same underlying
-  // storage type as kSI8, which complicates accessing the variant. If they ever
-  // use different underlying types, please add an alternative for kSI4.
-  std::variant<SmallInlinedVector<Storage<DataType::kSI8>::Type>,
+  std::variant<SmallInlinedVector<Storage<DataType::kSI4>::Type>,
+               SmallInlinedVector<Storage<DataType::kSI8>::Type>,
                SmallInlinedVector<Storage<DataType::kSI16>::Type>,
                SmallInlinedVector<Storage<DataType::kSI32>::Type>>
       zero_points_;
 };
+
+// Gets a string representation of the given DataType.
+inline std::string ToString(const QuantizedTensorElementType& t) {
+  std::stringstream sstr;
+  if (t.IsPerTensorQuantized()) {
+    sstr << "QuantizedPerTensor[" << ToString(t.StorageType()) << ", "
+         << ToString(t.ExpressedType()) << "]";
+  } else {
+    sstr << "QuantizedPerAxis[" << ToString(t.StorageType()) << ", "
+         << ToString(t.ExpressedType()) << ", " << t.QuantizedDimension()
+         << "]";
+  }
+  return sstr.str();
+}
 
 }  // namespace shlo_ref
 #endif  // TENSORFLOW_LITE_EXPERIMENTAL_SHLO_QUANTIZED_TENSOR_ELEMENT_TYPE_H_

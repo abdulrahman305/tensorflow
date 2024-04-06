@@ -40,6 +40,7 @@ limitations under the License.
 #include "tensorflow/c/safe_ptr.h"
 #include "tensorflow/c/tf_buffer.h"
 #include "tensorflow/c/tf_datatype.h"
+#include "xla/tsl/python/lib/core/numpy.h"
 #include "tensorflow/core/distributed_runtime/server_lib.h"
 #include "tensorflow/core/framework/full_type.pb.h"
 #include "tensorflow/core/framework/versions.pb.h"
@@ -50,7 +51,6 @@ limitations under the License.
 #include "tensorflow/python/lib/core/pybind11_status.h"
 #include "tensorflow/python/lib/core/safe_pyobject_ptr.h"
 #include "tsl/platform/mutex.h"
-#include "tsl/python/lib/core/numpy.h"
 
 namespace pybind11 {
 namespace detail {
@@ -615,7 +615,7 @@ struct PyOperation {
   void _init_outputs() {
     int num_outputs = TF_OperationNumOutputs(tf_op());
     for (int i = 0; i < num_outputs; ++i) {
-      auto dtype = TF_OperationOutputType(TF_Output{tf_op(), i});
+      int dtype = TF_OperationOutputType(TF_Output{tf_op(), i});
       data->outputs.append(data->tensor_fn(AsPyObject(this), i, dtype));
     }
   }

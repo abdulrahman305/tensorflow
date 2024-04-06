@@ -37,13 +37,13 @@
 #include "absl/types/span.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ExtensibleRTTI.h"
-#include "xla/layout.h"
 #include "xla/layout_util.h"
 #include "xla/literal.h"
 #include "xla/literal_util.h"
 #include "xla/pjrt/host_callback.h"
 #include "xla/pjrt/pjrt_common.h"
 #include "xla/pjrt/pjrt_device_description.h"
+#include "xla/pjrt/pjrt_layout.h"
 #include "xla/python/ifrt/array.h"
 #include "xla/python/ifrt/compiler.h"
 #include "xla/python/ifrt/device.h"
@@ -56,8 +56,8 @@
 #include "xla/python/ifrt/serdes.h"
 #include "xla/python/ifrt/shape.h"
 #include "xla/python/ifrt/sharding.h"
+#include "xla/python/ifrt/sharding_serdes.h"
 #include "xla/python/ifrt_proxy/common/ifrt_service.pb.h"
-#include "xla/python/ifrt_proxy/common/types.h"
 #include "xla/python/ifrt_proxy/common/types.pb.h"
 #include "xla/python/ifrt_proxy/server/host_buffer.h"
 #include "xla/python/ifrt_proxy/server/host_callback.h"
@@ -291,8 +291,8 @@ class IfrtBackendHandlerTest : public testing::Test {
 
       auto* make_array =
           ifrt_request->mutable_make_array_from_host_buffer_request();
-      make_array->set_dtype(proto::DTYPE_S32);
-      make_array->mutable_shape()->add_dimensions(2);
+      make_array->mutable_dtype()->set_kind(DTypeProto::KIND_S32);
+      make_array->mutable_shape()->add_dims(2);
       make_array->set_host_buffer_handle(host_buffer_handle);
 
       TF_ASSIGN_OR_RETURN(auto* device, mock_client_->LookupDevice(1));
@@ -509,8 +509,8 @@ TEST_F(IfrtBackendHandlerTest, MakeArrayFromHostBufferSuccess) {
         ifrt_request->mutable_make_array_from_host_buffer_request();
     ASSERT_TRUE(
         TextFormat::ParseFromString(R"pb(
-                                      dtype: DTYPE_F64
-                                      shape { dimensions: [ 5, 3, 4 ] }
+                                      dtype { kind: KIND_F64 }
+                                      shape { dims: [ 5, 3, 4 ] }
                                       byte_strides { strides: [ 8, 40, 120 ] }
                                     )pb",
                                     make_array));
@@ -543,7 +543,7 @@ TEST_F(IfrtBackendHandlerTest, AssembleArrayFromSingleDeviceArrays) {
   {
     ASSERT_TRUE(TextFormat::ParseFromString(
         R"pb(
-          shape { dimensions: [ 2, 2 ] }
+          shape { dims: [ 2, 2 ] }
           copy_semantics: ARRAY_COPY_SEMANTICS_ALWAYS_COPY
         )pb",
         ifrt_request
@@ -890,8 +890,8 @@ TEST_F(IfrtBackendHandlerTest, CompileSuccess) {
       addressable_device_logical_ids;
   std::vector<xla::ifrt::Device*> addressable_devices;
   for (int i = 0; i < 4; ++i) {
-    addressable_device_logical_ids.push_back(
-        {.replica = i / 2, .partition = i % 2});
+    xla::ifrt::LoadedExecutable::LogicalDeviceIds id{i / 2, i % 2};
+    addressable_device_logical_ids.push_back(id);
     addressable_devices.push_back(&devices[i]);
   }
 
@@ -962,15 +962,19 @@ TEST_F(IfrtBackendHandlerTest, LoadedExecutableMetadata) {
     EXPECT_CALL(*executable, GetOutputShardings())
         .WillOnce(Return(std::vector<OpSharding>{op_sharding1}));
 
+    std::vector<std::unique_ptr<Layout>> parameter_layouts;
+    parameter_layouts.push_back(std::make_unique<xla::PjRtXlaLayout>(
+        xla::LayoutUtil::MakeDescendingLayout(/*rank=*/1)));
+    parameter_layouts.push_back(std::make_unique<xla::PjRtXlaLayout>(
+        xla::LayoutUtil::MakeDescendingLayout(/*rank=*/2)));
     EXPECT_CALL(*executable, GetParameterLayouts())
-        .WillOnce(Return(std::vector<xla::Layout>{
-            xla::LayoutUtil::MakeDescendingLayout(/*rank=*/1),
-            xla::LayoutUtil::MakeDescendingLayout(/*rank=*/2),
-        }));
+        .WillOnce(Return(std::move(parameter_layouts)));
+
+    std::vector<std::unique_ptr<Layout>> output_layouts;
+    output_layouts.push_back(std::make_unique<xla::PjRtXlaLayout>(
+        xla::LayoutUtil::MakeDescendingLayout(/*rank=*/2)));
     EXPECT_CALL(*executable, GetOutputLayouts())
-        .WillOnce(Return(std::vector<xla::Layout>{
-            xla::LayoutUtil::MakeDescendingLayout(/*rank=*/2),
-        }));
+        .WillOnce(Return(std::move(output_layouts)));
     EXPECT_CALL(*executable, GetOutputMemoryKinds())
         .WillOnce(Return(std::vector<std::vector<absl::string_view>>{{"foo"}}));
 
@@ -1102,12 +1106,12 @@ TEST_F(IfrtBackendHandlerTest, LoadedExecutableExecute) {
   EXPECT_THAT(response, Pointee(Partially(EquivToProto(R"pb(
                 loaded_executable_execute_response {
                   outputs {
-                    dtype: DTYPE_F32
-                    shape { dimensions: [ 2, 2 ] }
+                    dtype { kind: KIND_F32 }
+                    shape { dims: [ 2, 2 ] }
                   }
                   outputs {
-                    dtype: DTYPE_F32
-                    shape { dimensions: [ 2, 2 ] }
+                    dtype { kind: KIND_F32 }
+                    shape { dims: [ 2, 2 ] }
                   }
                 }
               )pb"))));

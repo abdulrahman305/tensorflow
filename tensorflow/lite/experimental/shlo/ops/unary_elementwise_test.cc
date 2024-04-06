@@ -25,6 +25,7 @@ limitations under the License.
 #include "tensorflow/lite/experimental/shlo/ops/test_util.h"
 #include "tensorflow/lite/experimental/shlo/quantized_tensor_element_type.h"
 #include "tensorflow/lite/experimental/shlo/shape.h"
+#include "tensorflow/lite/experimental/shlo/status_matcher.h"
 #include "tensorflow/lite/experimental/shlo/tensor.h"
 
 using testing::ElementsAreArray;
@@ -35,7 +36,7 @@ namespace {
 struct Abs {
   template <class T>
   T operator()(const T& val) {
-    return val < static_cast<T>(0) ? -val : val;
+    return val < static_cast<T>(0) ? static_cast<T>(-val) : val;
   }
 };
 
@@ -48,9 +49,9 @@ struct TestParam {
 };
 
 template <class T>
-struct UnaryElementWiseTest : testing::Test {};
+struct UnaryElementWiseTest : ::testing::Test {};
 
-TYPED_TEST_SUITE(UnaryElementWiseTest, NonQuantizedTestTypes);
+TYPED_TEST_SUITE(UnaryElementWiseTest, ArithmeticTestTypes);
 
 TYPED_TEST(UnaryElementWiseTest, NonQuantizedWithAbs) {
   using StorageT = typename TypeParam::StorageT;
@@ -76,7 +77,7 @@ TYPED_TEST(UnaryElementWiseTest, NonQuantizedWithAbs) {
 }
 
 template <class T>
-struct QuantizedUnaryElementWiseTest : testing::Test {};
+struct QuantizedUnaryElementWiseTest : ::testing::Test {};
 
 TYPED_TEST_SUITE(QuantizedUnaryElementWiseTest, QuantizedTestTypes);
 

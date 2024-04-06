@@ -16,16 +16,20 @@ limitations under the License.
 #ifndef XLA_PYTHON_IFRT_DEVICE_H_
 #define XLA_PYTHON_IFRT_DEVICE_H_
 
+#include <atomic>
+#include <cstdint>
 #include <memory>
+#include <string>
 #include <type_traits>
 #include <variant>
 #include <vector>
 
 #include "absl/container/inlined_vector.h"
 #include "absl/functional/function_ref.h"
+#include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "xla/pjrt/pjrt_client.h"
-#include "xla/python/ifrt/types.pb.h"
+#include "xla/python/ifrt/device.pb.h"
 
 namespace xla {
 namespace ifrt {
@@ -50,10 +54,10 @@ class DeviceList {
   // Constructor with a pre-populated `devices`.
   explicit DeviceList(Devices devices);
 
-  DeviceList(const DeviceList& devices) = default;
-  DeviceList(DeviceList&& devices) = default;
-  DeviceList& operator=(const DeviceList& other) = default;
-  DeviceList& operator=(DeviceList&& other) = default;
+  DeviceList(const DeviceList& other);
+  DeviceList(DeviceList&& other);
+  DeviceList& operator=(const DeviceList& other);
+  DeviceList& operator=(DeviceList&& other);
 
   // Function that matches the semantics of `Client::LookupDevice()`.
   using LookupDeviceFunc = absl::FunctionRef<absl::StatusOr<Device*>(int)>;
@@ -76,6 +80,9 @@ class DeviceList {
     return devices() != other.devices();
   }
 
+  // Returns the hash of devices. This hash is stable only within the process.
+  uint64_t hash() const;
+
   int size() const { return state().devices.size(); }
   bool empty() const { return state().devices.empty(); }
 
@@ -88,6 +95,8 @@ class DeviceList {
   auto cbegin() const { return state().devices.cbegin(); }
   auto end() const { return state().devices.end(); }
   auto cend() const { return state().devices.cend(); }
+
+  std::string DebugString() const;
 
  private:
   // Internal state that may be shared across `DeviceList` instances.
@@ -122,6 +131,11 @@ class DeviceList {
   }
 
   std::variant<State, std::shared_ptr<State>> state_;
+
+  // Cached hash. 0 indicates the hash needs to be computed and cached.
+  // May be written multiple times with the same non-zero value.
+  static constexpr uint64_t kUnsetHash = 0;
+  mutable std::atomic<uint64_t> hash_;
 };
 
 // Returns the id of each device in `device_list`.
@@ -132,7 +146,7 @@ std::vector<int> GetDeviceIds(DeviceList device_list);
 // d2->id()").
 template <typename H>
 H AbslHashValue(H h, const DeviceList& devices) {
-  return H::combine(std::move(h), devices.devices());
+  return H::combine(std::move(h), devices.hash());
 }
 
 }  // namespace ifrt

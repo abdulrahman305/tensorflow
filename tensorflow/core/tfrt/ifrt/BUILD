@@ -32,6 +32,7 @@ cc_library(
         ":ifrt_loaded_variable_registry",
         ":ifrt_tensor_utils",
         ":sharding_utils",
+        "//tensorflow/compiler/mlir/tfrt/transforms/ifrt:ifrt_types",
         "//tensorflow/compiler/mlir/tfrt/transforms/ifrt:tf2hlo",
         "//tensorflow/compiler/tf2xla:xla_helpers",
         "//tensorflow/core:framework",
@@ -78,10 +79,28 @@ cc_library(
 )
 
 cc_library(
+    name = "ifrt_restore_tensor_registry",
+    srcs = ["ifrt_restore_tensor_registry.cc"],
+    hdrs = ["ifrt_restore_tensor_registry.h"],
+    deps = [
+        "//tensorflow/core/framework:tensor",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/synchronization",
+        "@local_xla//xla/python/ifrt",
+    ],
+)
+
+cc_library(
     name = "ifrt_loaded_variable_registry",
     srcs = ["ifrt_loaded_variable_registry.cc"],
     hdrs = ["ifrt_loaded_variable_registry.h"],
     deps = [
+        "//tensorflow/compiler/mlir/tfrt/transforms/ifrt:ifrt_types",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/log",
@@ -103,6 +122,7 @@ cc_library(
     deps = [
         ":ifrt_executable_registry",
         ":ifrt_loaded_variable_registry",
+        ":ifrt_restore_tensor_registry",
         "//tensorflow/compiler/tf2xla:xla_helpers",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",
@@ -112,6 +132,7 @@ cc_library(
         "@local_tsl//tsl/concurrency:ref_count",
         "@local_tsl//tsl/platform:env",
         "@local_xla//xla/python/ifrt",
+        "@tf_runtime//:hostcontext",
     ],
 )
 
@@ -168,6 +189,68 @@ cc_library(
         "@local_xla//xla/hlo/ir:hlo",
         "@local_xla//xla/python/ifrt",
         "@local_xla//xla/python/pjrt_ifrt:xla_ifrt",
+    ],
+)
+
+cc_library(
+    name = "tf_host_callback",
+    srcs = ["tf_host_callback.cc"],
+    hdrs = ["tf_host_callback.h"],
+    deps = [
+        "//tensorflow/c/eager:abstract_tensor_handle",
+        "//tensorflow/c/eager:immediate_execution_context",
+        "//tensorflow/c/eager:immediate_execution_operation",
+        "//tensorflow/compiler/mlir/tfrt/transforms/ifrt:ifrt_types",
+        "//tensorflow/core:core_cpu_base",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:framework_internal",
+        "//tensorflow/core/common_runtime/eager:context",
+        "//tensorflow/core/common_runtime/eager:core_no_xla",
+        "//tensorflow/core/common_runtime/eager:tensor_handle",
+        "//tensorflow/core/protobuf:for_core_protos_cc",
+        "@com_google_absl//absl/cleanup",
+        "@com_google_absl//absl/container:fixed_array",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@local_tsl//tsl/platform:casts",
+        "@local_tsl//tsl/platform:errors",
+        "@local_tsl//tsl/platform:refcount",
+        "@local_tsl//tsl/profiler/lib:traceme",
+    ],
+)
+
+tf_cc_test(
+    name = "tf_host_callback_test",
+    srcs = ["tf_host_callback_test.cc"],
+    tags = ["no_oss"],
+    deps = [
+        ":tf_host_callback",
+        "//tensorflow/cc:const_op",
+        "//tensorflow/cc:function_ops",
+        "//tensorflow/cc:functional_ops",
+        "//tensorflow/cc:math_ops",
+        "//tensorflow/cc:ops",
+        "//tensorflow/cc:resource_variable_ops",
+        "//tensorflow/cc:scope",
+        "//tensorflow/compiler/mlir/tfrt/transforms/ifrt:ifrt_types",
+        "//tensorflow/core:core_cpu_base",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core:tensorflow",
+        "//tensorflow/core/framework:tensor_matcher",
+        "//tensorflow/core/framework:tensor_testutil",
+        "//tensorflow/core/kernels:constant_op",
+        "//tensorflow/core/kernels:math",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_googletest//:gtest_main",
+        "@local_tsl//tsl/platform:errors",
+        "@local_tsl//tsl/platform:statusor",
+        "@local_xla//xla:xla_data_proto_cc",
     ],
 )
 

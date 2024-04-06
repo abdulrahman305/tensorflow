@@ -47,6 +47,7 @@ namespace {
 
 constexpr int32_t kIndexShuffleRounds = 8;
 
+constexpr const char kDatasetType[] = "GlobalShuffle";
 constexpr const char kElementCount[] = "element_count";
 constexpr const char kGlobalShuffleDataset[] = "GlobalShuffleDataset";
 constexpr const char kReshuffleEachIteration[] = "reshuffle_each_iteration";
@@ -105,7 +106,7 @@ class GlobalShuffleDatasetOp::Dataset : public DatasetBase {
   }
 
   std::string DebugString() const override {
-    return name_utils::DatasetDebugString(kGlobalShuffleDataset);
+    return name_utils::DatasetDebugString(kDatasetType);
   }
 
   int64_t CardinalityInternal(CardinalityOptions options) const override {
@@ -202,33 +203,7 @@ class GlobalShuffleDatasetOp::Dataset::Iterator
     return absl::OkStatus();
   }
 
-  absl::Status SaveInternal(SerializationContext* ctx,
-                            IteratorStateWriter* writer) override {
-    absl::MutexLock l(&mu_);
-    TF_RETURN_IF_ERROR(
-        writer->WriteScalar(prefix(), kElementCount, element_count_));
-    return absl::OkStatus();
-  }
-
-  absl::Status RestoreInternal(IteratorContext* ctx,
-                               IteratorStateReader* reader) override {
-    absl::MutexLock l(&mu_);
-    if (ctx->restored_element_count().has_value()) {
-      element_count_ = *ctx->restored_element_count();
-    } else {
-      TF_RETURN_IF_ERROR(
-          reader->ReadScalar(prefix(), kElementCount, &element_count_));
-    }
-    IteratorContext::Params params(ctx);
-    params.restored_element_count = element_count_;
-    IteratorContext ctx_copy(params);
-    TF_RETURN_IF_ERROR(RestoreInput(&ctx_copy, reader, input_impl_));
-    ctx->MergeCheckpoint(ctx_copy.checkpoint());
-    return absl::OkStatus();
-  }
-
- private:
-  IndexMapperFn GetIndexMapper(IndexMapperFn parent_index_mapper) const
+  IndexMapperFn GetIndexMapper(IndexMapperFn parent_index_mapper) const override
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
     uint32_t seed = static_cast<uint32_t>(seed_);
     uint32_t seed2 = static_cast<uint32_t>(seed2_);
@@ -259,6 +234,32 @@ class GlobalShuffleDatasetOp::Dataset::Iterator
     };
   }
 
+  absl::Status SaveInternal(SerializationContext* ctx,
+                            IteratorStateWriter* writer) override {
+    absl::MutexLock l(&mu_);
+    TF_RETURN_IF_ERROR(
+        writer->WriteScalar(prefix(), kElementCount, element_count_));
+    return absl::OkStatus();
+  }
+
+  absl::Status RestoreInternal(IteratorContext* ctx,
+                               IteratorStateReader* reader) override {
+    absl::MutexLock l(&mu_);
+    if (ctx->restored_element_count().has_value()) {
+      element_count_ = *ctx->restored_element_count();
+    } else {
+      TF_RETURN_IF_ERROR(
+          reader->ReadScalar(prefix(), kElementCount, &element_count_));
+    }
+    IteratorContext::Params params(ctx);
+    params.restored_element_count = element_count_;
+    IteratorContext ctx_copy(params);
+    TF_RETURN_IF_ERROR(RestoreInput(&ctx_copy, reader, input_impl_));
+    ctx->MergeCheckpoint(ctx_copy.checkpoint());
+    return absl::OkStatus();
+  }
+
+ private:
   const int64_t cardinality_;
 
   mutable absl::Mutex mu_;
@@ -340,8 +341,7 @@ std::unique_ptr<IteratorBase>
 GlobalShuffleDatasetOp::Dataset::MakeIteratorInternal(
     const std::string& prefix) const {
   return std::make_unique<GlobalShuffleDatasetOp::Dataset::Iterator>(
-      Iterator::Params{
-          this, name_utils::IteratorPrefix(kGlobalShuffleDataset, prefix)},
+      Iterator::Params{this, name_utils::IteratorPrefix(kDatasetType, prefix)},
       seed_generator_->get());
 }
 

@@ -30,7 +30,7 @@ limitations under the License.
 
 #include "absl/types/span.h"
 #include "third_party/nanobind/include/nanobind/nanobind.h"
-#include "tsl/python/lib/core/numpy.h"  // NOLINT
+#include "xla/tsl/python/lib/core/numpy.h"
 
 #if NPY_ABI_VERSION < 0x02000000
 #define PyDataType_ELSIZE(descr) ((descr)->elsize)
@@ -85,14 +85,18 @@ class nb_numpy_ndarray : public nanobind::object {
   static nb_numpy_ndarray ensure(nanobind::handle h,
                                  int extra_requirements = 0);
 
+  // Constructs a numpy ndarray via the PyArray_From Any API. This throws an
+  // error if an exception occurs.
+  static nb_numpy_ndarray from_any(nanobind::handle h, int extra_requirements);
+
   nb_dtype dtype() const;
-  ssize_t ndim() const;
-  const ssize_t* shape() const;
-  ssize_t shape(ssize_t dim) const;
-  const ssize_t* strides() const;
-  ssize_t strides(ssize_t dim) const;
-  ssize_t itemsize() const;
-  ssize_t size() const;
+  npy_intp ndim() const;
+  const npy_intp* shape() const;
+  npy_intp shape(npy_intp dim) const;
+  const npy_intp* strides() const;
+  npy_intp strides(npy_intp dim) const;
+  npy_intp itemsize() const;
+  npy_intp size() const;
   const void* data() const;
   void* mutable_data();
   int flags() const;

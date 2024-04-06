@@ -910,6 +910,8 @@ class ProfileResult {
     return algorithm_.has_value() &&
            elapsed_time_in_ms() != std::numeric_limits<float>::max();
   }
+  bool warmup_run_executed() const { return warmup_run_executed_; }
+  void set_warmup_run_executed(bool val) { warmup_run_executed_ = val; }
 
   AlgorithmDesc algorithm() const { return *algorithm_; }
   void set_algorithm(AlgorithmDesc val) { algorithm_ = val; }
@@ -926,6 +928,7 @@ class ProfileResult {
   // The scratch size algorithm_ requires. Currently it's only populated by
   // convolutions.
   size_t scratch_size_ = 0;
+  bool warmup_run_executed_ = false;
 };
 
 // Backend-specific data shared between repeated launches of the same
@@ -1250,6 +1253,8 @@ class VersionInfo {
   int patch_;
 };
 
+class DnnSupport;
+
 class DnnGraph {
  public:
   DnnGraph() = default;
@@ -1259,11 +1264,13 @@ class DnnGraph {
   // anything else unexpected),
   // false on expected ones (graph is valid but not supported),
   // true on success.
-  virtual absl::StatusOr<bool> Prepare() = 0;
-  virtual absl::Status Build(int64_t plan_id) = 0;
+  virtual absl::StatusOr<bool> Prepare(DnnSupport&) = 0;
+  virtual absl::Status Build(DnnSupport&, int64_t plan_id) = 0;
   virtual absl::Status Execute(Stream& stream,
                                absl::Span<DeviceMemoryBase> operands) const = 0;
 };
+
+using LazyDnnGraph = std::unique_ptr<DnnGraph>;
 
 // Suite of operations typically used for implementing Deep/Convolutional Neural
 // Nets. Note: A false return value of an operation indicates the
