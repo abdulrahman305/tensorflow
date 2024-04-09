@@ -21,6 +21,7 @@ package_group(
         "//xla:internal",
     ],
     packages = [
+        "//tensorflow/core/tfrt/ifrt/...",
         "//third_party/australis/...",
         "//third_party/openxla_pjrt_plugin/...",
         "//third_party/py/jax/...",
@@ -597,8 +598,22 @@ cc_library(
     visibility = internal_visibility([":friends"]),
     deps = [
         "@com_google_absl//absl/functional:any_invocable",
+        "@com_google_absl//absl/status",
         "@local_tsl//tsl/concurrency:async_value",
         "@local_tsl//tsl/concurrency:ref_count",
+        "@local_tsl//tsl/platform:logging",
+    ],
+)
+
+xla_cc_test(
+    name = "pjrt_future_test",
+    srcs = ["pjrt_future_test.cc"],
+    deps = [
+        ":pjrt_future",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@local_tsl//tsl/platform:test",
+        "@local_tsl//tsl/platform:test_main",
     ],
 )
 
@@ -610,6 +625,7 @@ cc_library(
         ":pjrt_client",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/types:span",
     ],
 )
 
@@ -818,7 +834,7 @@ cc_library(
     name = "host_callback",
     srcs = ["host_callback.cc"],
     hdrs = ["host_callback.h"],
-    visibility = [":friends"],
+    visibility = internal_visibility([":friends"]),
     deps = [
         ":pjrt_client",
         ":pjrt_future",

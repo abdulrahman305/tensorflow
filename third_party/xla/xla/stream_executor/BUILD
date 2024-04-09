@@ -382,7 +382,8 @@ cc_library(
 cc_library(
     name = "stream_executor_headers",
     hdrs = [
-        "stream_executor_pimpl.h",  # TODO(ezhulenev): Remove internal header
+        "stream_executor_internal.h",  # TODO(301020144): Remove internal header
+        "stream_executor_pimpl.h",  # TODO(301020144): Remove internal header
         ":stream_executor_api_headers",
         ":stream_executor_plugin_headers",
     ],
@@ -467,7 +468,6 @@ cc_library(
     name = "executor_cache",
     srcs = ["executor_cache.cc"],
     hdrs = ["executor_cache.h"],
-    visibility = ["//visibility:private"],
     deps = [
         ":platform",
         ":stream_executor_headers",
@@ -499,7 +499,6 @@ cc_library(
     name = "kernel",
     srcs = ["kernel.cc"],
     hdrs = ["kernel.h"],
-    visibility = ["//visibility:private"],
     deps = [
         ":device_memory",
         ":kernel_spec",

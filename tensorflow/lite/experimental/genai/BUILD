@@ -12,11 +12,12 @@ cc_library(
     hdrs = ["kvcache.h"],
     copts = tflite_copts(),
     deps = [
+        "//tensorflow/lite/core:subgraph",
         "//tensorflow/lite/core/c:common",
+        "//tensorflow/lite/experimental/resource",
+        "//tensorflow/lite/experimental/resource:cache_buffer",
         "//tensorflow/lite/kernels:kernel_util",
         "//tensorflow/lite/kernels/internal:tensor",
-        "//tensorflow/lite/kernels/internal:tensor_utils",
-        "//tensorflow/lite/kernels/internal:types",
         "@flatbuffers",
     ],
 )
