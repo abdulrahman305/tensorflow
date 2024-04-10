@@ -40,9 +40,9 @@ limitations under the License.
 #include "xla/stream_executor/dnn.h"
 #include "xla/stream_executor/event.h"
 #include "xla/stream_executor/fft.h"
-#include "xla/stream_executor/host_memory_allocation.h"
 #include "xla/stream_executor/kernel_spec.h"
 #include "xla/stream_executor/launch_dim.h"
+#include "xla/stream_executor/memory_allocation.h"
 #include "xla/stream_executor/module_spec.h"
 #include "xla/stream_executor/platform.h"
 #include "xla/stream_executor/stream_executor_internal.h"
@@ -175,7 +175,7 @@ class StreamExecutor {
   // Memory allocated in this manner (or allocated and registered with
   // HostMemoryRegister() is required for use in asynchronous memcpy operations,
   // such as Stream::ThenMemcpy.
-  absl::StatusOr<std::unique_ptr<HostMemoryAllocation>> HostMemoryAllocate(
+  absl::StatusOr<std::unique_ptr<MemoryAllocation>> HostMemoryAllocate(
       uint64_t size);
 
   // Synchronizes all activity occurring in the StreamExecutor's context (most
@@ -208,9 +208,9 @@ class StreamExecutor {
 
   // Blocks the caller while a data segment of the given size is copied from the
   // device source to the device destination.
-  bool SynchronousMemcpy(DeviceMemoryBase* device_dst,
-                         const DeviceMemoryBase& device_src,
-                         uint64_t size) ABSL_MUST_USE_RESULT;
+  absl::Status SynchronousMemcpy(DeviceMemoryBase* device_dst,
+                                 const DeviceMemoryBase& device_src,
+                                 uint64_t size) ABSL_MUST_USE_RESULT;
 
   // Enqueues an operation onto stream to zero out size bytes at the given
   // device memory location. Neither stream nor location may be null. Returns
@@ -439,18 +439,6 @@ class StreamExecutor {
   // fashion.
   std::unique_ptr<internal::StreamExecutorInterface> implementation_;
 
-  // Memoized BLAS support object -- we only want to create this once when asked
-  // for a BLAS interface.
-  std::unique_ptr<blas::BlasSupport> blas_ ABSL_GUARDED_BY(mu_);
-
-  // Memoized DNN support object -- we only want to create this once when asked
-  // for an DNN interface.
-  std::unique_ptr<dnn::DnnSupport> dnn_ ABSL_GUARDED_BY(mu_);
-
-  // Memoized FFT support object -- we only want to create this once when asked
-  // for a FFT interface.
-  std::unique_ptr<fft::FftSupport> fft_;
-
   // Slot to cache the owned DeviceDescription for the underlying device
   // once it has been queried from DeviceDescription().
   mutable std::unique_ptr<DeviceDescription> device_description_
@@ -534,7 +522,7 @@ ScopedDeviceMemory<ElemT>::ScopedDeviceMemory(
     : ScopedDeviceMemory(parent, parent->AllocateArray<ElemT>(values.size())) {
   if (ptr() != nullptr) {
     std::vector<ElemT> local(values);
-    if (!parent->SynchronousMemcpy(ptr(), local.data(), ptr()->size())) {
+    if (!parent->SynchronousMemcpy(ptr(), local.data(), ptr()->size()).ok()) {
       TF_CHECK_OK(Free());
     }
   }
