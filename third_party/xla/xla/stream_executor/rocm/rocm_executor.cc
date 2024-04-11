@@ -222,9 +222,7 @@ void GpuExecutor::UnloadKernel(const Kernel* kernel) {
   kernel_to_gpu_binary_.erase(gpu_binary_it);
 }
 
-absl::Status GpuExecutor::Init(int device_ordinal) {
-  device_ordinal_ = device_ordinal;
-
+absl::Status GpuExecutor::Init() {
   auto status = GpuDriver::Init();
   if (!status.ok()) {
     return status;
@@ -784,7 +782,7 @@ blas::BlasSupport* GpuExecutor::AsBlas() {
 
   PluginRegistry* registry = PluginRegistry::Instance();
   absl::StatusOr<PluginRegistry::BlasFactory> status =
-      registry->GetFactory<PluginRegistry::BlasFactory>(cuda::kCudaPlatformId);
+      registry->GetFactory<PluginRegistry::BlasFactory>(rocm::kROCmPlatformId);
   if (!status.ok()) {
     LOG(ERROR) << "Unable to retrieve BLAS factory: "
                << status.status().message();
@@ -824,7 +822,7 @@ fft::FftSupport* GpuExecutor::AsFft() {
   }
   PluginRegistry* registry = PluginRegistry::Instance();
   absl::StatusOr<PluginRegistry::FftFactory> status =
-      registry->GetFactory<PluginRegistry::FftFactory>(cuda::kCudaPlatformId);
+      registry->GetFactory<PluginRegistry::FftFactory>(rocm::kROCmPlatformId);
   if (!status.ok()) {
     LOG(ERROR) << "Unable to retrieve FFT factory: "
                << status.status().message();

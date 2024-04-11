@@ -953,9 +953,16 @@ PJRT_Error* PJRT_Memory_Kind(PJRT_Memory_Kind_Args* args) {
   PJRT_RETURN_IF_ERROR(ActualStructSizeIsGreaterOrEqual(
       "PJRT_Memory_Kind_Args", PJRT_Memory_Kind_Args_STRUCT_SIZE,
       args->struct_size));
-  args->memory_kind = args->memory->memory_space->memory_space_kind().data();
-  args->memory_kind_size =
-      args->memory->memory_space->memory_space_kind().size();
+  args->kind = args->memory->memory_space->kind().data();
+  args->kind_size = args->memory->memory_space->kind().size();
+  return nullptr;
+}
+
+PJRT_Error* PJRT_Memory_Kind_Id(PJRT_Memory_Kind_Id_Args* args) {
+  PJRT_RETURN_IF_ERROR(ActualStructSizeIsGreaterOrEqual(
+      "PJRT_Memory_Kind_Id_Args", PJRT_Memory_Kind_Id_Args_STRUCT_SIZE,
+      args->struct_size));
+  args->kind_id = args->memory->memory_space->kind_id();
   return nullptr;
 }
 
@@ -1796,10 +1803,9 @@ PJRT_Error* PJRT_Buffer_ToHostBuffer(PJRT_Buffer_ToHostBuffer_Args* args) {
 
   auto literal = std::make_unique<xla::MutableBorrowingLiteral>(
       static_cast<char*>(args->dst), host_shape);
-  xla::PjRtFuture<absl::Status> future =
-      args->src->buffer->ToLiteral(literal.get());
+  xla::PjRtFuture<> future = args->src->buffer->ToLiteral(literal.get());
 
-  args->event = new PJRT_Event{std::move(future)};
+  args->event = new PJRT_Event{std::move(future).ToStatusFuture()};
   args->event->future.OnReady(
       [literal{std::move(literal)}](absl::Status status) {
         /* To keep literal alive */
@@ -1899,9 +1905,9 @@ PJRT_Error* PJRT_CopyToDeviceStream_AddChunk(
       "PJRT_CopyToDeviceStream_AddChunk_Args",
       PJRT_CopyToDeviceStream_AddChunk_Args_STRUCT_SIZE, args->struct_size));
 
-  xla::PjRtFuture<absl::Status> future =
+  xla::PjRtFuture<> future =
       args->stream->stream->AddChunk(ConvertToCppChunk(*args->chunk));
-  args->transfer_complete = new PJRT_Event{std::move(future)};
+  args->transfer_complete = new PJRT_Event{std::move(future).ToStatusFuture()};
   return nullptr;
 }
 
@@ -2449,6 +2455,7 @@ PJRT_Api CreatePjrtApi(PJRT_Client_Create* create_fn,
       pjrt::PJRT_Client_TopologyDescription,
       /*PJRT_Executable_GetCompiledMemoryStats= */
       pjrt::PJRT_Executable_GetCompiledMemoryStats,
+      /*PJRT_Memory_Kind_Id=*/pjrt::PJRT_Memory_Kind_Id,
   };
 }
 

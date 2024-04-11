@@ -13,23 +13,23 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tsl/profiler/backends/cpu/threadpool_listener_state.h"
+#include "pybind11/pybind11.h"  // from @pybind11
+#include "pybind11/pytypes.h"  // from @pybind11
+#include "tensorflow/lite/experimental/genai/genai_ops.h"
 
-#include <atomic>
-
-namespace tsl {
-namespace profiler {
-namespace threadpool_listener {
-namespace {
-std::atomic<bool> enabled = false;
+PYBIND11_MODULE(pywrap_genai_ops, m) {
+  m.doc() = R"pbdoc(
+    pywrap_genai_ops
+    -----
+  )pbdoc";
+  m.def(
+      "GenAIOpsRegisterer",
+      [](uintptr_t resolver) {
+        tflite::ops::custom::GenAIOpsRegisterer(
+            reinterpret_cast<tflite::MutableOpResolver*>(resolver));
+      },
+      R"pbdoc(
+        GenAI op registerer function with the correct signature.
+        Registers GenAI custom ops.
+      )pbdoc");
 }
-
-bool IsEnabled() { return enabled.load(std::memory_order_acquire); }
-
-void Activate() { enabled.store(true, std::memory_order_release); }
-
-void Deactivate() { enabled.store(false, std::memory_order_release); }
-
-}  // namespace threadpool_listener
-}  // namespace profiler
-}  // namespace tsl

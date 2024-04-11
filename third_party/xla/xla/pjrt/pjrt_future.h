@@ -25,6 +25,7 @@ limitations under the License.
 
 #include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
+#include "absl/types/span.h"
 #include "tsl/concurrency/async_value.h"
 #include "tsl/concurrency/async_value_ref.h"
 #include "tsl/concurrency/ref_count.h"
@@ -39,6 +40,10 @@ namespace internal {
 template <class T>
 class PjRtFutureBase;
 }
+
+// Returns a `PjRtFuture` that will be successful if all `futures` complete
+// successfully, or return a first encountered error.
+PjRtFuture<> JoinFutures(absl::Span<const PjRtFuture<>> futures);
 
 // An RAII event that a caller can use to tell the PjRtClient about asynchronous
 // actions outside PjRt.
@@ -174,6 +179,10 @@ class PjRtFutureBase {
 
     tsl::AsyncValueRef<T> ExtractRef() && { return std::move(ref_); }
 
+    tsl::RCReference<tsl::AsyncValue> CopyRCRef() const {
+      return ref_.CopyRCRef();
+    }
+
    private:
     tsl::AsyncValueRef<T> ref_;
   };
@@ -187,7 +196,7 @@ class PjRtFutureBase {
         on_block_start_(std::move(on_block_start)),
         on_block_end_(std::move(on_block_end)) {}
 
-  tsl::AsyncValuePtr<T> promise() { return promise_.AsPtr(); }
+  tsl::AsyncValuePtr<T> promise() const { return promise_.AsPtr(); }
 
   PjRtFutureHelpers::ProfilingKeys OnBlockStart() {
     return on_block_start_ ? on_block_start_()
@@ -344,6 +353,11 @@ class PjRtFuture<void> : public internal::PjRtFutureBase<std::nullopt_t> {
    public:
     using Base::Promise::Promise;
 
+    // Returns a reference to the underlying AsyncValue that can be used to
+    // track completion of a promise. It is undefined behavior to access the
+    // value stored in the AsyncValue.
+    using Base::Promise::CopyRCRef;
+
     // Sets the promise completed. Must be called at most once.
     //
     // After Set is called, completion event will be delivered to waiters on the
@@ -399,13 +413,24 @@ class PjRtFuture<void> : public internal::PjRtFutureBase<std::nullopt_t> {
                                      : absl::OkStatus();
   }
 
+  // TODO(b/333538339): Remove when all users of PjRtFuture<Status> will be
+  // converted to PjRtFuture<>. Currently this is an escape hatch to convert
+  // implicit error of a stateless event to a stateful future.
+  PjRtFuture<absl::Status> ToStatusFuture() {
+    auto promise = PjRtFuture<absl::Status>::CreatePromise();
+    OnReady([promise](absl::Status status) mutable {
+      promise.Set(std::move(status));
+    });
+    return PjRtFuture<absl::Status>(std::move(promise));
+  }
+
   // Registers callback to be called once the future is ready.
   //
   // callback may be called on an internal system thread or the calling thread.
   // The client should avoid any potentially re-entrant API calls within the
   // callback, for example by using the callback to enqueue work on a
   // client-owned threadpool.
-  void OnReady(absl::AnyInvocable<void(absl::Status)> callback) {
+  void OnReady(absl::AnyInvocable<void(absl::Status)> callback) const {
     CHECK(Base::IsValid());
     Base::promise().AndThen(std::move(callback));
   }

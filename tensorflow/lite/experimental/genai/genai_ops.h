@@ -13,24 +13,22 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_LITE_EXPERIMENTAL_GENAI_KVCACHE_H_
-#define TENSORFLOW_LITE_EXPERIMENTAL_GENAI_KVCACHE_H_
+#ifndef TENSORFLOW_LITE_EXPERIMENTAL_GENAI_GENAI_OPS_H_
+#define TENSORFLOW_LITE_EXPERIMENTAL_GENAI_GENAI_OPS_H_
 
-#include <memory>
-#include <string>
-#include <utility>
-#include <vector>
-
-#include "tensorflow/lite/core/c/common.h"
+#include "tensorflow/lite/mutable_op_resolver.h"
 
 namespace tflite {
 namespace ops {
 namespace custom {
 
 TfLiteRegistration* Register_KV_CACHE();
+TfLiteRegistration* Register_SDPA();
+
+extern "C" void GenAIOpsRegisterer(::tflite::MutableOpResolver* resolver);
 
 }  // namespace custom
 }  // namespace ops
 }  // namespace tflite
 
-#endif  // TENSORFLOW_LITE_EXPERIMENTAL_GENAI_KVCACHE_H_
+#endif  // TENSORFLOW_LITE_EXPERIMENTAL_GENAI_GENAI_OPS_H_

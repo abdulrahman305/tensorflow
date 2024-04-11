@@ -13,24 +13,24 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_TSL_PROFILER_BACKENDS_CPU_THREADPOOL_LISTENER_STATE_H_
-#define TENSORFLOW_TSL_PROFILER_BACKENDS_CPU_THREADPOOL_LISTENER_STATE_H_
+#include "tensorflow/core/tfrt/ifrt/ifrt_serving_core_selector.h"
 
-namespace tsl {
-namespace profiler {
-namespace threadpool_listener {
+#include <cstdint>
 
-// Check if the threadpool listener is enabled.
-bool IsEnabled();
+#include "absl/strings/str_cat.h"
+#include "tsl/framework/serving_device_selector.h"
 
-// Set global state of threadpool listener to enabled.
-void Activate();
+namespace tensorflow {
+namespace ifrt_serving {
 
-// Set global state of threadpool listener to disabled.
-void Deactivate();
+IfrtServingCoreSelector::IfrtServingCoreSelector(
+    tsl::ServingDeviceSelector* device_selector)
+    : device_selector_(device_selector) {}
 
-}  // namespace threadpool_listener
-}  // namespace profiler
-}  // namespace tsl
+tsl::DeviceReservation IfrtServingCoreSelector::ReserveDevice(
+    int64_t program_id) {
+  return device_selector_->ReserveDevice(absl::StrCat(program_id));
+}
 
-#endif  // TENSORFLOW_TSL_PROFILER_BACKENDS_CPU_THREADPOOL_LISTENER_STATE_H_
+}  // namespace ifrt_serving
+}  // namespace tensorflow
