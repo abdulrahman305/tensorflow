@@ -23,6 +23,7 @@ limitations under the License.
 #include <type_traits>
 #include <utility>
 
+#include "absl/base/optimization.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
 #include "absl/types/span.h"
@@ -252,8 +253,8 @@ class PjRtFuture : public internal::PjRtFutureBase<T> {
 
     // Sets the value of the promise. Must be called at most once.
     //
-    // After Set is called, value will be delivered to waiters on the parent
-    // PjRtFuture, via blocking or callbacks.
+    // After Set is called, value will be delivered to waiters on the PjRtFuture
+    // constructed from a promise, via blocking or callbacks.
     void Set(T value) { Base::Promise::emplace(std::move(value)); }
   };
 
@@ -358,17 +359,21 @@ class PjRtFuture<void> : public internal::PjRtFutureBase<std::nullopt_t> {
     // value stored in the AsyncValue.
     using Base::Promise::CopyRCRef;
 
-    // Sets the promise completed. Must be called at most once.
+    // Sets the promise completed with a given status. Must be called at most
+    // once.
     //
     // After Set is called, completion event will be delivered to waiters on the
-    // parent PjRtFuture, via blocking or callbacks.
-    void Set() { Base::Promise::SetStateConcrete(); }
+    // PjRtFuture constructed from a promise, via blocking or callbacks.
+    void Set(absl::Status status = absl::OkStatus()) {
+      if (ABSL_PREDICT_TRUE(status.ok())) {
+        Base::Promise::SetStateConcrete();
+      } else {
+        Base::Promise::SetError(std::move(status));
+      }
+    }
 
-    // Sets the promise completed with an error. Must be called at most once.
-    //
-    // After SetError is called, completion event will be delivered to waiters
-    // on the parent PjRtFuture, via blocking or callbacks.
-    void SetError(absl::Status err) { Base::Promise::SetError(std::move(err)); }
+    // TODO(b/333538339): Remove this method in favor if Set() above.
+    void SetError(absl::Status status) { Set(std::move(status)); }
   };
 
   // Returns a Promise that can be used to construct a PjRtFuture, and then Set
@@ -380,6 +385,8 @@ class PjRtFuture<void> : public internal::PjRtFutureBase<std::nullopt_t> {
         tsl::MakeConstructedAsyncValueRef<std::nullopt_t>(std::nullopt));
   }
 
+  PjRtFuture() = default;
+
   // Constructor for an already-available PjRtFuture. OkStatus means that future
   // is already successfully completed. Error means that future is already
   // completed with an error.
@@ -389,8 +396,8 @@ class PjRtFuture<void> : public internal::PjRtFutureBase<std::nullopt_t> {
                  : tsl::MakeErrorAsyncValueRef(std::move(status)),
              /*on_block_start=*/nullptr, /*on_block_end=*/nullptr) {}
 
-  // Constructor used by clients that don't natively use TSL concurrency library
-  // and want to use the wrapped PjRtFuture<T>::Promise class.
+  // Constructor for an unavailable PjRtFuture that will be resolved later by
+  // setting the promise completed.
   //
   // on_block_start is called before Await starts to block.
   // on_block_end is called after Await finishes blocking.
@@ -422,6 +429,21 @@ class PjRtFuture<void> : public internal::PjRtFutureBase<std::nullopt_t> {
       promise.Set(std::move(status));
     });
     return PjRtFuture<absl::Status>(std::move(promise));
+  }
+
+  // TODO(b/333538339): Remove when all users of PjRtFuture<Status> will be
+  // converted to PjRtFuture<>. Currently this is an escape hatch to convert
+  // explicit error carried in a stateful future to a stateless future.
+  static PjRtFuture<> FromStatusFuture(PjRtFuture<absl::Status> future) {
+    PjRtFuture<>::Promise promise = PjRtFuture<>::CreatePromise();
+    future.OnReady([promise](absl::Status status) mutable {
+      if (status.ok()) {
+        promise.Set();
+      } else {
+        promise.SetError(std::move(status));
+      }
+    });
+    return PjRtFuture<>(std::move(promise));
   }
 
   // Registers callback to be called once the future is ready.

@@ -66,7 +66,7 @@ absl::Status ValidateSPPlatform(const SP_Platform& platform) {
   TF_RETURN_IF_ERROR(
       tensorflow::device_utils::ValidateDeviceType(platform.type));
   // `visible_device_count` could be 0 at initialization time.
-  return ::tensorflow::OkStatus();
+  return absl::OkStatus();
 }
 
 absl::Status ValidateSPPlatformFns(const SP_PlatformFns& platform_fns) {
@@ -78,33 +78,33 @@ absl::Status ValidateSPPlatformFns(const SP_PlatformFns& platform_fns) {
   TF_VALIDATE_NOT_NULL(SP_PlatformFns, platform_fns, destroy_stream_executor);
   TF_VALIDATE_NOT_NULL(SP_PlatformFns, platform_fns, create_device_fns);
   TF_VALIDATE_NOT_NULL(SP_PlatformFns, platform_fns, destroy_device_fns);
-  return ::tensorflow::OkStatus();
+  return absl::OkStatus();
 }
 
 absl::Status ValidateSPAllocatorStats(const SP_AllocatorStats& stats) {
   TF_VALIDATE_STRUCT_SIZE(SP_AllocatorStats, stats,
                           SP_ALLOCATORSTATS_STRUCT_SIZE);
   // All other fields could theoretically be zero/null.
-  return ::tensorflow::OkStatus();
+  return absl::OkStatus();
 }
 
 absl::Status ValidateSPDeviceMemoryBase(const SP_DeviceMemoryBase& mem) {
   TF_VALIDATE_STRUCT_SIZE(SP_DeviceMemoryBase, mem,
                           SP_DEVICE_MEMORY_BASE_STRUCT_SIZE);
   // All other fields could theoretically be zero/null.
-  return ::tensorflow::OkStatus();
+  return absl::OkStatus();
 }
 
 absl::Status ValidateSPDevice(const SP_Device& device) {
   TF_VALIDATE_STRUCT_SIZE(SP_Device, device, SP_DEVICE_STRUCT_SIZE);
   // All other fields could theoretically be zero/null.
-  return ::tensorflow::OkStatus();
+  return absl::OkStatus();
 }
 
 absl::Status ValidateSPDeviceFns(const SP_DeviceFns& device_fns) {
   TF_VALIDATE_STRUCT_SIZE(SP_DeviceFns, device_fns, SP_DEVICE_FNS_STRUCT_SIZE);
   // All other fields could theoretically be zero/null.
-  return ::tensorflow::OkStatus();
+  return absl::OkStatus();
 }
 
 absl::Status ValidateSPStreamExecutor(const SP_StreamExecutor& se,
@@ -140,7 +140,7 @@ absl::Status ValidateSPStreamExecutor(const SP_StreamExecutor& se,
   TF_VALIDATE_NOT_NULL(SP_StreamExecutor, se, mem_zero);
   TF_VALIDATE_NOT_NULL(SP_StreamExecutor, se, memset);
   TF_VALIDATE_NOT_NULL(SP_StreamExecutor, se, memset32);
-  return ::tensorflow::OkStatus();
+  return absl::OkStatus();
 }
 
 absl::Status ValidateSEPlatformRegistrationParams(
@@ -150,7 +150,7 @@ absl::Status ValidateSEPlatformRegistrationParams(
   TF_VALIDATE_NOT_NULL(SE_PlatformRegistrationParams, params, destroy_platform);
   TF_VALIDATE_NOT_NULL(SE_PlatformRegistrationParams, params,
                        destroy_platform_fns);
-  return ::tensorflow::OkStatus();
+  return absl::OkStatus();
 }
 #undef TF_VALIDATE_NOT_NULL
 
@@ -200,7 +200,7 @@ void HostCallbackTrampoline(void* ctx, TF_Status* status) {
   delete host_ctx;
 }
 
-class CStreamExecutor : public internal::StreamExecutorInterface {
+class CStreamExecutor : public StreamExecutorInterface {
  public:
   explicit CStreamExecutor(SP_Device device, SP_DeviceFns* device_fns,
                            SP_StreamExecutor* stream_executor,
@@ -253,9 +253,6 @@ class CStreamExecutor : public internal::StreamExecutorInterface {
   void HostMemoryDeallocate(void* mem) override {
     stream_executor_->host_memory_deallocate(&device_, mem);
   }
-
-  bool HostMemoryRegister(void* mem, uint64 size) override { return false; }
-  bool HostMemoryUnregister(void* mem) override { return false; }
 
   void* UnifiedMemoryAllocate(uint64 size) override {
     CHECK(stream_executor_->unified_memory_allocate);
@@ -310,11 +307,6 @@ class CStreamExecutor : public internal::StreamExecutorInterface {
     // functionality by allocating on host and then copying to device.
     return tsl::errors::Unimplemented(
         "SynchronousMemZero is not supported by pluggable device.");
-  }
-  absl::Status SynchronousMemSet(DeviceMemoryBase* location, int value,
-                                 uint64 size) override {
-    return tsl::errors::Unimplemented(
-        "SynchronousMemSet is not supported by pluggable device.");
   }
   absl::Status SynchronousMemcpy(DeviceMemoryBase* gpu_dst,
                                  const void* host_src, uint64 size) override {
@@ -429,7 +421,7 @@ class CStreamExecutor : public internal::StreamExecutorInterface {
   }
   absl::Status DeallocateEvent(Event* event) override {
     static_cast<CEvent*>(event->implementation())->Destroy();
-    return ::tensorflow::OkStatus();
+    return absl::OkStatus();
   }
   absl::Status RecordEvent(Stream* stream, Event* event) override {
     SP_Stream stream_handle =
@@ -577,14 +569,12 @@ class CStreamExecutor : public internal::StreamExecutorInterface {
 
   // Each call creates a new instance of the platform-specific implementation of
   // the corresponding interface type.
-  std::unique_ptr<internal::EventInterface> CreateEventImplementation()
-      override {
-    return std::unique_ptr<internal::EventInterface>(
+  std::unique_ptr<EventInterface> CreateEventImplementation() override {
+    return std::unique_ptr<EventInterface>(
         new CEvent(&device_, stream_executor_));
   }
-  std::unique_ptr<internal::StreamInterface> GetStreamImplementation()
-      override {
-    return std::unique_ptr<internal::StreamInterface>(
+  std::unique_ptr<StreamInterface> GetStreamImplementation() override {
+    return std::unique_ptr<StreamInterface>(
         new CStream(&device_, stream_executor_));
   }
 
@@ -743,6 +733,6 @@ absl::Status InitStreamExecutorPlugin(SEInitPluginFn init_fn,
       stream_executor::PlatformManager::RegisterPlatform(std::move(cplatform)));
   // TODO(annarev): Return `use_bfc_allocator` value in some way so that it is
   // available in `PluggableDeviceProcessState` once the latter is checked in.
-  return ::tensorflow::OkStatus();
+  return absl::OkStatus();
 }
 }  // namespace stream_executor

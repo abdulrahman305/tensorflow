@@ -7969,6 +7969,33 @@ ENTRY %entry {
                               m::ConstantScalar(0))));
 }
 
+TEST_F(AlgebraicSimplifierTest, GatherOfReshapeOfPad3) {
+  const char* hlo_string = R"(
+HloModule module
+
+ENTRY %entry {
+  parameter.0 = f32[2,4256]{1,0} parameter(0)
+  constant = f32[] constant(0)
+  pad.264 = f32[2,4480]{1,0} pad(parameter.0, constant), padding=0_0x0_224
+  slice.267 = f32[2,4480]{1,0} slice(pad.264), slice={[0:2], [0:4480]}
+  reshape.269 = f32[2,28,160]{2,1,0} reshape(slice.267)
+  parameter.1 = s32[27,2]{1,0} parameter(1)
+  ROOT gather.271 = f32[2,27,2,160]{3,2,1,0} gather(reshape.269, parameter.1), offset_dims={0,3}, collapsed_slice_dims={1}, start_index_map={1}, index_vector_dim=2, slice_sizes={2,1,160}
+})";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(hlo_string));
+
+  AlgebraicSimplifierOptions options;
+  AlgebraicSimplifier simplifier(options);
+  VLOG(2) << "After rewrite \n" << module->ToString();
+  auto root = module->entry_computation()->root_instruction();
+  EXPECT_THAT(
+      root,
+      GmockMatch(m::Gather(
+          m::Reshape(m::Slice(m::Pad(m::Parameter(0), m::ConstantScalar(0)))),
+          m::Parameter(1))));
+}
+
 TEST_F(AlgebraicSimplifierTest, TupleReduceReshape) {
   const char* hlo_string = R"(
 HloModule module
@@ -10949,6 +10976,20 @@ TEST_F(AlgebraicSimplifierTest, BroadcastToTranspose2) {
   HloInstruction* root = m->entry_computation()->root_instruction();
   EXPECT_THAT(root, GmockMatch(m::Transpose(m::Parameter(0))));
   EXPECT_EQ(root->dimensions(), std::vector<int64_t>({1, 0, 2}));
+}
+
+TEST_F(AlgebraicSimplifierTest, PreserveSharding) {
+  const std::string hlo_string = R"(
+  HloModule jit_matmul, entry_computation_layout={(f64[8,3]{1,0}, f64[])->f64[8,3]{1,0}}, allow_spmd_sharding_propagation_to_parameters={false,true}, allow_spmd_sharding_propagation_to_output={true}, num_partitions=2
+    ENTRY %main.4 (Arg_0.1: f64[8,3], Arg_1.2: f64[]) -> f64[8,3] {
+      %Arg_1.2 = f64[] parameter(1)
+      %Arg_0.1 = f64[8,3]{1,0} parameter(0), sharding={devices=[2,1]0,1}
+      ROOT %dot.3 = f64[8,3]{1,0} dot(f64[] %Arg_1.2, f64[8,3]{1,0} %Arg_0.1), lhs_contracting_dims={}, rhs_contracting_dims={}, metadata={op_name="jit(matmul)/jit(main)/dot_general[dimension_numbers=(((), ()), ((), ())) precision=None preferred_element_type=float64]" source_file="third_party/py/jax/tests/pjit_test.py" source_line=4021}
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(hlo_string));
+  EXPECT_TRUE(AlgebraicSimplifier(default_options_).Run(m.get()).value());
+  EXPECT_TRUE(m->entry_computation()->parameter_instruction(0)->has_sharding());
 }
 
 }  // namespace
