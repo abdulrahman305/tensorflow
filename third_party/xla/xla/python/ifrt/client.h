@@ -21,22 +21,28 @@ limitations under the License.
 #include <memory>
 #include <optional>
 #include <string>
-#include <variant>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "llvm/Support/ExtensibleRTTI.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_common.h"
+#include "xla/pjrt/pjrt_compiler.h"
 #include "xla/pjrt/pjrt_layout.h"
 #include "xla/python/ifrt/array.h"
 #include "xla/python/ifrt/compiler.h"
 #include "xla/python/ifrt/device.h"
+#include "xla/python/ifrt/dtype.h"
+#include "xla/python/ifrt/remap_plan.h"
+#include "xla/python/ifrt/shape.h"
+#include "xla/python/ifrt/sharding.h"
 #include "xla/python/ifrt/tuple.h"
 #include "xla/python/ifrt/value.h"
-#include "xla/statusor.h"
+#include "xla/service/computation_placer.h"
+#include "xla/tsl/concurrency/ref_count.h"
 
 namespace xla {
 namespace ifrt {
@@ -110,6 +116,23 @@ class Client : public llvm::RTTIExtends<Client, llvm::RTTIRoot> {
       Shape shape, std::shared_ptr<const Sharding> sharding,
       absl::Span<tsl::RCReference<Array>> arrays,
       ArrayCopySemantics semantics) = 0;
+
+  // Remaps shards across input `Array`s to create new `Array`s based on `plan`.
+  // This array remapping is a metadata-only operation that can shuffle or
+  // extract shards without changing their per-shard interpretation and causing
+  // data copy/transfer.
+  //
+  // There are constraints on `semantics`:
+  //
+  // * `ArrayCopySemantics::kAlwaysCopy` has an undefined behavior because
+  // `RemapArrays` does not copy data.
+  // * `ArrayCopySemantics::kReuseInput` is allowed only if the number of inputs
+  // is 1. This is safe because each input shard can be used only once.
+  // * `ArrayCopySemantics::kDonateInput` is always allowed.
+  virtual absl::StatusOr<std::vector<tsl::RCReference<xla::ifrt::Array>>>
+  RemapArrays(const RemapPlan& plan,
+              absl::Span<tsl::RCReference<xla::ifrt::Array>> arrays,
+              ArrayCopySemantics semantics) = 0;
 
   // Builds a tuple from a sequence of values.
   virtual absl::StatusOr<tsl::RCReference<Tuple>> MakeTuple(

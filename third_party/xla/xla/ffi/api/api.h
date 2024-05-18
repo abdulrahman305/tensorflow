@@ -19,6 +19,7 @@ limitations under the License.
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -146,15 +147,11 @@ XLA_FFI_Error* Ffi::RegisterStaticHandler(const XLA_FFI_Api* api,
                                           std::string_view platform,
                                           XLA_FFI_Handler* handler,
                                           XLA_FFI_Handler_Traits traits) {
-  // Make copies of string views to guarantee they are null terminated.
-  std::string name_str(name);
-  std::string platform_str(platform);
-
   XLA_FFI_Handler_Register_Args args;
   args.struct_size = XLA_FFI_Handler_Register_Args_STRUCT_SIZE;
   args.priv = nullptr;
-  args.name = name_str.c_str();
-  args.platform = platform_str.c_str();
+  args.name = XLA_FFI_ByteSpan{name.data(), name.size()};
+  args.platform = XLA_FFI_ByteSpan{platform.data(), platform.size()};
   args.handler = handler;
   args.traits = traits;
   return api->XLA_FFI_Handler_Register(&args);
@@ -641,9 +638,8 @@ struct AttrDecoding;
 //                                      XLA_FFI_ExecutionContext* ctx);
 //   }
 //
-// TODO(ezhulenev): Add an example for decoding opaque data passed together with
-// a handler registration (not yet implemented). Today this is only used as
-// internal implementation detail of builtin FFI handlers.
+// Second template parameter is used to conditionally enable/disable context
+// decoding specialization for a given type via SFINAE.
 template <typename T>
 struct CtxDecoding;
 
@@ -824,18 +820,32 @@ class Unexpected;
 template <typename T, typename E>
 class Expected {
  public:
-  Expected(T value) : data_(std::move(value)) {}  // NOLINT
-  Expected(Unexpected<E> u);                      // NOLINT
+  constexpr Expected(T value) : data_(std::move(value)) {}  // NOLINT
+  constexpr Expected(Unexpected<E> u);                      // NOLINT
 
-  operator bool() const {  // NOLINT
+  constexpr operator bool() const {  // NOLINT
     return has_value();
   }
-  T operator*() const { return value(); }
-  T* operator->() const { return &value(); }
 
-  bool has_value() const { return std::holds_alternative<T>(data_); }
-  T value() const { return std::get<T>(data_); }
-  E error() const { return std::get<E>(data_); }
+  constexpr T& operator*() & { return value(); }
+  constexpr const T& operator*() const& { return value(); }
+  constexpr T&& operator*() && { return std::move(value()); }
+  constexpr const T& operator*() const&& { return std::move(value()); }
+
+  constexpr T* operator->() { return &value(); }
+  constexpr const T* operator->() const { return &value(); }
+
+  constexpr bool has_value() const { return std::holds_alternative<T>(data_); }
+
+  constexpr T& value() & { return std::get<T>(data_); }
+  constexpr const T& value() const& { return std::get<T>(data_); }
+  constexpr T&& value() && { return std::get<T>(std::move(data_)); }
+  constexpr const T& value() const&& { return std::get<T>(std::move(data_)); }
+
+  constexpr E& error() & { return std::get<E>(data_); }
+  constexpr const E& error() const& { return std::get<E>(data_); }
+  constexpr E&& error() && { return std::get<E>(std::move(data_)); }
+  constexpr const E&& error() const&& { return std::get<E>(std::move(data_)); }
 
  private:
   std::variant<T, E> data_;
@@ -844,7 +854,7 @@ class Expected {
 template <typename E>
 class Unexpected {
  public:
-  explicit Unexpected(E error) : error_(std::move(error)) {}
+  explicit constexpr Unexpected(E error) : error_(std::move(error)) {}
 
  private:
   template <typename, typename>
@@ -856,7 +866,8 @@ class Unexpected {
 Unexpected(const char*) -> Unexpected<std::string>;
 
 template <typename T, typename E>
-Expected<T, E>::Expected(Unexpected<E> u) : data_(std::move(u.error_)) {}
+constexpr Expected<T, E>::Expected(Unexpected<E> u)
+    : data_(std::move(u.error_)) {}
 
 //===----------------------------------------------------------------------===//
 // Type-safe wrapper for accessing a variable number of arguments.
@@ -1320,6 +1331,10 @@ XLA_FFI_REGISTER_SCALAR_ATTR_DECODING(uint32_t, XLA_FFI_DataType_U32);
 XLA_FFI_REGISTER_SCALAR_ATTR_DECODING(uint64_t, XLA_FFI_DataType_U64);
 XLA_FFI_REGISTER_SCALAR_ATTR_DECODING(float, XLA_FFI_DataType_F32);
 XLA_FFI_REGISTER_SCALAR_ATTR_DECODING(double, XLA_FFI_DataType_F64);
+XLA_FFI_REGISTER_SCALAR_ATTR_DECODING(std::complex<float>,
+                                      XLA_FFI_DataType_C64);
+XLA_FFI_REGISTER_SCALAR_ATTR_DECODING(std::complex<double>,
+                                      XLA_FFI_DataType_C128);
 
 #undef XLA_FFI_REGISTER_SCALAR_ATTR_DECODING
 
