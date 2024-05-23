@@ -44,6 +44,7 @@ limitations under the License.
 #include "xla/service/pattern_matcher_gmock.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/stream_executor/device_memory_allocator.h"
+#include "xla/stream_executor/stream_executor_memory_allocator.h"
 #include "xla/test.h"
 #include "xla/tests/filecheck.h"
 #include "xla/tests/verified_hlo_module.h"
@@ -235,8 +236,7 @@ ENTRY bf16gemm {
 }
   )";
 
-  if (!IsCuda() ||
-      HasCudaComputeCapability(se::CudaComputeCapability::Hopper())) {
+  if (HasCudaComputeCapability(se::CudaComputeCapability::Hopper())) {
     // The Hopper optimized HLO has a BF16 multiply instruction since Hopper has
     // native BF16 multiply support.
     MatchOptimizedHlo(hlo_text, R"(

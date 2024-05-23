@@ -105,13 +105,18 @@ cc_library(
     hdrs = ["copy.h"],
     deps = [
         ":fusion_emitter",
+        "//xla:shape_util",
         "//xla/hlo/ir:hlo",
         "//xla/service:buffer_assignment",
+        "//xla/service/gpu:hlo_fusion_analysis",
+        "//xla/service/gpu:hlo_traversal",
         "//xla/service/gpu:ir_emitter_context",
         "//xla/service/gpu/runtime:copy_thunk",
         "//xla/service/gpu/runtime:thunk",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
-        "@llvm-project//mlir:IR",
+        "@local_tsl//tsl/platform:errors",
+        "@local_tsl//tsl/platform:statusor",
     ],
 )
 
@@ -701,6 +706,7 @@ xla_test(
         "//xla/service/gpu/runtime:thunk",
         "//xla/service/gpu/tests:gpu_codegen_test",
         "//xla/stream_executor:stream_executor_headers",
+        "//xla/stream_executor:stream_executor_memory_allocator",
         "//xla/tests:filecheck",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -865,7 +871,6 @@ cc_library(
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
@@ -875,7 +880,9 @@ cc_library(
         "@llvm-project//mlir:GPUDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:Support",
         "@llvm-project//mlir:TensorDialect",
+        "@llvm-project//mlir:VectorDialect",
     ],
 )
 

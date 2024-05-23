@@ -31,6 +31,8 @@ function is_linux_cpu_arm64_job() {
 }
 
 function pull_docker_image_with_retries() {
+  # Configure Artifact Registry permissions.
+  gcloud auth configure-docker us-central1-docker.pkg.dev
   # Pull the container (in case it was updated since the instance started) and
   # store its SHA in the Sponge log.
   docker pull "$DOCKER_IMAGE" || sleep 15
@@ -72,7 +74,7 @@ else
     TARGET_FILTERS="$TARGET_FILTERS -//xla/service/gpu/..."
 
     if is_linux_cpu_arm64_job ; then
-        TAGS_FILTER="$TAGS_FILTER,-no_aarch64"
+        TAGS_FILTER="$TAGS_FILTER,-not_run:arm"
         RBE_FLAGS="--config=rbe_cross_compile_linux_arm64_xla --jobs=150"
     else
         RBE_FLAGS="--config=rbe_linux_cpu --jobs=150"

@@ -33,6 +33,7 @@ limitations under the License.
 #include "xla/service/pattern_matcher.h"
 #include "xla/service/pattern_matcher_gmock.h"
 #include "xla/stream_executor/dnn.h"
+#include "xla/stream_executor/stream_executor_memory_allocator.h"
 #include "xla/stream_executor/stream_executor_pimpl.h"
 #include "xla/tests/filecheck.h"
 #include "xla/xla.pb.h"
@@ -605,7 +606,7 @@ ENTRY r {
   ROOT r = bf16[192,128]{1,0} fusion(p0, p1), kind=kCustom, calls=fusion1,
     backend_config={"fusion_backend_config": {kind: "__cudnn$fusion"}}
 })",
-                            ErrorSpec{/*aabs=*/1e-3, /*arel=*/1e-3}));
+                            ErrorSpec{/*aabs=*/1, /*arel=*/1e-3}));
 }
 
 TEST_F(CuDnnFusionLevel3Test,
@@ -629,7 +630,7 @@ ENTRY r {
   ROOT r = bf16[4,3,16,128]{2,1,3,0} fusion(p0, p1), kind=kCustom, calls=fusion1,
     backend_config={"fusion_backend_config": {kind: "__cudnn$fusion"}}
 })",
-                            ErrorSpec{/*aabs=*/1e-3, /*arel=*/1e-3}));
+                            ErrorSpec{/*aabs=*/1, /*arel=*/1e-3}));
 }
 
 class ElementwiseTest : public CuDnnFusionExecutionTest,

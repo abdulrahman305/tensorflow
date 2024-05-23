@@ -767,7 +767,10 @@ cc_library(
         "@local_tsl//tsl/profiler/lib:scoped_annotation",
         "//xla/tsl/util/proto:proto_utils",
         "//xla/service/gpu:hlo_traversal",
-    ]) + ["@local_tsl//tsl/platform:path"],
+    ]) + [
+        "//xla/stream_executor:stream_executor_memory_allocator",
+        "@local_tsl//tsl/platform:path",
+    ],
 )
 
 xla_test(
@@ -1610,7 +1613,7 @@ cc_library(
         "@local_tsl//tsl/platform:path",
         "@local_tsl//tsl/platform:protobuf",
         "@local_tsl//tsl/platform:statusor",
-    ]),
+    ]) + ["//xla/stream_executor:stream_executor_memory_allocator"],
 )
 
 # We need a separate target, as runtime executable cannot depend on compilation
@@ -2308,8 +2311,8 @@ xla_cc_test(
     name = "instruction_fusion_test",
     srcs = ["instruction_fusion_test.cc"],
     tags = [
-        "no_aarch64",
         "nomsan",
+        "not_run:arm",
     ],
     deps = [
         ":gpu_device_info_for_tests",
@@ -4549,6 +4552,7 @@ cc_library(
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log:check",
+        "@llvm-project//llvm:Support",
     ],
 )
 

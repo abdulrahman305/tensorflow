@@ -120,11 +120,21 @@ class Ffi {
   virtual ~Ffi() = default;
   virtual XLA_FFI_Error* Call(const XLA_FFI_CallFrame* call_frame) const = 0;
 
-  // Registers handler with an XLA runtime under the given name on a given
-  // platform.
+  // Registers FFI handler bundle with an XLA runtime under the given name on a
+  // given platform.
   static inline XLA_FFI_Error* RegisterStaticHandler(
       const XLA_FFI_Api* api, std::string_view name, std::string_view platform,
-      XLA_FFI_Handler* handler, XLA_FFI_Handler_Traits traits = 0);
+      XLA_FFI_Handler_Bundle bundle, XLA_FFI_Handler_Traits traits = 0);
+
+  // Registers FFI execute handler with an XLA runtime under the given name on a
+  // given platform.
+  static inline XLA_FFI_Error* RegisterStaticHandler(
+      const XLA_FFI_Api* api, std::string_view name, std::string_view platform,
+      XLA_FFI_Handler* execute, XLA_FFI_Handler_Traits traits = 0) {
+    return RegisterStaticHandler(
+        api, name, platform, XLA_FFI_Handler_Bundle{nullptr, nullptr, execute},
+        traits);
+  }
 
  protected:
   template <typename... Args>
@@ -145,14 +155,14 @@ class Ffi {
 XLA_FFI_Error* Ffi::RegisterStaticHandler(const XLA_FFI_Api* api,
                                           std::string_view name,
                                           std::string_view platform,
-                                          XLA_FFI_Handler* handler,
+                                          XLA_FFI_Handler_Bundle bundle,
                                           XLA_FFI_Handler_Traits traits) {
   XLA_FFI_Handler_Register_Args args;
   args.struct_size = XLA_FFI_Handler_Register_Args_STRUCT_SIZE;
   args.priv = nullptr;
   args.name = XLA_FFI_ByteSpan{name.data(), name.size()};
   args.platform = XLA_FFI_ByteSpan{platform.data(), platform.size()};
-  args.handler = handler;
+  args.bundle = bundle;
   args.traits = traits;
   return api->XLA_FFI_Handler_Register(&args);
 }
@@ -1296,6 +1306,46 @@ inline std::ostream& operator<<(std::ostream& os, const XLA_FFI_AttrType type) {
       return os << "scalar";
     case XLA_FFI_AttrType_STRING:
       return os << "string";
+  }
+}
+
+inline std::ostream& operator<<(std::ostream& os,
+                                const XLA_FFI_DataType dtype) {
+  switch (dtype) {
+    case XLA_FFI_DataType_INVALID:
+      return os << "INVALID";
+    case XLA_FFI_DataType_PRED:
+      return os << "PRED";
+    case XLA_FFI_DataType_S8:
+      return os << "S8";
+    case XLA_FFI_DataType_S16:
+      return os << "S16";
+    case XLA_FFI_DataType_S32:
+      return os << "S32";
+    case XLA_FFI_DataType_S64:
+      return os << "S64";
+    case XLA_FFI_DataType_U8:
+      return os << "U8";
+    case XLA_FFI_DataType_U16:
+      return os << "U16";
+    case XLA_FFI_DataType_U32:
+      return os << "U32";
+    case XLA_FFI_DataType_U64:
+      return os << "U64";
+    case XLA_FFI_DataType_F16:
+      return os << "F16";
+    case XLA_FFI_DataType_F32:
+      return os << "F32";
+    case XLA_FFI_DataType_F64:
+      return os << "F64";
+    case XLA_FFI_DataType_BF16:
+      return os << "BF16";
+    case XLA_FFI_DataType_C64:
+      return os << "C64";
+    case XLA_FFI_DataType_C128:
+      return os << "C128";
+    case XLA_FFI_DataType_TOKEN:
+      return os << "TOKEN";
   }
 }
 
