@@ -31,8 +31,6 @@ function is_linux_cpu_arm64_job() {
 }
 
 function pull_docker_image_with_retries() {
-  # Configure Artifact Registry permissions.
-  gcloud auth configure-docker us-central1-docker.pkg.dev
   # Pull the container (in case it was updated since the instance started) and
   # store its SHA in the Sponge log.
   docker pull "$DOCKER_IMAGE" || sleep 15
@@ -41,6 +39,11 @@ function pull_docker_image_with_retries() {
   echo "TF_INFO_DOCKER_IMAGE,$DOCKER_IMAGE" >> "$KOKORO_ARTIFACTS_DIR/custom_sponge_config.csv"
   echo "TF_INFO_DOCKER_SHA,$(docker pull "$DOCKER_IMAGE" | sed -n '/Digest:/s/Digest: //g p')" >> "$KOKORO_ARTIFACTS_DIR/custom_sponge_config.csv"
 }
+
+# TODO(b/338885148): Remove this once the TF containers have cuDNN 9
+if is_linux_gpu_job ; then
+  DOCKER_IMAGE="gcr.io/tensorflow-sigs/build@sha256:dddcaf30321e9007103dce75c51b83fea3c06de462fcf41e7c6ae93f37fc3545"
+fi
 
 pull_docker_image_with_retries
 # Start a container in the background
@@ -66,6 +69,13 @@ if is_linux_gpu_job ; then
 
     ADDITIONAL_FLAGS="$ADDITIONAL_FLAGS --run_under=//tools/ci_build/gpu_build:parallel_gpu_execute"
     RBE_FLAGS="--config=rbe_linux_cuda_nvcc --jobs=150"
+    (
+      #TODO(b/338885148): Remove this block after TF was updated to cuDNN 9
+      cd ${KOKORO_ARTIFACTS_DIR}/github/xla
+      sed -i 's/@sigbuild-r2\.17-clang_/@sigbuild-r2.17-clang-cudnn9_/g' .bazelrc
+      echo "The following changes were made:"
+      git diff -- .bazelrc || true
+    )
     echo "***NOTE: nvidia-smi lists the highest CUDA version the driver supports, which may be different than the version of CUDA actually used!!***"
     nvidia-smi
 else

@@ -116,8 +116,10 @@ xla_cc_test(
         "//xla/tests:hlo_test_base",
         "//xla/tests:xla_internal_test_main",
         "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:string_view",
+        "@com_google_googletest//:gtest_main",
         "@local_tsl//tsl/platform:statusor",
     ],
 )
@@ -928,14 +930,12 @@ xla_test(
         "gpu_a100",
         "gpu_h100",
     ],
-    tags = ["no_oss"],  # b/340304923
     deps = if_cuda_is_configured(
         [
             ":gpu_codegen_test",
             "@com_google_googletest//:gtest",
             "@com_google_absl//absl/strings",
             "@com_google_absl//absl/types:span",
-            "//third_party/half:includes",
             "//xla:literal",
             "//xla:literal_util",
             "//xla/tests:xla_internal_test_main",
