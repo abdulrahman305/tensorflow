@@ -19,12 +19,12 @@ limitations under the License.
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
 #include "absl/container/inlined_vector.h"
 #include "absl/memory/memory.h"
-#include "absl/status/status.h"
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
 #include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
@@ -37,6 +37,7 @@ limitations under the License.
 #include "xla/stream_executor/host/host_kernel_c_api.h"
 #include "xla/stream_executor/launch_dim.h"
 #include "xla/tsl/concurrency/async_value_ref.h"
+#include "xla/util.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/logging.h"
 #include "tsl/platform/statusor.h"
@@ -47,24 +48,28 @@ namespace xla::cpu {
 absl::StatusOr<std::unique_ptr<KernelThunk>> KernelThunk::Create(
     Info info, absl::Span<const BufferAllocation::Slice> arguments_buffers,
     absl::Span<const BufferAllocation::Slice> results_buffers,
-    std::string kernel_name, se::ThreadDim thread_dim) {
-  return absl::WrapUnique(new KernelThunk(std::move(info), arguments_buffers,
-                                          results_buffers,
-                                          std::move(kernel_name), thread_dim));
+    std::string kernel_name, se::ThreadDim thread_dim,
+    std::optional<int64_t> min_alignment) {
+  return absl::WrapUnique(
+      new KernelThunk(std::move(info), arguments_buffers, results_buffers,
+                      std::move(kernel_name), thread_dim, min_alignment));
 }
 
 KernelThunk::KernelThunk(
     Info info, absl::Span<const BufferAllocation::Slice> arguments_buffers,
     absl::Span<const BufferAllocation::Slice> results_buffers,
-    std::string kernel_name, se::ThreadDim thread_dim)
+    std::string kernel_name, se::ThreadDim thread_dim,
+    std::optional<int64_t> min_alignment)
     : Thunk(Kind::kKernel, std::move(info)),
       arguments_buffers_(arguments_buffers.begin(), arguments_buffers.end()),
       results_buffers_(results_buffers.begin(), results_buffers.end()),
       kernel_name_(std::move(kernel_name)),
       thread_dim_(thread_dim),
+      min_alignment_(min_alignment),
       kernel_ptr_(nullptr) {}
 
-absl::Status KernelThunk::Execute(const ExecuteParams& params) {
+tsl::AsyncValueRef<Thunk::ExecuteEvent> KernelThunk::Execute(
+    const ExecuteParams& params) {
   tsl::profiler::TraceMe trace([&] { return TraceMeEncode(); });
 
   VLOG(3) << absl::StreamFormat(
@@ -94,6 +99,21 @@ absl::Status KernelThunk::Execute(const ExecuteParams& params) {
                                   buffers_data.back().opaque());
   }
 
+  // Check that all buffers are aligned to the minimum alignment. We codegen
+  // with the assumption that all buffers are aligned, and if they are not, we
+  // will crash with a segmentation fault, or worse, produce incorrect results.
+  if (min_alignment_.has_value()) {
+    for (int64_t i = 0; i < buffers_data.size(); ++i) {
+      se::DeviceMemoryBase& data = buffers_data[i];
+      if (reinterpret_cast<uintptr_t>(data.opaque()) % *min_alignment_ != 0) {
+        return Internal(
+            "Host kernel %s buffer argument #%d (%p) is not aligned to a "
+            "required minimum alignment of %d bytes",
+            info().op_name, i, data.opaque(), *min_alignment_);
+      }
+    }
+  }
+
   // TODO(ezhulenev): Kernel ptr should be loaded as a part of Thunk
   // initialization stage.
   SE_HOST_Kernel* kernel_ptr = kernel_ptr_.load();
@@ -105,30 +125,21 @@ absl::Status KernelThunk::Execute(const ExecuteParams& params) {
     kernel_ptr_.store(kernel_ptr);
   }
 
-  // TODO(ezhulenev): Instead of using HostKernel directly we should be going
-  // through the stream executor APIs.
   se::host::HostKernel kernel(buffers_data.size(), kernel_ptr, nullptr);
 
-  if (params.intra_op_threadpool == nullptr) {
-    TF_RETURN_IF_ERROR(kernel.Launch(thread_dim_, buffers_data));
-
-  } else {
-    tsl::AsyncValueRef<se::host::HostKernel::CompletionEvent> event =
-        kernel.Launch(thread_dim_, buffers_data, [&](auto task) {
-          params.intra_op_threadpool->getPool()->Schedule(
-              ToCopyableTask(std::move(task)));
-        });
-
-    // TODO(ezhulenev): We have to be async all the way throughout all the
-    // levels of XLA:CPU runtime as we don't want to repeat inter/intra op
-    // threadpool mistakes of TensorFlow. Figure out how to propagate async
-    // events to ThunkExecutor.
-    tsl::BlockUntilReady(event);
-
-    if (event.IsError()) return event.GetError();
+  // If intra-op thread pool is not nullptr, we launch HostKernel in async mode
+  // by scheduling tasks into it. HostKernel launch completion will
+  // automatically signal KernelThunk execute completion.
+  if (params.intra_op_threadpool) {
+    return kernel.Launch(thread_dim_, buffers_data,
+                         [&params](se::host::HostKernel::Task task) {
+                           params.intra_op_threadpool->getPool()->Schedule(
+                               ToCopyableTask(std::move(task)));
+                         });
   }
 
-  return absl::OkStatus();
+  TF_RETURN_IF_ERROR(kernel.Launch(thread_dim_, buffers_data));
+  return OkExecuteEvent();
 }
 
 KernelThunk::BufferUses KernelThunk::buffer_uses() const {

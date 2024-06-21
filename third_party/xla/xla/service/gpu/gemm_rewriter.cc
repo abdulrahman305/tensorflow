@@ -35,6 +35,7 @@ limitations under the License.
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "xla/hlo/evaluator/hlo_evaluator.h"
@@ -57,7 +58,6 @@ limitations under the License.
 #include "xla/shape_util.h"
 #include "xla/status.h"
 #include "xla/status_macros.h"
-#include "xla/statusor.h"
 #include "xla/stream_executor/blas.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/stream_executor/gpu/gpu_blas_lt.h"
@@ -2040,9 +2040,10 @@ class GemmRewriterVisitor : public DfsHloRewriteVisitor {
         {ComputationType::kF64, DataType::kComplexDouble, PrimitiveType::C128,
          PrimitiveType::C128, DataType::kComplexDouble},
     };
-    if (absl::c_linear_search(supported_cublas_type_combinations,
-                              std::make_tuple(compute_type, scale_type, a_dtype,
-                                              b_dtype, output_dtype))) {
+    if (IsCuda(gpu_version_) &&
+        absl::c_linear_search(supported_cublas_type_combinations,
+                              std::tuple{compute_type, scale_type, a_dtype,
+                                         b_dtype, output_dtype})) {
       return true;
     }
     const TypeCombinations supported_hipblas_type_combinations = {
@@ -2078,9 +2079,10 @@ class GemmRewriterVisitor : public DfsHloRewriteVisitor {
         {ComputationType::kF32, DataType::kFloat, PrimitiveType::F8E5M2FNUZ,
          PrimitiveType::F8E4M3FNUZ, DataType::kFloat},
     };
-    if (absl::c_linear_search(supported_hipblas_type_combinations,
-                              std::make_tuple(compute_type, scale_type, a_dtype,
-                                              b_dtype, output_dtype))) {
+    if (IsRocm(gpu_version_) &&
+        absl::c_linear_search(supported_hipblas_type_combinations,
+                              std::tuple{compute_type, scale_type, a_dtype,
+                                         b_dtype, output_dtype})) {
       return true;
     }
     const TypeCombinations supported_type_combinations = {

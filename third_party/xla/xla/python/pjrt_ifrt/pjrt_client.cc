@@ -493,7 +493,8 @@ absl::StatusOr<Device*> PjRtClient::LookupAddressableDevice(
     int local_hardware_id) const {
   DCHECK(this);
   TF_ASSIGN_OR_RETURN(xla::PjRtDevice * pjrt_device,
-                      pjrt_client_->LookupAddressableDevice(local_hardware_id));
+                      pjrt_client_->LookupAddressableDevice(
+                          xla::PjRtLocalDeviceId(local_hardware_id)));
   return LookupPjRtDevice(pjrt_device);
 }
 
@@ -672,6 +673,36 @@ PjRtClient::AssembleArrayFromSingleDeviceArrays(
   }
   return PjRtArray::Create(this, dtype, std::move(shape), std::move(sharding),
                            std::move(buffers));
+}
+
+absl::StatusOr<std::vector<tsl::RCReference<Array>>> PjRtClient::CopyArrays(
+    absl::Span<tsl::RCReference<Array>> arrays,
+    std::optional<DeviceList> devices, std::optional<MemoryKind> memory_kind,
+    ArrayCopySemantics semantics) {
+  if (arrays.empty()) {
+    return std::vector<tsl::RCReference<Array>>();
+  }
+
+  for (int i = 1; i < arrays.size(); ++i) {
+    const auto& sharding = arrays[i]->sharding();
+    if (sharding.devices() != arrays[0]->sharding().devices() ||
+        sharding.memory_kind() != arrays[0]->sharding().memory_kind()) {
+      return absl::InvalidArgumentError(
+          "CopyArrays only supports arrays with the same device list and "
+          "memory kind");
+    }
+  }
+
+  std::vector<tsl::RCReference<Array>> new_arrays;
+  new_arrays.reserve(arrays.size());
+  for (const auto& array : arrays) {
+    TF_ASSIGN_OR_RETURN(
+        auto new_sharding,
+        array->sharding().WithDeviceAssignment(devices, memory_kind));
+    TF_ASSIGN_OR_RETURN(new_arrays.emplace_back(),
+                        array->Reshard(std::move(new_sharding), semantics));
+  }
+  return new_arrays;
 }
 
 absl::StatusOr<std::vector<tsl::RCReference<xla::ifrt::Array>>>

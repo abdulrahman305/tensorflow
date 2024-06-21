@@ -19,6 +19,7 @@ limitations under the License.
 #include <functional>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -39,11 +40,18 @@ limitations under the License.
 
 namespace xla {
 
-absl::StatusOr<std::unique_ptr<xla::PjRtClient>> GetPjRtClient(
-    absl::string_view device_type, absl::string_view address, int node_id,
-    int num_nodes, bool enable_mock_nccl,
-    std::unique_ptr<xla::DistributedRuntimeService>& service,
-    std::shared_ptr<xla::KeyValueStoreInterface>& kv_store);
+struct PjRtEnvironment {
+  std::unique_ptr<xla::PjRtClient> client;
+  std::unique_ptr<xla::DistributedRuntimeService> service;
+  std::shared_ptr<xla::KeyValueStoreInterface> kv_store;
+  std::shared_ptr<xla::DistributedRuntimeClient> distributed_client;
+};
+
+absl::StatusOr<PjRtEnvironment> GetPjRtClient(absl::string_view device_type,
+                                              absl::string_view address,
+                                              int node_id, int num_nodes,
+                                              bool enable_mock_nccl,
+                                              absl::Duration init_timeout);
 
 // Supported input formats for the input HLO module.
 enum class InputFormat {
@@ -311,7 +319,8 @@ class FunctionalHloRunner {
   static absl::StatusOr<PerDeviceLiteralVecType> Run(
       PjRtClient& client, PjRtLoadedExecutable* executable,
       const PerDeviceLiteralVecType& arguments,
-      const RunningOptions& running_options);
+      const RunningOptions& running_options,
+      std::minstd_rand0* engine = nullptr);
 
   static absl::StatusOr<std::unique_ptr<HloModule>> ReadModuleFromHloTextFile(
       absl::string_view hlo_file);
@@ -371,7 +380,8 @@ class FunctionalHloRunner {
   CreateArgumentsOnDevice(PjRtClient& client,
                           const PjRtLoadedExecutable* executable,
                           const RunningOptions& running_options,
-                          bool flatten_arguments = false);
+                          bool flatten_arguments = false,
+                          std::minstd_rand0* engine = nullptr);
 
   // Creates uninitialized arguments to run the given executable.
   static absl::StatusOr<std::vector<std::vector<std::unique_ptr<PjRtBuffer>>>>

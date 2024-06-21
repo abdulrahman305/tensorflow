@@ -58,6 +58,8 @@ namespace tflite {
 namespace xnnpack {
 namespace {
 
+constexpr char kOdmlSDPA[] = "odml.scaled_dot_product_attention";
+
 template <typename T>
 void SafeCopyCustomData(const TfLiteNode& node, T* target) {
   const size_t safe_size =
@@ -2914,6 +2916,25 @@ class Subgraph {
       case kTfLiteBuiltinVarHandle:
         return VisitVarHandleNode(subgraph, delegate, logging_context,
                                   node_index, node);
+      case kTfLiteBuiltinStablehloComposite: {
+        const TfLiteStablehloCompositeParams* composite_params =
+            static_cast<const TfLiteStablehloCompositeParams*>(
+                node->builtin_data);
+        if (strcmp(composite_params->name, kOdmlSDPA) == 0) {
+          return VisitScaledDotAttentionCompositeNode(
+              subgraph, delegate, context, node_index, node, context->tensors,
+              composite_params->attributes, composite_params->attributes_size,
+              input_output_tensors);
+        } else {
+#ifdef XNNPACK_DELEGATE_ENABLE_LOGGING
+          TF_LITE_KERNEL_LOG(context,
+                             "unsupported stablehlo.composite operator type "
+                             "\"%s\" in node #%d",
+                             composite_params->name, node_index);
+#endif  // XNNPACK_DELEGATE_ENABLE_LOGGING
+        }
+        return kTfLiteError;
+      }
       case kTfLiteBuiltinCustom: {
         if (strcmp(registration->custom_name, "Convolution2DTransposeBias") ==
             0) {
@@ -2938,28 +2959,11 @@ class Subgraph {
           return VisitMediaPipeUnpoolingNode(
               subgraph, delegate, context, node_index, node, context->tensors,
               &pool_params, input_output_tensors);
-        } else if (strcmp(registration->custom_name,
-                          "odml.scaled_dot_product_attention") == 0) {
-          const float* scale_val = nullptr;
-          // ensure 28 bytes as we expect
-          // TODO(b/339106680): this reading method may not work for every case.
-          if (node->custom_initial_data_size == 28 && sizeof(float) == 4) {
-            // Custom data here is a flexbuffer map.
-            // byte_width is 4 for our map.
-            // First 5 values are "scale", then is the float value, and last is
-            // flexbuffer metadata.
-            const uint8_t* buffer =
-                reinterpret_cast<const uint8_t*>(node->custom_initial_data);
-            if (strcmp("scale", reinterpret_cast<const char*>(buffer)) == 0) {
-              constexpr size_t kScaleValOffset = 20;
-              scale_val =
-                  reinterpret_cast<const float*>(buffer + kScaleValOffset);
-            }
-          }
-
-          return VisitDotAttentionNode(subgraph, delegate, context, node_index,
-                                       node, context->tensors, scale_val,
-                                       input_output_tensors);
+        } else if (strcmp(registration->custom_name, kOdmlSDPA) == 0) {
+          return VisitScaledDotAttentionCompositeNode(
+              subgraph, delegate, context, node_index, node, context->tensors,
+              reinterpret_cast<const uint8_t*>(node->custom_initial_data),
+              node->custom_initial_data_size, input_output_tensors);
         } else {
 #ifdef XNNPACK_DELEGATE_ENABLE_LOGGING
           TF_LITE_KERNEL_LOG(
@@ -4769,9 +4773,6 @@ class Subgraph {
     TF_LITE_ENSURE_STATUS(
         CheckTensorFloat32OrQUInt8Type(delegate, logging_context, input_tensor,
                                        node->inputs->data[0], node_index));
-    TF_LITE_ENSURE_STATUS(CheckTensorShape(logging_context, input_tensor, 4,
-                                           node->inputs->data[0],
-                                           BuiltinOperator_MEAN, node_index));
     TF_LITE_ENSURE_STATUS(
         CheckTensorNonDynamicAllocation(delegate, logging_context, input_tensor,
                                         node->inputs->data[0], node_index));
@@ -4789,48 +4790,58 @@ class Subgraph {
     const int32_t* axes_data =
         reinterpret_cast<const int32_t*>(axes_tensor.data.data);
     const int num_reduction_axes = NumElements(&axes_tensor);
-    switch (num_reduction_axes) {
-      case 1:
-        if (axes_data[0] != 2) {
-          TF_LITE_MAYBE_KERNEL_LOG(
-              logging_context,
-              "unsupported MEAN reduction along non-spatial "
-              "axis %d in node %d",
-              axes_data[0], node_index);
-          return kTfLiteError;
-        }
-        break;
-      case 2:
-        if (std::min(axes_data[0], axes_data[1]) != 1 ||
-            std::max(axes_data[0], axes_data[1]) != 2) {
-          TF_LITE_MAYBE_KERNEL_LOG(
-              logging_context,
-              "unsupported MEAN reduction along non-spatial "
-              "axes %d and %d in node %d",
-              std::min(axes_data[0], axes_data[1]),
-              std::max(axes_data[0], axes_data[1]), node_index);
-          return kTfLiteError;
-        }
-        break;
-      default:
-        TF_LITE_MAYBE_KERNEL_LOG(
-            logging_context,
-            "unsupported MEAN reduction along %d axes in node %d",
-            SizeOfDimension(&axes_tensor, 0), node_index);
-        return kTfLiteError;
+    bool all_reductions_supported = false;
+    if (input_tensor.type == kTfLiteFloat32) {
+      all_reductions_supported = true;
+    } else {
+      TF_LITE_ENSURE_STATUS(CheckTensorShape(logging_context, input_tensor, 4,
+                                             node->inputs->data[0],
+                                             BuiltinOperator_MEAN, node_index));
     }
-
     const TfLiteTensor& output_tensor = tensors[node->outputs->data[0]];
     TF_LITE_ENSURE_STATUS(
         CheckTensorFloat32OrQUInt8Type(delegate, logging_context, output_tensor,
                                        node->outputs->data[0], node_index));
-    int expected_output_dims = 4;
-    if (!reducer_params->keep_dims) {
-      expected_output_dims -= num_reduction_axes;
+    if (!all_reductions_supported) {
+      switch (num_reduction_axes) {
+        case 1:
+          if (axes_data[0] != 2) {
+            TF_LITE_MAYBE_KERNEL_LOG(
+                logging_context,
+                "unsupported MEAN reduction along non-spatial "
+                "axis %d in node %d",
+                axes_data[0], node_index);
+            return kTfLiteError;
+          }
+          break;
+        case 2:
+          if (std::min(axes_data[0], axes_data[1]) != 1 ||
+              std::max(axes_data[0], axes_data[1]) != 2) {
+            TF_LITE_MAYBE_KERNEL_LOG(
+                logging_context,
+                "unsupported MEAN reduction along non-spatial "
+                "axes %d and %d in node %d",
+                std::min(axes_data[0], axes_data[1]),
+                std::max(axes_data[0], axes_data[1]), node_index);
+            return kTfLiteError;
+          }
+          break;
+        default:
+          TF_LITE_MAYBE_KERNEL_LOG(
+              logging_context,
+              "unsupported MEAN reduction along %d axes in node %d",
+              SizeOfDimension(&axes_tensor, 0), node_index);
+          return kTfLiteError;
+      }
+      int expected_output_dims = 4;
+      if (!reducer_params->keep_dims) {
+        expected_output_dims -= num_reduction_axes;
+      }
+      TF_LITE_ENSURE_STATUS(CheckTensorShape(
+          logging_context, output_tensor, expected_output_dims,
+          node->outputs->data[0], BuiltinOperator_MEAN, node_index));
     }
-    TF_LITE_ENSURE_STATUS(CheckTensorShape(
-        logging_context, output_tensor, expected_output_dims,
-        node->outputs->data[0], BuiltinOperator_MEAN, node_index));
+
     TF_LITE_ENSURE_STATUS(CheckTensorNonDynamicAllocation(
         delegate, logging_context, output_tensor, node->outputs->data[0],
         node_index));
@@ -4838,27 +4849,44 @@ class Subgraph {
     if (subgraph != nullptr) {
       uint32_t flags = reducer_params->keep_dims ? XNN_FLAG_KEEP_DIMS : 0;
       xnn_status status = xnn_status_success;
-      switch (num_reduction_axes) {
-        case 1:
-          status = xnn_define_global_average_pooling_1d(
-              subgraph,
-              /*output_min=*/-std::numeric_limits<float>::infinity(),
-              /*output_max=*/+std::numeric_limits<float>::infinity(),
-              /*input_id=*/input_output_tensors.at(node->inputs->data[0]),
-              /*output_id=*/input_output_tensors.at(node->outputs->data[0]),
-              flags);
-          break;
-        case 2:
-          status = xnn_define_global_average_pooling_2d(
-              subgraph,
-              /*output_min=*/-std::numeric_limits<float>::infinity(),
-              /*output_max=*/+std::numeric_limits<float>::infinity(),
-              /*input_id=*/input_output_tensors.at(node->inputs->data[0]),
-              /*output_id=*/input_output_tensors.at(node->outputs->data[0]),
-              flags);
-          break;
-        default:
-          break;
+      if (all_reductions_supported) {
+        std::array<size_t, XNN_MAX_TENSOR_DIMS> reduction_axes;
+        for (int i = 0; i < num_reduction_axes; ++i) {
+          if (axes_data[i] < 0) {
+            reduction_axes[i] = axes_data[i] + NumDimensions(&input_tensor);
+          } else {
+            reduction_axes[i] = axes_data[i];
+          }
+        }
+        std::sort(&reduction_axes[0], &reduction_axes[num_reduction_axes]);
+        status = xnn_define_static_mean(
+            subgraph, num_reduction_axes, reduction_axes.data(),
+            /*input_id=*/input_output_tensors.at(node->inputs->data[0]),
+            /*output_id=*/input_output_tensors.at(node->outputs->data[0]),
+            flags);
+      } else {
+        switch (num_reduction_axes) {
+          case 1:
+            status = xnn_define_global_average_pooling_1d(
+                subgraph,
+                /*output_min=*/-std::numeric_limits<float>::infinity(),
+                /*output_max=*/+std::numeric_limits<float>::infinity(),
+                /*input_id=*/input_output_tensors.at(node->inputs->data[0]),
+                /*output_id=*/input_output_tensors.at(node->outputs->data[0]),
+                flags);
+            break;
+          case 2:
+            status = xnn_define_global_average_pooling_2d(
+                subgraph,
+                /*output_min=*/-std::numeric_limits<float>::infinity(),
+                /*output_max=*/+std::numeric_limits<float>::infinity(),
+                /*input_id=*/input_output_tensors.at(node->inputs->data[0]),
+                /*output_id=*/input_output_tensors.at(node->outputs->data[0]),
+                flags);
+            break;
+          default:
+            break;
+        }
       }
       if (status != xnn_status_success) {
         TF_LITE_KERNEL_LOG(logging_context, "failed to delegate %s node #%d",
@@ -6591,6 +6619,31 @@ class Subgraph {
     return kTfLiteOk;
   }
 
+  static TfLiteStatus VisitScaledDotAttentionCompositeNode(
+      xnn_subgraph_t subgraph, const Delegate& delegate,
+      TfLiteContext* logging_context, int node_index, TfLiteNode* node,
+      const TfLiteTensor* tensors, const uint8_t* buffer,
+      const size_t buffer_size,
+      const std::unordered_map<int, uint32_t>& input_output_tensors) {
+    const float* scale_val = nullptr;
+    // ensure 28 bytes as we expect
+    // TODO(b/339106680): this reading method may not work for every case.
+    if (buffer_size == 28 && sizeof(float) == 4) {
+      // Custom data here is a flexbuffer map.
+      // byte_width is 4 for our map.
+      // First 5 values are "scale", then is the float value, and last is
+      // flexbuffer metadata.
+      if (strcmp("scale", reinterpret_cast<const char*>(buffer)) == 0) {
+        constexpr size_t kScaleValOffset = 20;
+        scale_val = reinterpret_cast<const float*>(buffer + kScaleValOffset);
+      }
+    }
+
+    return VisitDotAttentionNode(subgraph, delegate, logging_context,
+                                 node_index, node, tensors, scale_val,
+                                 input_output_tensors);
+  }
+
   static TfLiteStatus VisitDotAttentionNode(
       xnn_subgraph_t subgraph, const Delegate& delegate,
       TfLiteContext* logging_context, int node_index, TfLiteNode* node,
@@ -7112,22 +7165,16 @@ class Subgraph {
 
     bool dynamically_quantized = (input_tensor.type == kTfLiteFloat32 &&
                                   filter_tensor.type == kTfLiteInt8);
-    if (dynamically_quantized) {
-      TF_LITE_ENSURE_STATUS(CheckTensorFloat32OrQCInt8Type(
-          delegate, logging_context, filter_tensor,
-          /*expected_quantized_dimension=*/0, filter_tensor_index, node_index));
-    } else {
-      TF_LITE_ENSURE_STATUS(CheckTensorFloat32OrQUInt8Type(
-          delegate, logging_context, filter_tensor, filter_tensor_index,
-          node_index));
-    }
+    TF_LITE_ENSURE_STATUS(CheckTensorFloat32OrQCInt8Type(
+        delegate, logging_context, filter_tensor,
+        /*expected_quantized_dimension=*/0, filter_tensor_index, node_index));
 
     uint32_t xnnpack_tensor_bias = XNN_INVALID_VALUE_ID;  // "No bias".
     if (use_bias) {
       const int bias_tensor_index = node->inputs->data[3];
       if (bias_tensor_index != kTfLiteOptionalTensor) {
         const TfLiteTensor& bias_tensor = tensors[bias_tensor_index];
-        TF_LITE_ENSURE_STATUS(CheckTensorFloat32OrQInt32Type(
+        TF_LITE_ENSURE_STATUS(CheckTensorFloat32OrQCInt32Type(
             delegate, logging_context, bias_tensor, bias_tensor_index,
             node_index));
         TF_LITE_ENSURE_STATUS(

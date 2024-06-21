@@ -45,6 +45,22 @@ limitations under the License.
 namespace stream_executor {
 namespace interpreter {
 
+// A HostStream that is used for the interpreter.
+class InterpreterStream : public host::HostStream {
+ public:
+  explicit InterpreterStream(StreamExecutor *executor)
+      : host::HostStream(executor) {}
+  absl::Status WaitFor(Stream *stream) override {
+    return host::HostStream::WaitFor(stream);
+  }
+  absl::Status WaitFor(Event *event) override {
+    return absl::UnimplementedError("Not implemented.");
+  }
+  absl::Status RecordEvent(Event *event) override {
+    return absl::UnimplementedError("Not implemented.");
+  }
+};
+
 class XlaInterpreterExecutor : public StreamExecutorCommon {
  public:
   XlaInterpreterExecutor(int device_ordinal, Platform *platform)
@@ -74,26 +90,8 @@ class XlaInterpreterExecutor : public StreamExecutorCommon {
     delete[] static_cast<char *>(mem);
   }
 
-  absl::Status Memcpy(Stream *stream, void *host_dst,
-                      const DeviceMemoryBase &dev_src, uint64_t size) override;
-  absl::Status Memcpy(Stream *stream, DeviceMemoryBase *dev_dst,
-                      const void *host_src, uint64_t size) override;
-  bool MemcpyDeviceToDevice(Stream *stream, DeviceMemoryBase *pop_dst,
-                            const DeviceMemoryBase &host_src,
-                            uint64_t size) override {
-    return false;
-  }
-
-  absl::Status MemZero(Stream *stream, DeviceMemoryBase *location,
-                       uint64_t size) override {
-    return absl::InternalError("Interpreter can not memzero");
-  }
   absl::Status Memset(Stream *stream, DeviceMemoryBase *location,
                       uint8_t pattern, uint64_t size) override {
-    return absl::InternalError("Interpreter can not memset");
-  }
-  absl::Status Memset32(Stream *stream, DeviceMemoryBase *location,
-                        uint32_t pattern, uint64_t size) override {
     return absl::InternalError("Interpreter can not memset");
   }
 
@@ -113,16 +111,7 @@ class XlaInterpreterExecutor : public StreamExecutorCommon {
   bool HostCallback(Stream *stream,
                     absl::AnyInvocable<absl::Status() &&> callback) override;
 
-  absl::Status RecordEvent(Stream *stream, Event *event) override {
-    return absl::Status{absl::StatusCode::kUnimplemented, "RecordEvent"};
-  }
-
-  absl::Status WaitForEvent(Stream *stream, Event *event) override {
-    return absl::Status{absl::StatusCode::kUnimplemented, "WaitForEvent"};
-  }
-
   void DeallocateStream(Stream *stream) override {}
-  bool CreateStreamDependency(Stream *dependent, Stream *other) override;
 
   absl::Status BlockHostUntilDone(Stream *stream) override;
 
@@ -150,7 +139,7 @@ class XlaInterpreterExecutor : public StreamExecutorCommon {
   absl::StatusOr<std::unique_ptr<Stream>> CreateStream(
       std::optional<std::variant<StreamPriority, int>> priority =
           std::nullopt) override {
-    return std::make_unique<host::HostStream>(this);
+    return std::make_unique<InterpreterStream>(this);
   }
 
  private:

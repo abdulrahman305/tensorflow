@@ -106,43 +106,6 @@ AffineMap SubstituteAllIndicesAndRangeVarSymbolsWithSameValue(
   return simplifyAffineMap(affine_map.replace(indices, num_dims, num_symbols));
 }
 
-// Merges `maybe_first_map` and `second_map` if
-//  (1) `maybe_first_map` is present, and
-//  (2) `second_map` and `*maybe_first_map` have distinct sets of keys.
-// Otherwise, returns `std::nullopt`.
-//
-//
-// The behaviour of this function is in spirit equivalent to using C++23's
-// `std::optional<T>::and_then` to merge a collection of `ConstraintMap`s.
-//
-// We pass `maybe_first_map` by value here in order to exploit move semantics
-// to avoid copies when possible.
-//
-// TODO(bchetioui): allow merging constraints in more edge cases, e.g. if one
-// of the intervals is contained within the other.
-std::optional<ConstraintMap> MergeConstraintMapIfPresentAndCompatible(
-    std::optional<ConstraintMap> maybe_first_map,
-    const ConstraintMap& second_map) {
-  if (!maybe_first_map.has_value()) {
-    return std::nullopt;
-  }
-
-  ConstraintMap& first_map = *maybe_first_map;
-
-  for (const auto& [expr, interval] : second_map) {
-    if (first_map.contains(expr)) {
-      AffineMapPrinter printer;
-      VLOG(1) << "Got two different constraints for expression "
-              << printer.ToString(expr);
-      return std::nullopt;
-    }
-
-    first_map.insert({expr, interval});
-  }
-
-  return first_map;
-}
-
 struct SizeAndStrideExpression {
   AffineExpr size;
   AffineExpr stride;
@@ -358,11 +321,37 @@ void SortByStride(std::vector<SizeAndStrideExpression>& sizes_and_strides) {
   });
 }
 
+// Returns the range size of the given size expression.
+//
+// `size` must be a constant or dimension expression.
+std::optional<int64_t> TryGetSizeExpressionRangeSize(
+    AffineExpr size, absl::Span<Interval const> dimension_intervals) {
+  CHECK(size.getKind() == AffineExprKind::Constant ||
+        size.getKind() == AffineExprKind::DimId);
+  if (auto dimension = llvm::dyn_cast<AffineDimExpr>(size)) {
+    const Interval& interval = dimension_intervals.at(dimension.getPosition());
+    if (interval.lower != 0) {
+      // TODO(bchetioui): I think we may need to handle this to have reshapes
+      // working well with concatenations. Nevertheless, we can take a look
+      // later.
+      VLOG(1) << "Attempted to combine strides but got dimension "
+              << AffineMapPrinter().ToString(dimension) << " with lower bound "
+              << interval.lower << " != 0";
+      return std::nullopt;
+    }
+    // We need to add 1 to the upper bound of the interval to describe the
+    // number of elements being captured, since the interval bounds are
+    // inclusive.
+    return interval.upper + 1;
+  }
+  return llvm::cast<AffineConstantExpr>(size).getValue();
+};
+
 // Given a list of sizes and strides, combines the strides into a single
 // expression if it is possible.
 //
 // The current implementation expects that each size captures a single dimension
-// parameter.
+// parameter or a constant (coming from a RangeVar).
 //
 // Let s be an n-dimensional shape that we want to fully collapse. In order to
 // be propagated successfully through the collapse, the pattern of the tiling of
@@ -400,10 +389,13 @@ std::optional<AffineExpr> CombineStrides(
     // to parameters of the initial indexing map. It follows that if a size
     // expression is exactly a dimension parameter, we know its exact bounds.
     //
-    // If a size is not exactly a dimension parameter, then it is dubious
-    // whether we know the bounds---and may thus calculate wrong strides.
-    if (size_and_stride.size.getKind() != AffineExprKind::DimId) {
-      VLOG(1) << "Attempted to combine strides but got non-dimension size "
+    // If a size is not a constant and not exactly a dimension parameter, then
+    // it is dubious whether we know the bounds---and may thus calculate wrong
+    // strides.
+    if (size_and_stride.size.getKind() != AffineExprKind::Constant &&
+        size_and_stride.size.getKind() != AffineExprKind::DimId) {
+      VLOG(1) << "Attempted to combine strides but got non-constant, "
+                 "non-dimension size "
               << AffineMapPrinter().ToString(size_and_stride.size);
       return std::nullopt;
     }
@@ -425,31 +417,21 @@ std::optional<AffineExpr> CombineStrides(
     if (dim_id > 0) {
       const SizeAndStrideExpression& previous_size_and_stride =
           sizes_and_strides[dim_id - 1];
-      const auto previous_dimension =
-          llvm::cast<AffineDimExpr>(previous_size_and_stride.size);
-      const Interval& previous_size_interval =
-          dimension_intervals[previous_dimension.getPosition()];
-      if (previous_size_interval.lower != 0) {
-        // TODO(bchetioui): I think we may need to handle this to have reshapes
-        // working well with concatenations. Nevertheless, we can take a look
-        // later.
-        VLOG(1) << "Attempted to combine strides but got dimension "
-                << AffineMapPrinter().ToString(previous_dimension)
-                << " with lower bound " << previous_size_interval.lower
-                << " != 0";
+      std::optional<int64_t> previous_size_expression_range_size =
+          TryGetSizeExpressionRangeSize(previous_size_and_stride.size,
+                                        dimension_intervals);
+      if (!previous_size_expression_range_size.has_value()) {
         return std::nullopt;
       }
 
       int64_t previous_stride =
           llvm::cast<AffineConstantExpr>(previous_size_and_stride.stride)
               .getValue();
-      // We need to add 1 to the upper bound of the interval to describe the
-      // number of elements being captured, since the interval bounds are
-      // inclusive.
-      if ((previous_size_interval.upper + 1) * previous_stride != stride) {
+
+      if (*previous_size_expression_range_size * previous_stride != stride) {
         VLOG(1) << "Attempted to combine strides but stride did not grow "
                 << "exactly as expected: got "
-                << (previous_size_interval.upper + 1) << " * "
+                << *previous_size_expression_range_size << " * "
                 << previous_stride << " != " << stride;
         return std::nullopt;
       }
@@ -463,9 +445,12 @@ std::optional<AffineExpr> CombineStrides(
        size_and_stride_it != sizes_and_strides.rend(); ++size_and_stride_it) {
     AffineExpr size = size_and_stride_it->size;
     AffineExpr stride = size_and_stride_it->stride;
-    const Interval& size_interval =
-        dimension_intervals[llvm::cast<AffineDimExpr>(size).getPosition()];
-    nested_if = IfNeqOne(size, stride, nested_if, size_interval.upper + 1);
+    std::optional<int64_t> size_expression_range_size =
+        TryGetSizeExpressionRangeSize(size, dimension_intervals);
+    if (!size_expression_range_size.has_value()) {
+      return std::nullopt;
+    }
+    nested_if = IfNeqOne(size, stride, nested_if, *size_expression_range_size);
   }
 
   return nested_if;
@@ -477,6 +462,15 @@ std::optional<SizeAndStrideExpression> CombineSizesAndStrides(
     std::vector<SizeAndStrideExpression> sizes_and_strides,
     absl::Span<Interval const> dimension_intervals) {
   CHECK(!sizes_and_strides.empty());
+
+  if (VLOG_IS_ON(1)) {
+    for (const SizeAndStrideExpression& size_and_stride : sizes_and_strides) {
+      LOG(INFO) << "CombineSizesAndStrides:";
+      LOG(INFO) << "size: " << AffineMapPrinter().ToString(size_and_stride.size)
+                << " stride: "
+                << AffineMapPrinter().ToString(size_and_stride.stride);
+    }
+  }
 
   std::optional<ConstraintMap> maybe_constraints = ConstraintMap();
 
@@ -620,14 +614,43 @@ AffineExpr SimplifyAffineExpr(const AffineExpr& expr,
 
 }  // anonymous namespace
 
+std::optional<ConstraintMap> MergeConstraintMapIfPresentAndCompatible(
+    std::optional<ConstraintMap> maybe_first_map,
+    const ConstraintMap& second_map) {
+  if (!maybe_first_map.has_value()) {
+    return std::nullopt;
+  }
+
+  ConstraintMap& first_map = *maybe_first_map;
+
+  for (const auto& [expr, interval] : second_map) {
+    if (first_map.contains(expr)) {
+      AffineMapPrinter printer;
+      VLOG(1) << "Got two different constraints for expression "
+              << printer.ToString(expr);
+      return std::nullopt;
+    }
+
+    first_map.insert({expr, interval});
+  }
+
+  return first_map;
+}
+
 /*static*/ std::optional<SymbolicTile> SymbolicTile::FromIndexingMap(
-    const IndexingMap& indexing_map) {
+    IndexingMap indexing_map) {
   VLOG(1) << "SymbolicTile::FromIndexingMap: " << indexing_map.ToString();
 
   // We do not handle indexing maps with pre-existing constraints for now.
+  // Let's try to simplify the indexing map, because the constraints my be
+  // redundant.
+  // TODO(bchetioui): Consider doing the simplification in the caller, not here.
+  bool did_simplify = indexing_map.Simplify();
+  VLOG(1) << "did_simplify: " << did_simplify;
   if (indexing_map.GetConstraintsCount() != 0) {
     VLOG(1) << "Deriving symbolic tile from indexing map with pre-existing "
-            << "constraints might produce spurious constraints. Bailing out.";
+            << "constraints might produce spurious constraints. Bailing out. "
+            << indexing_map.ToString();
     return std::nullopt;
   }
 

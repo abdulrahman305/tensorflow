@@ -1214,6 +1214,7 @@ tf_xla_py_strict_test(
     shard_count = 5,
     tags = [
         "no_pip",  # TODO(b/149738646): fix pip install so these tests run on kokoro pip
+        "nozapfhahn",
         "optonly",
     ],
     deps = [
@@ -1410,6 +1411,7 @@ tf_xla_py_strict_test(
     shard_count = 6,
     tags = [
         "no_pip",  # TODO(b/149738646): fix pip install so these tests run on kokoro pip
+        "nozapfhahn",
         "optonly",
     ],
     deps = [
@@ -1718,6 +1720,7 @@ tf_xla_py_strict_test(
     python_version = "PY3",
     shard_count = 20,
     tags = [
+        "no_aarch64",  # TODO(b/348125886)
         "no_cuda_asan",  # times out
         "no_pip",  # TODO(b/149738646): fix pip install so these tests run on kokoro pip
         "noasan",  #times out
@@ -1943,6 +1946,7 @@ tf_xla_py_strict_test(
     # Times out in fastbuild mode.
     tags = [
         "no_pip",  # TODO(b/149738646): fix pip install so these tests run on kokoro pip
+        "nozapfhahn",
         "optonly",
     ],
     deps = [

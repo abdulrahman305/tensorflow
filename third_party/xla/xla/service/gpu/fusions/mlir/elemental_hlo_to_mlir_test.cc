@@ -311,20 +311,20 @@ TEST_F(ElementalHloToMlirTest, Concatenate) {
     // CHECK-DAG:    %[[C20:.*]] = arith.constant 20
     // CHECK:        %[[IN_BOUNDS:.*]] = arith.cmpi ult, %[[Y]], %[[C20]]
     // CHECK:        %[[CONCAT:.*]] = scf.if %[[IN_BOUNDS]]
-    // CHECK:          %[[P0_VAL:.*]] = xla_gpu.pure_call @main_p0
-    // CHECK-SAME:         %[[X]], %[[Y]], %[[Z]]
+    // CHECK:          %[[P0_VAL:.*]] = tensor.extract %[[ARG0]]
+    // CHECK-SAME:         [%[[X]], %[[Y]], %[[Z]]]
     // CHECK:          scf.yield %[[P0_VAL]]
     // CHECK:        } else {
     // CHECK:          %[[IN_BOUNDS:.*]] = arith.cmpi ult, %[[Y]], %[[C35]]
     // CHECK:          %[[CONCAT2:.*]] = scf.if %[[IN_BOUNDS]]
     // CHECK:            %[[OFFSET:.*]] = arith.subi %[[Y]], %[[C20]]
-    // CHECK:            %[[P1_VAL:.*]] = xla_gpu.pure_call @main_p1
-    // CHECK-SAME:           %[[X]], %[[OFFSET]], %[[Z]]
+    // CHECK:            %[[P1_VAL:.*]] = tensor.extract %[[ARG1]]
+    // CHECK-SAME:           [%[[X]], %[[OFFSET]], %[[Z]]]
     // CHECK:            scf.yield %[[P1_VAL]]
     // CHECK:          } else {
     // CHECK:            %[[OFFSET:.*]] = arith.subi %[[Y]], %[[C35]]
-    // CHECK:            %[[P2_VAL:.*]] = xla_gpu.pure_call @main_p2
-    // CHECK-SAME:           %[[X]], %[[OFFSET]], %[[Z]]
+    // CHECK:            %[[P2_VAL:.*]] = tensor.extract %[[ARG2]]
+    // CHECK-SAME:           [%[[X]], %[[OFFSET]], %[[Z]]]
     // CHECK:            scf.yield %[[P2_VAL]]
     // CHECK:          }
     // CHECK:          scf.yield %[[CONCAT2]]
@@ -349,13 +349,13 @@ TEST_F(ElementalHloToMlirTest, ConcatenateUnsigned) {
     // CHECK-DAG:    %[[C20:.*]] = arith.constant 20
     // CHECK:        %[[IN_BOUNDS:.*]] = arith.cmpi ult, %[[Y]], %[[C20]]
     // CHECK:        %[[CONCAT:.*]] = scf.if %[[IN_BOUNDS]]
-    // CHECK:          %[[P0_VAL:.*]] = xla_gpu.pure_call @main_p0
-    // CHECK-SAME:         %[[X]], %[[Y]], %[[Z]]
+    // CHECK:          %[[P0_VAL:.*]] = tensor.extract %[[ARG0]]
+    // CHECK-SAME:         [%[[X]], %[[Y]], %[[Z]]]
     // CHECK:          scf.yield %[[P0_VAL]]
     // CHECK:        } else {
     // CHECK:          %[[OFFSET:.*]] = arith.subi %[[Y]], %[[C20]]
-    // CHECK:          %[[P1_VAL:.*]] = xla_gpu.pure_call @main_p1
-    // CHECK-SAME:         %[[X]], %[[OFFSET]], %[[Z]]
+    // CHECK:          %[[P1_VAL:.*]] = tensor.extract %[[ARG1]]
+    // CHECK-SAME:         [%[[X]], %[[OFFSET]], %[[Z]]]
     // CHECK:          scf.yield %[[P1_VAL]]
     // CHECK:        }
     // CHECK:        return %[[CONCAT]]
@@ -380,6 +380,33 @@ TEST_F(ElementalHloToMlirTest, Gather) {
     // CHECK-DAG:    %[[C0:.*]] = arith.constant 0
     // CHECK-DAG:    %[[C26:.*]] = arith.constant 26
     // CHECK:        %[[IDX_I32:.*]] = tensor.extract %[[ARG1]][%[[X]], %[[C0]]]
+    // CHECK:        %[[IDX:.*]] = arith.index_cast %[[IDX_I32]] : i32 to index
+    // CHECK:        %[[CLAMP_HIGH:.*]] = arith.minsi %[[IDX]], %[[C26]]
+    // CHECK:        %[[CLAMPED:.*]] = arith.maxsi %[[CLAMP_HIGH]], %[[C0]]
+    // CHECK:        %[[X_IN:.*]] = arith.addi %[[CLAMPED]], %[[Y]]
+    // CHECK:        %[[RET:.*]] = tensor.extract %[[ARG0]][%[[X_IN]], %[[Z]]]
+    // CHECK:        return %[[RET]]
+  )"));
+}
+
+TEST_F(ElementalHloToMlirTest, GatherWithImplicitVectorDim) {
+  TF_EXPECT_OK(Run(R"(
+    ENTRY main {
+      operand = f32[33,34] parameter(0)
+      indices = s32[1806] parameter(1)
+      ROOT r = f32[1806,7,8] gather(operand, indices), offset_dims={1,2},
+                                 collapsed_slice_dims={}, start_index_map={0},
+                                 index_vector_dim=1, slice_sizes={7,8}
+    })",
+                   R"(
+    // CHECK:      @main_r(
+    // CHECK-SAME:     %[[ARG0:.*]]: tensor<33x34xf32>,
+    // CHECK-SAME:     %[[ARG1:.*]]: tensor<1806xi32>,
+    // CHECK-SAME:     %[[X:.*]]: index {{{.*}}}, %[[Y:.*]]: index {{{.*}}},
+    // CHECK-SAME:     %[[Z:.*]]: index {{{.*}}}
+    // CHECK-DAG:    %[[C0:.*]] = arith.constant 0
+    // CHECK-DAG:    %[[C26:.*]] = arith.constant 26
+    // CHECK:        %[[IDX_I32:.*]] = tensor.extract %[[ARG1]][%[[X]]]
     // CHECK:        %[[IDX:.*]] = arith.index_cast %[[IDX_I32]] : i32 to index
     // CHECK:        %[[CLAMP_HIGH:.*]] = arith.minsi %[[IDX]], %[[C26]]
     // CHECK:        %[[CLAMPED:.*]] = arith.maxsi %[[CLAMP_HIGH]], %[[C0]]
@@ -1527,11 +1554,11 @@ TEST_F(ElementalHloToMlirTest, MixedIndexingTuple) {
     // CHECK-SAME:     %[[P0:.*]]: tensor<10x10xf32>,
     // CHECK-SAME:     %[[P1:.*]]: tensor<100xf32>,
     // CHECK-SAME:     %[[X:.*]]: index {{{.*}}}, %[[Y:.*]]: index {{{.*}}}
-    // CHECK:        %[[A:.*]] = xla_gpu.pure_call @main_p0(%[[P0]], %[[P1]], %[[X]], %[[Y]])
+    // CHECK:        %[[A:.*]] = tensor.extract %[[P0]][%[[X]], %[[Y]]]
     // CHECK:        %[[IDX:.*]] = xla_gpu.apply_indexing
     // CHECK-SAME:       affine_map<(d0, d1) -> (d0 * 10 + d1)>
     // CHECK-SAME:       (%[[X]] in [0, 9], %[[Y]] in [0, 9])
-    // CHECK:        %[[B:.*]] = xla_gpu.pure_call @main_p1(%[[P0]], %[[P1]], %[[IDX]])
+    // CHECK:        %[[B:.*]] = tensor.extract %[[P1]][%[[IDX]]]
     // CHECK:        return %[[A]], %[[B]]
   )"));
 }
@@ -1551,16 +1578,13 @@ TEST_F(ElementalHloToMlirTest, NestedTuple) {
     // CHECK-SAME:     %[[P0:.*]]: tensor<10x10xf32>,
     // CHECK-SAME:     %[[P1:.*]]: tensor<100xf32>,
     // CHECK-SAME:     %[[X:.*]]: index {{{.*}}}, %[[Y:.*]]: index {{{.*}}}
-    // CHECK:          %[[T0_0:.*]], %[[T0_1:.*]] = xla_gpu.pure_call @main_t0
-    // CHECK-SAME:       (%[[P0]], %[[P1]], %[[X]], %[[Y]])
+    // CHECK:          %[[P0_V:.*]] = xla_gpu.pure_call @main_p0
     // CHECK:          %[[IDX:.*]] =
     // CHECK-SAME:       affine_map<(d0, d1) -> (d0 * 10 + d1)>
     // CHECK-SAME:       (%[[X]] in [0, 9], %[[Y]] in [0, 9])
-    // CHECK:          %[[P:.*]] = xla_gpu.pure_call @main_p1
+    // CHECK:          %[[P1_V:.*]] = xla_gpu.pure_call @main_p1
     // CHECK-SAME:       (%[[P0]], %[[P1]], %[[IDX]])
-    // CHECK:          %[[T1_0:.*]], %[[T1_1:.*]] = xla_gpu.pure_call @main_t1
-    // CHECK-SAME:       (%[[P0]], %[[P1]], %[[IDX]])
-    // CHECK:          return %[[T0_0]], %[[T0_1]], %[[P]], %[[T1_0]], %[[T1_1]]
+    // CHECK:          return %[[P0_V]], %[[P1_V]], %[[P1_V]], %[[P1_V]], %[[P0_V]]
   )"));
 }
 
