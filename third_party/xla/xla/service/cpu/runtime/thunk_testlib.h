@@ -13,33 +13,32 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef XLA_SERVICE_CPU_RUNTIME_REPLICA_ID_THUNK_H_
-#define XLA_SERVICE_CPU_RUNTIME_REPLICA_ID_THUNK_H_
+#ifndef XLA_SERVICE_CPU_RUNTIME_THUNK_TESTLIB_H_
+#define XLA_SERVICE_CPU_RUNTIME_THUNK_TESTLIB_H_
 
-#include <memory>
-
-#include "absl/status/statusor.h"
-#include "xla/service/buffer_assignment.h"
+#include "absl/status/status.h"
+#include "xla/runtime/buffer_use.h"
 #include "xla/service/cpu/runtime/thunk.h"
 #include "xla/tsl/concurrency/async_value_ref.h"
 
 namespace xla::cpu {
 
-class ReplicaIdThunk final : public Thunk {
+// A test-only thunk to create a Thunk with a specific buffer use.
+class BufferUseThunk : public Thunk {
  public:
-  static absl::StatusOr<std::unique_ptr<ReplicaIdThunk>> Create(
-      Info info, BufferAllocation::Slice replica_id_buffer);
+  explicit BufferUseThunk(BufferUse buffer_use)
+      : Thunk(Kind::kKernel, {"buffer-use"}), buffer_use_(buffer_use) {}
 
-  tsl::AsyncValueRef<ExecuteEvent> Execute(const ExecuteParams& params) final;
+  tsl::AsyncValueRef<ExecuteEvent> Execute(const ExecuteParams&) final {
+    return absl::UnimplementedError("Unimplemented");
+  }
 
-  BufferUses buffer_uses() const final;
+  BufferUses buffer_uses() const final { return {buffer_use_}; }
 
  private:
-  ReplicaIdThunk(Info info, BufferAllocation::Slice replica_id_buffer);
-
-  BufferAllocation::Slice replica_id_buffer_;
+  BufferUse buffer_use_;
 };
 
 }  // namespace xla::cpu
 
-#endif  // XLA_SERVICE_CPU_RUNTIME_REPLICA_ID_THUNK_H_
+#endif  // XLA_SERVICE_CPU_RUNTIME_THUNK_TESTLIB_H_

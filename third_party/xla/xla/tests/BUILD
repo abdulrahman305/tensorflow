@@ -11,6 +11,7 @@ load(
     "@local_tsl//tsl/platform/default:cuda_build_defs.bzl",
     "if_cuda_is_configured",
 )
+load("//xla:package_groups.bzl", "xla_tests_package_groups")
 load("//xla:xla.bzl", "tests_build_defs_bzl_deps", "xla_cc_binary", "xla_cc_test")
 load("//xla/tests:build_defs.bzl", "generate_backend_suites", "generate_backend_test_macros", "xla_test", "xla_test_library")
 load("//xla/tsl:tsl.bzl", "internal_visibility", "tsl_copts")
@@ -22,14 +23,6 @@ package(
     licenses = ["notice"],
 )
 
-package_group(
-    name = "friends",
-    includes = [
-        "//xla:friends",
-    ],
-    packages = ["//platforms/testing/tests/..."],
-)
-
 # Filegroup used to collect source files for dependency checking.
 filegroup(
     name = "c_srcs",
@@ -38,6 +31,8 @@ filegroup(
         "**/*.h",
     ]),
 )
+
+xla_tests_package_groups()
 
 # Generate test_suites for all backends, named "${backend}_tests".
 generate_backend_suites()
@@ -1177,6 +1172,7 @@ xla_test(
         "optonly",
         # Timed out on 2020-07-18
         "nozapfhahn",
+        "test_xla_cpu_thunks",
     ],
     deps = CONVOLUTION_TEST_DEPS + [
         "@com_google_absl//absl/memory",
@@ -1717,6 +1713,7 @@ xla_test(
         "nomac",  # b/194731834
         "nozapfhahn",
         "optonly",
+        "test_xla_cpu_thunks",
     ],
     deps = [
         ":client_library_test_base",
@@ -2216,6 +2213,7 @@ xla_test(
         "//xla/hlo/ir:hlo",
         "//xla/hlo/utils:hlo_matchers",
         "//xla/service/gpu:backend_configs_cc",
+        "//xla/stream_executor",
     ],
 )
 
@@ -2225,12 +2223,15 @@ xla_test(
     deps = [
         ":hlo_test_base",
         ":xla_internal_test_main",
+        "//xla:error_spec",
+        "//xla:util",
         "//xla/hlo/ir:hlo",
         "//xla/service:collective_pipeliner",
         "//xla/service:hlo_dce",
         "//xla/service:hlo_parser",
         "//xla/service:hlo_pass_pipeline",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -2980,6 +2981,26 @@ xla_test(
         "//xla:test_helpers",
         "//xla/hlo/utils:hlo_matchers",
         "//xla/service/cpu:onednn_util",
+        "@local_tsl//tsl/platform:platform_port",
+    ],
+)
+
+xla_test(
+    name = "onednn_convolution_test",
+    srcs = ["onednn_convolution_test.cc"],
+    backends = [
+        "cpu",
+    ],
+    copts = tsl_copts(),
+    deps = [
+        ":hlo_test_base",
+        ":test_macros_header",
+        ":xla_internal_test_main",
+        "//xla:literal",
+        "//xla:shape_util",
+        "//xla:test",
+        "//xla:test_helpers",
+        "//xla/hlo/utils:hlo_matchers",
         "@local_tsl//tsl/platform:platform_port",
     ],
 )

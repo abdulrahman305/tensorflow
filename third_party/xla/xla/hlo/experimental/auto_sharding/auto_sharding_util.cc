@@ -154,32 +154,6 @@ std::optional<HloSharding> PropagateDimwiseSharding(
   return input_spec;
 }
 
-HloSharding PropagateDimwiseShardingSlice(const HloSharding& input_spec,
-                                          const Shape& old_shape,
-                                          const Shape& new_shape,
-                                          const Array<int64_t>& device_mesh) {
-  if (input_spec.IsReplicated()) {
-    return input_spec;
-  }
-
-  CHECK(old_shape.IsArray());
-
-  std::vector<int64_t> tensor_to_mesh_dim =
-      GetTensorDimToMeshDim(new_shape.rank(), input_spec, device_mesh,
-                            /* consider_reverse_device_meshes */ true);
-
-  std::vector<int64_t> tensor_dims;
-  std::vector<int64_t> mesh_dims;
-  for (size_t i = 0; i < new_shape.rank(); ++i) {
-    if (new_shape.dimensions(i) == old_shape.dimensions(i) &&
-        tensor_to_mesh_dim[i] > -1) {
-      tensor_dims.push_back(i);
-      mesh_dims.push_back(tensor_to_mesh_dim[i]);
-    }
-  }
-  return Tile(new_shape, tensor_dims, mesh_dims, device_mesh);
-}
-
 // Propagate sharding for ReduceWindow-like operations.
 // The sharding can successfully propagate if the window operation only happens
 // on tensor dimensions that are not tiled.
@@ -1442,8 +1416,7 @@ absl::Status FixMixedMeshShapeReshardingGetTupleElement(
   HloInstruction* replace_with =
       ReshardTensor(inst, src_sharding, dst_sharding, device_mesh);
   inst->set_sharding(src_sharding);
-  size_t size =
-      GetInstructionSize(replace_with->shape()) / (1024 * 1024 * 1024);
+  size_t size = ByteSizeOfShape(replace_with->shape()) / (1024 * 1024 * 1024);
   if (size > 1) {
     LOG(WARNING) << "Large reshape instruction inserted (operand of "
                  << inst->name() << ") with size " << size
@@ -1510,8 +1483,7 @@ absl::Status FixMixedMeshShapeResharding(HloInstruction* inst, int operand_num,
       }
     }
 
-    size_t size =
-        GetInstructionSize(replace_with->shape()) / (1024 * 1024 * 1024);
+    size_t size = ByteSizeOfShape(replace_with->shape()) / (1024 * 1024 * 1024);
     if (size > 1) {
       LOG(WARNING) << "Large reshape instruction inserted (operand of "
                    << inst->name() << ") with size " << size
@@ -1880,15 +1852,32 @@ std::vector<int64_t> VectorGreaterThanOneElementIndices(
   return result;
 }
 
-int64_t GetInstructionSize(const Shape& shape) {
+int64_t ByteSizeOfShapeWithSharding(const Shape& shape,
+                                    std::optional<HloSharding> sharding) {
   if (shape.IsTuple()) {
-    int64_t size = 0;
-    for (const Shape& subshape : shape.tuple_shapes()) {
-      size += GetInstructionSize(subshape);
+    int64_t size =
+        ShapeUtil::ByteSizeOf(shape, /*pointer_size=*/kAutoShardingPointerSize);
+    for (size_t i = 0; i < shape.tuple_shapes_size(); i++) {
+      const Shape& subshape = shape.tuple_shapes().at(i);
+      if (sharding) {
+        const HloSharding& sub_sharding =
+            sharding->IsTuple()
+                ? sharding->GetSubSharding(shape,
+                                           ShapeIndex{static_cast<int64_t>(i)})
+                : *sharding;
+        size += ByteSizeOfShapeWithSharding(subshape, sub_sharding);
+      } else {
+        size += ByteSizeOfShapeWithSharding(subshape, std::nullopt);
+      }
     }
     return size;
+  } else if (shape.IsArray()) {
+    return ShapeUtil::ByteSizeOf(sharding ? sharding->TileShape(shape) : shape);
+  } else if (shape.IsToken()) {
+    return 0;
+  } else {
+    return kAutoShardingPointerSize;
   }
-  return GetBytes(shape);
 }
 
 int64_t GetShardedInstructionSize(const Shape& shape, int64_t num_devices,
@@ -1897,9 +1886,10 @@ int64_t GetShardedInstructionSize(const Shape& shape, int64_t num_devices,
     sharding = HloSharding::Replicate();
   }
   if (shape.IsTuple()) {
-    int64_t size = 0;
+    int64_t size =
+        ShapeUtil::ByteSizeOf(shape, /*pointer_size=*/kAutoShardingPointerSize);
     for (size_t i = 0; i < shape.tuple_shapes_size(); i++) {
-      Shape subshape = shape.tuple_shapes().at(i);
+      const Shape& subshape = shape.tuple_shapes().at(i);
       size += GetShardedInstructionSize(
           subshape,
           sharding.has_value()
