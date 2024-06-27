@@ -692,6 +692,7 @@ cc_library(
         ":elemental_math_emitter",
         ":ir_emission_utils",
         ":ir_function",
+        ":onednn_config_proto_cc",
         ":onednn_memory_util",
         ":parallel_loop_emitter",
         ":target_machine_features",
@@ -834,10 +835,12 @@ cc_library(
         "//xla/service/cpu/runtime:logical_id_thunk",
         "//xla/service/cpu/runtime:outfeed_thunk",
         "//xla/service/cpu/runtime:reduce_scatter_thunk",
+        "//xla/service/cpu/runtime:resource_use",
         "//xla/service/cpu/runtime:rng_state_thunk",
         "//xla/service/cpu/runtime:thunk",
         "//xla/service/cpu/runtime:while_thunk",
         "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -1717,6 +1720,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":backend_config_proto_cc",
+        ":onednn_config_proto_cc",
         ":onednn_memory_util",
         ":onednn_util",
         ":runtime_lightweight_check",
@@ -1741,6 +1745,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":backend_config_proto_cc",
+        ":onednn_config_proto_cc",
         ":onednn_memory_util",
         ":onednn_util",
         ":runtime_lightweight_check",
@@ -1767,6 +1772,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":backend_config_proto_cc",
+        ":onednn_config_proto_cc",
         ":onednn_memory_util",
         ":runtime_lightweight_check",
         "//xla:executable_run_options",
@@ -1790,6 +1796,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":backend_config_proto_cc",
+        ":onednn_config_proto_cc",
         ":onednn_memory_util",
         ":runtime_lightweight_check",
         "//xla:executable_run_options",
@@ -1822,6 +1829,7 @@ cc_library(
     copts = tsl_copts(),
     deps = [
         ":backend_config_proto_cc",
+        ":onednn_config_proto_cc",
         ":onednn_matmul",
         ":onednn_memory_util",
         ":onednn_pattern_utils",
@@ -1852,6 +1860,7 @@ cc_library(
     copts = tsl_copts(),
     deps = [
         ":backend_config_proto_cc",
+        ":onednn_config_proto_cc",
         ":onednn_memory_util",
         ":onednn_pattern_utils",
         ":onednn_util",
@@ -1875,6 +1884,7 @@ cc_library(
     copts = tsl_copts(),
     deps = [
         ":backend_config_proto_cc",
+        ":onednn_config_proto_cc",
         ":onednn_convolution",
         ":onednn_memory_util",
         ":onednn_util",
@@ -1888,6 +1898,7 @@ cc_library(
         "//xla/service:hlo_pass",
         "//xla/service:pattern_matcher",
         "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/status:statusor",
         "@eigen_archive//:eigen3",
         "@local_tsl//tsl/platform:blocking_counter",
         "@local_tsl//tsl/platform:env",

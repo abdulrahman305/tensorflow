@@ -583,14 +583,12 @@ cc_library(
         "@triton//:TritonGPUToLLVM",
         "@triton//:TritonToTritonGPU",
         "@triton//:TritonGPUTransforms",
-        "@triton//:TritonLLVMIR",
     ]) + if_cuda_is_configured([
         "@triton//third_party/nvidia:NVGPUToLLVM",
         "@triton//third_party/nvidia:TritonNVIDIAGPUToLLVM",
+        "@triton//:TritonLLVMIR",
     ]) + if_rocm_is_configured([
         "@local_tsl//tsl/platform:rocm_rocdl_path",
-        "@triton//third_party/amd:TritonAMDGPUToLLVM",
-        "@triton//third_party/amd:TritonAMDGPUTransforms",
     ]),
 )
 
@@ -3154,6 +3152,7 @@ cc_library(
         "//xla/hlo/ir:hlo",
         "//xla/service:float_support",
         "//xla/stream_executor:device_description",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/log:check",
     ],
 )
@@ -5191,6 +5190,24 @@ xla_test(
         "//xla/service/gpu/tests:gpu_codegen_test",
         "//xla/stream_executor:device_description",
         "//xla/tests:xla_internal_test_main",
+    ],
+)
+
+xla_cc_test(
+    name = "gpu_float_support_test",
+    srcs = ["gpu_float_support_test.cc"],
+    deps = [
+        ":gpu_float_support",
+        "//xla:shape_util",
+        "//xla:test_helpers",
+        "//xla:xla_data_proto_cc",
+        "//xla/hlo/ir:hlo",
+        "//xla/service:float_normalization",
+        "//xla/service:hlo_verifier",
+        "//xla/stream_executor:device_description",
+        "//xla/tests:hlo_test_base",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
