@@ -493,9 +493,16 @@ bool AlgebraicSimplifierVisitor::IsNonNegative(
       }
       return false;
     }
+    case HloOpcode::kMinimum: {
+      return IsNonNegative(hlo->operand(0), options) &&
+             IsNonNegative(hlo->operand(1), options);
+    }
     case HloOpcode::kMaximum: {
       return IsNonNegative(hlo->operand(0), options) ||
              IsNonNegative(hlo->operand(1), options);
+    }
+    case HloOpcode::kPower: {
+      return IsNonNegative(hlo->operand(0), options);
     }
     case HloOpcode::kSelect: {
       return IsNonNegative(hlo->operand(1), options) &&
