@@ -99,9 +99,12 @@ cc_library(
         "//xla/stream_executor",
         "//xla/stream_executor:device_memory",
         "//xla/stream_executor:scratch_allocator",
+        "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/types:span",
+        "@local_tsl//tsl/platform:logging",
     ],
 )
 
@@ -109,6 +112,8 @@ cc_library(
     name = "ffi_api",
     srcs = ["ffi_api.cc"],
     hdrs = ["ffi_api.h"],
+    copts = ["-fexceptions"],
+    features = ["-use_header_modules"],
     deps = [
         ":api",
         ":call_frame",
@@ -146,6 +151,8 @@ cc_library(
 xla_cc_test(
     name = "ffi_test",
     srcs = ["ffi_test.cc"],
+    copts = ["-fexceptions"],
+    features = ["-use_header_modules"],
     deps = [
         ":call_frame",
         ":execution_context",

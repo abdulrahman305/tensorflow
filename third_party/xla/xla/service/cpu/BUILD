@@ -85,6 +85,7 @@ filegroup(
         "runtime_single_threaded_matmul_f32.cc",
         "runtime_single_threaded_matmul_f64.cc",
         "runtime_single_threaded_matmul_s32.cc",
+        "runtime_single_threaded_matmul_u8.cc",
         "runtime_topk.cc",
         # Multi-threaded support.
         "runtime_conv2d.cc",
@@ -696,6 +697,7 @@ cc_library(
         ":onednn_memory_util",
         ":parallel_loop_emitter",
         ":target_machine_features",
+        "//xla:literal",
         "//xla:literal_util",
         "//xla:shape_util",
         "//xla:status_macros",
@@ -1222,6 +1224,7 @@ cc_library(
         "runtime_single_threaded_matmul_f32.cc",
         "runtime_single_threaded_matmul_f64.cc",
         "runtime_single_threaded_matmul_s32.cc",
+        "runtime_single_threaded_matmul_u8.cc",
     ],
     hdrs = ["runtime_single_threaded_matmul.h"],
     compatible_with = get_compatible_with_portable(),
