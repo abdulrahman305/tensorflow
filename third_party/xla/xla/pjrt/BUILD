@@ -4,7 +4,7 @@ load(
 )
 load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
 
-# Placeholder: load py_proto_library
+# copybara:uncomment load("@rules_python//python:proto.bzl", "py_proto_library")
 load("//xla:xla.bzl", "xla_cc_test")
 load("//xla/tsl:tsl.bzl", "internal_visibility")
 
@@ -33,6 +33,9 @@ cc_library(
     srcs = ["worker_thread.cc"],
     hdrs = ["worker_thread.h"],
     deps = [
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/functional:any_invocable",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/synchronization",
         "@local_tsl//tsl/platform:env",
     ],
