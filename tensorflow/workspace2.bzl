@@ -172,9 +172,9 @@ def _tf_repositories():
 
     tf_http_archive(
         name = "cpuinfo",
-        strip_prefix = "cpuinfo-ef634603954d88d2643d5809011288b890ac126e",
-        sha256 = "e07512a11e1c71687359a133f49d60583d7465b737fe5dbe11f461c9aaa72a2b",
-        urls = tf_mirror_urls("https://github.com/pytorch/cpuinfo/archive/ef634603954d88d2643d5809011288b890ac126e.zip"),
+        strip_prefix = "cpuinfo-6543fec09b2f04ac4a666882998b534afc9c1349",
+        sha256 = "17180581df58b811ef93cfafd074598966a185f48e5a574e8947ca51419f7ca6",
+        urls = tf_mirror_urls("https://github.com/pytorch/cpuinfo/archive/6543fec09b2f04ac4a666882998b534afc9c1349.zip"),
     )
 
     tf_http_archive(
@@ -205,9 +205,9 @@ def _tf_repositories():
     tf_http_archive(
         name = "onednn",
         build_file = "//third_party/mkl_dnn:mkldnn_v1.BUILD",
-        sha256 = "5131ac559a13daa6e2784d20ab24e4607e55aa6da973518086326a647d389425",
-        strip_prefix = "oneDNN-3.4.2",
-        urls = tf_mirror_urls("https://github.com/oneapi-src/oneDNN/archive/refs/tags/v3.4.2.tar.gz"),
+        sha256 = "8356aa9befde4d4ff93f1b016ac4310730b2de0cc0b8c6c7ce306690bc0d7b43",
+        strip_prefix = "oneDNN-3.5",
+        urls = tf_mirror_urls("https://github.com/oneapi-src/oneDNN/archive/refs/tags/v3.5.tar.gz"),
     )
 
     tf_http_archive(

@@ -16,14 +16,15 @@ limitations under the License.
 #ifndef XLA_SERVICE_GPU_MODEL_SYMBOLIC_TILE_H_
 #define XLA_SERVICE_GPU_MODEL_SYMBOLIC_TILE_H_
 
+#include <cstddef>
 #include <optional>
 #include <ostream>
 #include <string>
 #include <utility>
-#include <vector>
 
 #include "absl/log/check.h"
 #include "absl/types/span.h"
+#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/IR/AffineExpr.h"  // from @llvm-project
 #include "mlir/IR/AffineMap.h"  // from @llvm-project
@@ -52,7 +53,14 @@ class ConstraintExpression {
   struct Constraint {
     mlir::AffineExpr expr;
     Interval interval;
+
+    bool operator==(const Constraint& other) const {
+      CHECK_EQ(expr.getContext(), other.expr.getContext())
+          << "AffineExpr should be from the same MLIRContext.";
+      return expr == other.expr && interval == other.interval;
+    }
   };
+
   using ConjointConstraints = llvm::SmallVector<Constraint, 2>;
   // Takes the conjunction of the constraints of `first` and `second`.
   static ConstraintExpression And(ConstraintExpression first,
@@ -111,12 +119,35 @@ class ConstraintExpression {
   // ConstraintExpression canonically always satisfied.
   void Simplify();
 
+  // This allows GUnit to print the expression.
+  template <typename Sink>
+  friend void AbslStringify(Sink& sink, const ConstraintExpression& expr) {
+    sink.Append(expr.ToString());
+  }
+
   // TODO(bchetioui): add a util to verify constraints here later.
   // TODO(bchetioui): is canonicalization of disjunctions necessary?
  private:
   bool is_satisfiable_ = true;
   llvm::SmallVector<ConjointConstraints, 2> disjoint_conjoint_constraints_;
 };
+
+template <typename H>
+H AbslHashValue(H h, const ConstraintExpression::Constraint& constraint) {
+  llvm::hash_code expr_hash = mlir::hash_value(constraint.expr);
+  return H::combine(std::move(h), static_cast<size_t>(expr_hash),
+                    constraint.interval);
+}
+
+template <typename H>
+H AbslHashValue(
+    H h,
+    const ConstraintExpression::ConjointConstraints& conjoint_constraints) {
+  for (const auto& constraint : conjoint_constraints) {
+    h = H::combine(std::move(h), constraint);
+  }
+  return h;
+}
 
 // Tiling in the simpler case, when we don't have dynamic offsets (see the
 // general case later):
@@ -140,9 +171,9 @@ class ConstraintExpression {
 //
 // We can get three AffineMap projections of tile_map(), which are just
 // convenience methods to get the components that we need:
-// offset_map(): ()[size0, ..., size{M-1}] -> (offset0, ..., offset{N-1})
-// size_map():   ()[size0, ..., size{M-1}] -> (size'0, ..., size'{N-1})
-// stride_map(): ()[size0, ..., size{M-1}] -> (stride0, ..., stride{N-1})
+// offset_map(): (size0, ..., size{M-1}) -> (offset0, ..., offset{N-1})
+// size_map():   (size0, ..., size{M-1}) -> (size'0, ..., size'{N-1})
+// stride_map(): (size0, ..., size{M-1}) -> (stride0, ..., stride{N-1})
 //
 // The maps respectively encode the offset, size, and stride component of each
 // strided expression in the result tile.
@@ -223,9 +254,9 @@ class ConstraintExpression {
 //
 // We can get three AffineMap projections of tile_map(), which are just
 // convenience methods to get the components that we need:
-// offset_map(): ()[sizes..., rt_vars...] -> offsets'
-// size_map():   ()[sizes...] -> sizes'
-// stride_map(): ()[sizes...] -> strides'
+// offset_map(): (sizes...)[rt_vars...] -> offsets'
+// size_map():   (sizes...) -> sizes'
+// stride_map(): (sizes...) -> strides'
 //
 // The size parameters of the projections may be arbitrarily constrained, in
 // order to ensure that applying the symbolic tile on an input tile yields a
