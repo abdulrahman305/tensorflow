@@ -105,6 +105,7 @@ limitations under the License.
 #include "xla/service/gpu/ir_emitter.h"
 #include "xla/service/gpu/ir_emitter_context.h"
 #include "xla/service/gpu/ir_emitter_nested.h"
+#include "xla/service/gpu/ir_emitter_triton.h"
 #include "xla/service/gpu/kernel_arguments.h"
 #include "xla/service/gpu/kernel_reuse_cache.h"
 #include "xla/service/gpu/kernels/custom_kernel.h"
@@ -169,7 +170,6 @@ limitations under the License.
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
-#include "xla/service/gpu/ir_emitter_triton.h"
 #include "xla/service/gpu/runtime/cholesky_thunk.h"
 #include "xla/service/gpu/runtime/cub_sort_thunk.h"
 #include "xla/service/gpu/runtime/triangular_solve_thunk.h"
@@ -2322,9 +2322,11 @@ absl::Status IrEmitterUnnested::EmitNcclThunk(
   }
 
   if (should_use_nccl_thunk) {
+    auto thunk_info = Thunk::ThunkInfo::WithProfileAnnotation(inst);
+    // The wrapper name is used when an op is wrapped by syntactic sugar.
+    thunk_info.profile_annotation = async_start->name();
     auto thunk = std::make_unique<NcclThunkType>(
-        Thunk::ThunkInfo::WithProfileAnnotation(inst), NcclApi::Default(), inst,
-        /*buffers=*/std::move(buffers));
+        thunk_info, NcclApi::Default(), inst, /*buffers=*/std::move(buffers));
     GetCollectivesAsyncEvents().insert({async_start, thunk->async_events()});
     AddThunkToThunkSequence(std::move(thunk));
     return absl::OkStatus();

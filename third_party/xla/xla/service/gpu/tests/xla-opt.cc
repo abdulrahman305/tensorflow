@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "mlir/InitAllExtensions.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
+#include "xla/service/gpu/prevent_mmav3_loop_unrolling.h"
 #include "xla/service/gpu/triton_sparse_extensions.h"
 #include "third_party/triton/bin/RegisterTritonDialects.h"
 
@@ -22,7 +23,8 @@ int main(int argc, char **argv) {
   mlir::DialectRegistry registry;
   mlir::registerAllExtensions(registry);
   registerTritonDialects(registry);  // This registers all passes as well.
-  xla::gpu::registerSparsePasses();
+  xla::gpu::RegisterSparsePasses();
+  xla::gpu::RegisterPreventMmaV3LoopUnrollingPass();
 
   return mlir::asMainReturnCode(mlir::MlirOptMain(
       argc, argv, "xla-opt modular optimizer driver\n", registry));

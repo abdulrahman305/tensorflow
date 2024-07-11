@@ -80,6 +80,12 @@ class ThunkEmitter {
   absl::StatusOr<ThunkSequence> EmitConcatenateKernelThunk(
       const HloInstruction* instruction);
 
+  absl::StatusOr<ThunkSequence> EmitGetDimensionSizeThunk(
+      const HloInstruction* instruction);
+
+  absl::StatusOr<ThunkSequence> EmitSetDimensionSizeThunk(
+      const HloInstruction* instruction);
+
   absl::StatusOr<ThunkSequence> EmitConvolutionThunk(
       const HloInstruction* instruction);
 
@@ -98,6 +104,9 @@ class ThunkEmitter {
       const HloInstruction* instruction);
 
   absl::StatusOr<ThunkSequence> EmitRngThunk(const HloInstruction* instruction);
+
+  absl::StatusOr<ThunkSequence> EmitRngBitGeneratorThunk(
+      const HloInstruction* instruction);
 
   absl::StatusOr<ThunkSequence> EmitRngGetAndUpdateStateThunk(
       const HloInstruction* instruction);
@@ -141,6 +150,12 @@ class ThunkEmitter {
       const HloInstruction* instruction);
 
   absl::StatusOr<ThunkSequence> EmitSelectAndScatterThunk(
+      const HloInstruction* instruction);
+
+  absl::StatusOr<ThunkSequence> EmitSliceThunk(
+      const HloInstruction* instruction);
+
+  absl::StatusOr<ThunkSequence> EmitDynamicUpdateSliceThunk(
       const HloInstruction* instruction);
 
   // Returns the list of buffer allocation slices assigned to the given

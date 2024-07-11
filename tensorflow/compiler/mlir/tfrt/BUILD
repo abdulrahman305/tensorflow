@@ -300,6 +300,7 @@ cc_library(
         "//tensorflow/core/platform:status",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
@@ -368,10 +369,8 @@ cc_library(
         "//tensorflow/compiler/mlir/tensorflow",
         "//tensorflow/compiler/mlir/tensorflow:dump_mlir_util",
         "//tensorflow/compiler/mlir/tensorflow:error_util",
-        "//tensorflow/compiler/mlir/tensorflow:import_model",
         "//tensorflow/compiler/mlir/tensorflow:mlir_roundtrip_flags",
         "//tensorflow/compiler/mlir/tensorflow:serialize_mlir_module_utils",
-        "//tensorflow/compiler/mlir/tensorflow/transforms:bridge",
         "//tensorflow/compiler/mlir/tensorflow/transforms:tensorflow_passes",
         "//tensorflow/compiler/mlir/tensorflow/transforms:tf_saved_model_asset_sinking_pass",
         "//tensorflow/compiler/mlir/tensorflow/transforms/host_runtime:lower_cluster_to_runtime_ops",
@@ -381,7 +380,6 @@ cc_library(
         "//tensorflow/compiler/tf2xla:xla_op_registry",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
-        "//tensorflow/core/common_runtime:function_body",
         "//tensorflow/core/common_runtime:function_def_utils",
         "//tensorflow/core/platform:status",
         "//tensorflow/core/tfrt/fallback:fallback_state",
@@ -434,11 +432,13 @@ cc_library(
     deps = [
         ":constants",
         "//tensorflow/compiler/mlir/tensorflow",
+        "//tensorflow/compiler/mlir/tensorflow:tensorflow_types",
         "//tensorflow/core/platform:status",
         "//tensorflow/core/tfrt/fallback:cost_recorder",
         "//tensorflow/core/tfrt/fallback:op_cost_map_proto_cc",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/strings",
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
@@ -451,6 +451,7 @@ cc_library(
     srcs = ["analysis/test_cost_analysis_pass.cc"],
     deps = [
         ":cost_analysis",
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:Pass",
     ],
@@ -463,6 +464,7 @@ cc_library(
     hdrs = ["analysis/tensor_array_side_effect_analysis.h"],
     deps = [
         "//tensorflow/compiler/mlir/tensorflow",
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:SideEffectInterfaces",
@@ -474,8 +476,11 @@ cc_library(
     srcs = ["analysis/test_tensor_array_side_effect_analysis.cc"],
     deps = [
         ":tensor_array_side_effect_analysis",
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
     ],
     alwayslink = 1,
 )
@@ -678,9 +683,12 @@ cc_library(
 cc_library(
     name = "tpu_passes",
     hdrs = ["transforms/tpu_passes.h"],
-    visibility = [":friends"] + if_google([
+    visibility = [
+        ":friends",
+    ] + if_google([
         "//learning/brain/tfrt/ifrt/pjrt/__subpackages__",
         "//learning/serving/servables/tfrt:__subpackages__",
+        "//smartass/brain/util:__pkg__",
     ]),
     deps = [
         ":fallback_converter",

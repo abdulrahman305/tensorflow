@@ -814,6 +814,7 @@ xla_test(
         "//xla:array3d",
         "//xla:array4d",
         "//xla:comparison_util",
+        "//xla:fp_util",
         "//xla:literal",
         "//xla:shape_util",
         "//xla:test",
@@ -2014,7 +2015,10 @@ xla_test(
         "//xla:literal",
         "//xla:literal_util",
         "//xla/hlo/ir:hlo",
+        "//xla/service:rng_bit_generator_expander",
+        "//xla/service:rng_expander",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings:string_view",
         "@com_google_googletest//:gtest_main",
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:test",
@@ -2893,12 +2897,32 @@ xla_test(
 xla_test(
     name = "get_dimension_size_test",
     srcs = ["get_dimension_size_test.cc"],
+    tags = ["test_xla_cpu_thunks"],
     deps = [
         ":hlo_test_base",
-        ":test_macros_header",
         ":xla_internal_test_main",  # fixdeps: keep
-        "//xla:debug_options_flags",
+        "//xla:literal",
+        "//xla:literal_util",
         "//xla:test",
+        "//xla/hlo/ir:hlo",
+        "@com_google_absl//absl/status",
+        "@local_tsl//tsl/platform:statusor",
+    ],
+)
+
+xla_test(
+    name = "set_dimension_size_test",
+    srcs = ["set_dimension_size_test.cc"],
+    # TODO(abanas): add test_xla_cpu_thunks tag when 'SliceToDynamic' custom call is supported.
+    deps = [
+        ":hlo_test_base",
+        ":xla_internal_test_main",  # fixdeps: keep
+        "//xla:literal",
+        "//xla:literal_util",
+        "//xla:test",
+        "//xla/hlo/ir:hlo",
+        "@com_google_absl//absl/status",
+        "@local_tsl//tsl/platform:statusor",
     ],
 )
 
@@ -3087,6 +3111,9 @@ xla_test(
 xla_test(
     name = "concatenate_test",
     srcs = ["concatenate_test.cc"],
+    backend_tags = {
+        "gpu": ["notsan"],
+    },
     tags = ["test_xla_cpu_thunks"],
     deps = [
         ":hlo_test_base",

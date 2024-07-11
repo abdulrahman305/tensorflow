@@ -499,6 +499,7 @@ cc_library(
     srcs = ["copy_thunk.cc"],
     hdrs = ["copy_thunk.h"],
     deps = [
+        ":buffer_allocations",
         ":thunk",
         "//xla:shape_util",
         "//xla:util",
@@ -508,6 +509,7 @@ cc_library(
         "//xla/stream_executor",
         "//xla/tsl/concurrency:async_value",
         "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/status:statusor",
@@ -759,6 +761,7 @@ cc_library(
     srcs = ["kernel_thunk.cc"],
     hdrs = ["kernel_thunk.h"],
     deps = [
+        ":buffer_allocations",
         ":thunk",
         "//xla:util",
         "//xla/runtime:buffer_use",

@@ -170,6 +170,12 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitHloInstruction(
     case HloOpcode::kWhile:
       return EmitWhileThunk(instruction);
 
+    // Dimension size operations.
+    case HloOpcode::kGetDimensionSize:
+      return EmitGetDimensionSizeThunk(instruction);
+    case HloOpcode::kSetDimensionSize:
+      return EmitSetDimensionSizeThunk(instruction);
+
     // Simple HLO instructions lowered to elemental host kernels (plain loops
     // behind the HostKernel API).
     case HloOpcode::kAbs:
@@ -251,13 +257,12 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitHloInstruction(
     case HloOpcode::kPad:
       return EmitElementalKernelThunk(instruction);
 
-    // TODO(ezhulenev): Implement slice operations as separate Thunks because
-    // it's much easier to get peak performance from hand written code.
     case HloOpcode::kSlice:
     case HloOpcode::kDynamicSlice:
-    // TODO(ezhulenev): Port dynamic update slice optimizations from IrEmitter.
+      return EmitSliceThunk(instruction);
+
     case HloOpcode::kDynamicUpdateSlice:
-      return EmitElementalKernelThunk(instruction);
+      return EmitDynamicUpdateSliceThunk(instruction);
 
     case HloOpcode::kConcatenate:
       return EmitConcatenateKernelThunk(instruction);
@@ -271,6 +276,9 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitHloInstruction(
 
     case HloOpcode::kRng:
       return EmitRngThunk(instruction);
+
+    case HloOpcode::kRngBitGenerator:
+      return EmitRngBitGeneratorThunk(instruction);
 
     case HloOpcode::kRngGetAndUpdateState:
       return EmitRngGetAndUpdateStateThunk(instruction);
@@ -493,6 +501,16 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitConcatenateKernelThunk(
       kernel.thread_dims, /*min_alignment=*/cpu_function_runtime::MinAlign());
 }
 
+absl::StatusOr<ThunkSequence> ThunkEmitter::EmitGetDimensionSizeThunk(
+    const HloInstruction* instruction) {
+  return Unimplemented("GetDimensionSize should be rewritten for CPU.");
+}
+
+absl::StatusOr<ThunkSequence> ThunkEmitter::EmitSetDimensionSizeThunk(
+    const HloInstruction* instruction) {
+  return Unimplemented("SetDimensionSize should be rewritten for CPU.");
+}
+
 absl::StatusOr<ThunkSequence> ThunkEmitter::EmitConvolutionThunk(
     const HloInstruction* instruction) {
   // NOTE: The following code (along with TODOs and comments) partially
@@ -591,6 +609,11 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitReductionKernelThunk(
 absl::StatusOr<ThunkSequence> ThunkEmitter::EmitRngThunk(
     const HloInstruction* instruction) {
   return Unimplemented("Rng should be expanded for CPU.");
+}
+
+absl::StatusOr<ThunkSequence> ThunkEmitter::EmitRngBitGeneratorThunk(
+    const HloInstruction* instruction) {
+  return Unimplemented("RngBitGenerator should be expanded for CPU.");
 }
 
 absl::StatusOr<ThunkSequence> ThunkEmitter::EmitRngGetAndUpdateStateThunk(
@@ -861,6 +884,25 @@ absl::StatusOr<ThunkSequence> ThunkEmitter::EmitSelectAndScatterThunk(
     const HloInstruction* instruction) {
   TF_ASSIGN_OR_RETURN(auto kernel,
                       ir_emitter_.EmitSelectAndScatterHostKernel(instruction));
+  TF_ASSIGN_OR_RETURN(auto buffers, GetHostKernelAllocationSlices(instruction));
+
+  return ThunkSequence::Of<KernelThunk>(ThunkInfo(instruction),
+                                        buffers.arguments, buffers.results,
+                                        kernel.name, kernel.thread_dims);
+}
+
+absl::StatusOr<ThunkSequence> ThunkEmitter::EmitSliceThunk(
+    const HloInstruction* instruction) {
+  // TODO(ezhulenev): Consider implementing slice operations as separate
+  // Thunks because it might be easier to get peak performance from hand
+  // written code (Eigen slice expression for example).
+  return EmitElementalKernelThunk(instruction);
+}
+
+absl::StatusOr<ThunkSequence> ThunkEmitter::EmitDynamicUpdateSliceThunk(
+    const HloInstruction* instruction) {
+  TF_ASSIGN_OR_RETURN(
+      auto kernel, ir_emitter_.EmitDynamicUpdateSliceHostKernel(instruction));
   TF_ASSIGN_OR_RETURN(auto buffers, GetHostKernelAllocationSlices(instruction));
 
   return ThunkSequence::Of<KernelThunk>(ThunkInfo(instruction),
