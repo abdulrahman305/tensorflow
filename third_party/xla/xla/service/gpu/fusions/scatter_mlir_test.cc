@@ -82,7 +82,7 @@ TEST_F(MlirScatterFusionTest, ThreadIdIndexing) {
 
   constexpr auto kUpdatesIndexing = R"(
     (th_x, th_y, th_z, bl_x, bl_y, bl_z)[chunk_id, unroll_id] -> (
-      ((bl_x * 128 + th_x) floordiv 200) mod 42,
+      (bl_x * 128 + th_x) floordiv 200,
       ((bl_x * 128 + th_x) floordiv 20) mod 10,
       (bl_x * 128 + th_x) mod 20
     )
@@ -124,7 +124,7 @@ TEST_F(MlirScatterFusionTest, ThreadIdIndexing) {
 
   constexpr auto kIndicesIndexing = R"(
     (th_x, th_y, th_z, bl_x, bl_y, bl_z)[chunk_id, unroll_id, index_id] ->
-      (((bl_x * 128 + th_x) floordiv 200) mod 42, 0)
+      ((bl_x * 128 + th_x) floordiv 200, 0)
     domain:
     th_x in [0, 128)
     th_y in [0, 1)
@@ -200,21 +200,27 @@ TEST_F(MlirScatterFusionTest, Scatter_UniqueIndices) {
     // CHECK-DAG:       %[[C9:.*]] = arith.constant 9 : index
 
     // CHECK:      %[[TH_X:.*]] = gpu.thread_id  x
+
     // CHECK:      %[[SLICE_ID:.*]] = xla_gpu.apply_indexing #[[$MAP0]](%[[TH_X]]
+
+    // CHECK:      %[[IND0_I32:.*]] = xla_gpu.pure_call @scatter_indices
+    // CHECK-SAME:  (%[[OPERAND]], %[[INDICES]],
+    // CHECK-SAME:  %[[UPDATES]], %[[SLICE_ID]], %[[C0]])
+
+
+    // CHECK:      %[[IND0:.*]] = arith.index_cast %[[IND0_I32]]
+    // CHECK:      %[[IN_BOUNDS:.*]] = arith.cmpi ule
+    // CHECK:      scf.if %[[IN_BOUNDS]] -> (tensor<10x5xf32>) {
+
     // CHECK:      %[[SLICE_X:.*]] = xla_gpu.apply_indexing #[[$MAP1]](%[[TH_X]]
 
     // CHECK:      %[[UPD_ELEM:.*]] = xla_gpu.pure_call @scatter_update(
     // CHECK-SAME:  %[[OPERAND]], %[[INDICES]], %[[UPDATES]],
     // CHECK-SAME:  %[[SLICE_ID]], %[[C0]], %[[SLICE_X]])
 
-    // CHECK:      xla_gpu.pure_call @scatter_indices(%[[OPERAND]], %[[INDICES]]
-    // CHECK-SAME:  %[[UPDATES]], %[[SLICE_ID]], %[[C0]])
-
-    // CHECK:      %[[IN_BOUNDS:.*]] = arith.cmpi ule
-    // CHECK:      scf.if %[[IN_BOUNDS]] -> (tensor<10x5xf32>) {
-    // CHECK:        %[[CURRENT:.*]] = xla_gpu.pure_call @scatter_operand(
-    // CHECK-SAME:  %[[OPERAND]], %[[INDICES]], %[[UPDATES]],
-    // CHECK-SAME:  %[[SLICE_X]])
+    // CHECK:       %[[CURRENT:.*]] = xla_gpu.pure_call @scatter_operand(
+    // CHECK-SAME:    %[[OPERAND]], %[[INDICES]], %[[UPDATES]], %[[IND0]],
+    // CHECK-SAME:    %[[SLICE_X]])
     // CHECK:        %[[COMBINED:.*]] = arith.addf %[[CURRENT]], %[[UPD_ELEM]]
     // CHECK:        %[[UPDATED:.*]] = tensor.insert %[[COMBINED]]
     // CHECK-SAME:     into %[[OUT]][%{{.*}}, %[[SLICE_X]]] : tensor<10x5xf32>
@@ -307,9 +313,9 @@ TEST_F(MlirScatterFusionTest, Scatter_Add) {
     // CHECK-SAME:    %[[UPDATES:[a-zA-Z0-9]*]]: tensor<24x2x3xf32>
     // CHECK-SAME:    %[[OUT:[a-zA-Z0-9]*]]: tensor<10x5xf32>
 
-    // CHECK: %[[UPD_ELEM:.*]] = xla_gpu.pure_call @scatter_update
     // CHECK: %[[IN_BOUNDS:.*]] = arith.cmpi ule
     // CHECK: scf.if %[[IN_BOUNDS]] -> (tensor<10x5xf32>) {
+    // CHECK:   %[[UPD_ELEM:.*]] = xla_gpu.pure_call @scatter_update
     // CHECK:   %[[RMW:.*]] = xla_gpu.atomic_rmw %[[OUT]]
     // CHECK:   ^bb0(%[[CUR_VALUE:.*]]: f32):
     // CHECK:     %[[SUM:.*]] = arith.addf %[[CUR_VALUE]], %[[UPD_ELEM]]
@@ -364,9 +370,9 @@ TEST_F(MlirScatterFusionTest, Scatter_Overwrite) {
     // CHECK-SAME:    %[[UPDATES:[a-zA-Z0-9]*]]: tensor<3x2x3xf32>
     // CHECK-SAME:    %[[OUT:[a-zA-Z0-9]*]]: tensor<10x5xf32>
 
-    // CHECK: %[[UPD_ELEM:.*]] = xla_gpu.pure_call @scatter_update
     // CHECK: %[[IN_BOUNDS:.*]] = arith.cmpi ule
     // CHECK: scf.if %[[IN_BOUNDS]] -> (tensor<10x5xf32>) {
+    // CHECK:   %[[UPD_ELEM:.*]] = xla_gpu.pure_call @scatter_update
     // CHECK:   %[[RMW:.*]] = xla_gpu.atomic_rmw %[[OUT]]
     // CHECK:   ^bb0(%[[CUR_VALUE:.*]]: f32):
     // CHECK:     xla_gpu.yield %[[UPD_ELEM]] : f32
