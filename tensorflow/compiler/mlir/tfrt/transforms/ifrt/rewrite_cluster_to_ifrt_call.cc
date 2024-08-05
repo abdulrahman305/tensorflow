@@ -21,11 +21,13 @@ limitations under the License.
 #include <vector>
 
 #include "absl/base/casts.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/LogicalResult.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
@@ -127,6 +129,7 @@ class RewriteClusterToIfrtCallPass
              << " is missing";
     int num_cores_per_replica = num_cores_per_replica_attr.getInt();
 
+    // TODO(b/355508052): remove DeviceAssignment after verification.
     std::optional<xla::DeviceAssignmentProto> xla_device_assignment;
     auto topology_attr = cluster_func->getAttrOfType<mlir::StringAttr>(
         tensorflow::kTopologyAttr);
@@ -142,18 +145,19 @@ class RewriteClusterToIfrtCallPass
                << "error in parsing tpu device coordinates: "
                << device_coordinates.status().message();
 
-      auto device_assignment = tensorflow::GetTPUCompilationAndExecutionDevices(
-          devices.device_names(), num_replicas, num_cores_per_replica,
-          topology_attr.getValue(), *device_coordinates);
-      if (!device_assignment.ok())
+      absl::StatusOr<xla::DeviceAssignmentProto>
+          xla_device_assignment_from_device_assignment_attr =
+              tensorflow::GetXlaDeviceAssignmentProto(
+                  topology_attr.getValue(), num_replicas, num_cores_per_replica,
+                  *device_coordinates);
+      if (!xla_device_assignment_from_device_assignment_attr.ok()) {
         return cluster_func.emitError()
-               << "error in parsing TPU compilation/execution devices: "
-               << device_assignment.status().message();
-      if (!device_assignment->xla_device_assignment) {
-        return cluster_func.emitError()
-               << "Unexpected empty xla_device_assignment";
+               << "error in getting xla device assignment: "
+               << xla_device_assignment_from_device_assignment_attr.status()
+                      .message();
       }
-      xla_device_assignment = device_assignment->xla_device_assignment;
+      xla_device_assignment =
+          *xla_device_assignment_from_device_assignment_attr;
     }
 
     return mlir::TFTPU::SetMetadataProtoFromClusterFuncOp(
@@ -192,10 +196,14 @@ class RewriteClusterToIfrtCallPass
 
       auto metadata_attr =
           ifrt_program->getAttrOfType<mlir::StringAttr>(kMetadataTextAttrName);
-      if (!metadata_attr) {
+      auto device_assignment_attr =
+          ifrt_program->getAttrOfType<mlir::ArrayAttr>(kDeviceAssignmentAttr);
+      if (!metadata_attr || !device_assignment_attr) {
         return signalPassFailure();
       }
+
       ifrt_call_op->setAttr(kMetadataTextAttrName, metadata_attr);
+      ifrt_call_op->setAttr(kDeviceAssignmentAttr, device_assignment_attr);
 
       // TODO(b/304839793): populate variable names after adding a variable
       // hoisting pass.
@@ -228,6 +236,13 @@ class RewriteClusterToIfrtCallPass
     cloned_ifrt_program->setAttr(kMetadataTextAttrName,
                                  builder.getStringAttr(serialized_metadata));
 
+    auto device_assignment_attr =
+        cluster_func->getAttrOfType<mlir::ArrayAttr>(kDeviceAssignmentAttr);
+    if (!device_assignment_attr) {
+      device_assignment_attr = builder.getArrayAttr({});
+    }
+    cloned_ifrt_program->setAttr(kDeviceAssignmentAttr, device_assignment_attr);
+
     cloned_ifrt_program.setName(ifrt_program_name);
 
     int64_t program_id = NewProgramId();
@@ -252,6 +267,7 @@ class RewriteClusterToIfrtCallPass
     // pass such as SinkVariableAsNamedArrayPass relies on this attribute.
     ifrt_call_op->setAttr(kMetadataTextAttrName,
                           builder.getStringAttr(serialized_metadata));
+    ifrt_call_op->setAttr(kDeviceAssignmentAttr, device_assignment_attr);
 
     cluster_func->replaceAllUsesWith(ifrt_call_op.getResults());
     cluster_func->erase();

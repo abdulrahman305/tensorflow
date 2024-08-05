@@ -30,8 +30,8 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/service/executable.h"
-#include "xla/service/gpu/autotuner_compile_util.h"
-#include "xla/service/gpu/autotuner_util.h"
+#include "xla/service/gpu/autotuning/autotuner_compile_util.h"
+#include "xla/service/gpu/autotuning/autotuner_util.h"
 #include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/buffer_comparator.h"
 #include "xla/service/gpu/ir_emission_utils.h"
@@ -114,7 +114,8 @@ absl::Status CompareBuffers(const ScopedShapedBuffer& current,
                             const ScopedShapedBuffer& expected,
                             const Shape& shape, const HloModuleConfig& config,
                             se::Stream* stream) {
-  BufferComparator comparator(shape, config);
+  BufferComparator comparator(
+      shape, config.debug_options().xla_gpu_autotune_gemm_rtol());
   TF_ASSIGN_OR_RETURN(bool outputs_match,
                       comparator.CompareEqual(stream, current.root_buffer(),
                                               expected.root_buffer()));

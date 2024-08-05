@@ -91,6 +91,7 @@ cc_library(
         ":device_description_proto_cc",
         ":dnn",
         ":event",
+        ":event_based_timer",
         ":fft",
         ":host_memory_allocation",  # build_cleaner: keep
         ":host_or_device_scalar",
@@ -476,6 +477,7 @@ cc_library(
         ":device_description",
         ":device_memory",
         ":event",
+        ":event_based_timer",
         ":kernel",
         ":launch_dim",
         ":platform",
@@ -483,6 +485,7 @@ cc_library(
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/types:span",
     ],
 )
@@ -520,6 +523,15 @@ cc_library(
     hdrs = ["allocator_stats.h"],
     visibility = [":internal"],
     deps = ["@com_google_absl//absl/strings:str_format"],
+)
+
+cc_library(
+    name = "event_based_timer",
+    hdrs = ["event_based_timer.h"],
+    deps = [
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/time",
+    ],
 )
 
 cc_library(
@@ -564,12 +576,13 @@ cc_library(
         ":platform",
         ":stream_executor_h",
         "@com_google_absl//absl/base:core_headers",
-        "@com_google_absl//absl/container:node_hash_map",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/synchronization",
         "@local_tsl//tsl/platform:logging",
+        "@local_tsl//tsl/platform:statusor",
     ],
 )
 
@@ -580,7 +593,6 @@ cc_library(
     deps = [
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:logging",
     ],
@@ -594,31 +606,14 @@ cc_library(
         ":device_memory",
         ":kernel_spec",
         ":launch_dim",
-        ":platform",
-        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/meta:type_traits",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
-        "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:platform_port",
-        "@local_tsl//tsl/platform:statusor",
-    ],
-)
-
-cc_library(
-    name = "kernel_factory",
-    hdrs = ["kernel_factory.h"],
-    deps = [
-        ":kernel",
-        ":kernel_spec",
-        ":stream_executor_h",
-        "@com_google_absl//absl/status:statusor",
-        "@local_tsl//tsl/platform:errors",
-        "@local_tsl//tsl/platform:statusor",
     ],
 )
 
@@ -627,7 +622,6 @@ cc_library(
     hdrs = ["typed_kernel_factory.h"],
     deps = [
         ":kernel",
-        ":kernel_factory",
         ":kernel_spec",
         ":stream_executor_h",
         "@com_google_absl//absl/status:statusor",
@@ -656,7 +650,6 @@ cc_library(
     hdrs = ["stream_executor_common.h"],
     deps = [
         ":device_description",
-        ":kernel",
         ":platform",
         ":stream_executor_h",
         "//xla/tsl/util:env_var",
@@ -676,8 +669,6 @@ cc_library(
     deps = [
         ":blas",
         ":device_description",
-        ":device_memory",
-        ":event",
         ":fft",
         ":kernel",
         ":launch_dim",
@@ -690,9 +681,8 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/synchronization",
-        "@com_google_absl//absl/types:span",
-        "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:thread_annotations",
@@ -819,6 +809,19 @@ xla_cc_test(
         ":device_description",
         "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_main",
+    ],
+)
+
+xla_cc_test(
+    name = "executor_cache_test",
+    srcs = ["executor_cache_test.cc"],
+    deps = [
+        ":executor_cache",
+        ":mock_stream_executor",
+        ":platform",
+        ":stream",
+        "@com_google_googletest//:gtest_main",
+        "@local_tsl//tsl/platform:statusor",
     ],
 )
 

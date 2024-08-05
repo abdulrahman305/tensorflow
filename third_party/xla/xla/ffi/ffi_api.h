@@ -62,6 +62,10 @@ struct CallOptions {
 // `error` if it's not nullptr; returns OK status otherwise.
 absl::Status TakeStatus(XLA_FFI_Error* error);
 
+absl::Status CallWithApi(const XLA_FFI_Api* api, Ffi& handler,
+                         CallFrame& call_frame, const CallOptions& options = {},
+                         ExecutionStage stage = ExecutionStage::kExecute);
+
 absl::Status Call(Ffi& handler, CallFrame& call_frame,
                   const CallOptions& options = {},
                   ExecutionStage stage = ExecutionStage::kExecute);
@@ -113,8 +117,8 @@ absl::StatusOr<HandlerRegistration> FindHandler(std::string_view name,
                                                 std::string_view platform);
 
 // Returns all registered calls in the static registry for a given platform.
-absl::flat_hash_map<std::string, HandlerRegistration> StaticRegisteredHandlers(
-    std::string_view platform);
+absl::StatusOr<absl::flat_hash_map<std::string, HandlerRegistration>>
+StaticRegisteredHandlers(std::string_view platform);
 
 //===----------------------------------------------------------------------===//
 // XLA FFI Api Implementation

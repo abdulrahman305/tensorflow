@@ -25,8 +25,10 @@ limitations under the License.
 
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_module_group.h"
+#include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/service/backend.h"
 #include "xla/service/computation_layout.h"
 #include "xla/service/hlo_runner.h"
@@ -65,7 +67,7 @@ namespace xla {
 //      "gpu",
 //    ],
 //    deps = [
-//      "//tensorflow/compiler/xla/tests:hlo_test_base",
+//      "//xla/tests:hlo_test_base",
 //      ...
 //    ],
 //  )
@@ -206,7 +208,8 @@ class HloTestBase : public ManifestCheckingTest {
 
   // Executes the given module and return the result as a Literal.
   absl::StatusOr<Literal> Execute(std::unique_ptr<HloModule> module,
-                                  absl::Span<Literal* const> arguments);
+                                  absl::Span<Literal* const> arguments,
+                                  bool run_hlo_passes = true);
 
   // Same as above, except the module will be executed without running any HLO
   // passes on it.
@@ -244,6 +247,13 @@ class HloTestBase : public ManifestCheckingTest {
       std::function<const Literal*(int64_t, int64_t)> argument_provider,
       int64_t num_replicas, bool run_hlo_passes,
       DeviceAssignment* device_assignment = nullptr);
+
+  // Convenience function for above. Allows passing different inputs to
+  // different replicas of the same program.
+  absl::StatusOr<std::vector<Literal>> ExecuteReplicated(
+      std::unique_ptr<HloModule> module,
+      std::vector<std::vector<Literal*>> arguments, int64_t num_replicas,
+      bool run_hlo_passes);
 
   // Executes the given hlo module on two backends and compares results.
   //
@@ -299,6 +309,26 @@ class HloTestBase : public ManifestCheckingTest {
       ExecutionProfile* profile = nullptr,
       const tsl::protobuf::Message* backend_config = nullptr,
       bool use_random_data = true);
+
+  // Same as below, except that it requires all the options to be passed.
+  ::testing::AssertionResult RunAndCompareTwoModulesReplicated(
+      std::unique_ptr<HloModule> module_0, std::unique_ptr<HloModule> module_1,
+      HloRunner::ReplicatedExecuteOptions options,
+      const std::optional<ErrorSpec>& error);
+
+  // Same as below, except that it requires the parsed modules to be passed.
+  ::testing::AssertionResult RunAndCompareTwoModulesReplicated(
+      std::unique_ptr<HloModule> module_0, std::unique_ptr<HloModule> module_1,
+      bool run_hlo_passes, bool use_threads,
+      const std::optional<ErrorSpec>& error);
+
+  // Parses the modules, and executes them based on `run_hlo_passes` and
+  // `use_threads` flags. The replica count should be mentioned in the module
+  // itself.
+  ::testing::AssertionResult RunAndCompareTwoModulesReplicated(
+      absl::string_view module_0, absl::string_view module_1,
+      bool run_hlo_passes, bool use_threads,
+      const std::optional<ErrorSpec>& error);
 
   // Same as below, except requires passing fake arguments.
   ::testing::AssertionResult RunAndCompareTwoModules(
@@ -402,6 +432,9 @@ class HloTestBase : public ManifestCheckingTest {
   HloInstruction* FindInstruction(HloModule* module, absl::string_view name);
   // Gets the instruction from the given module with the given opcode.
   HloInstruction* FindInstruction(HloModule* module, HloOpcode opcode);
+  // Gets all the instructions from the given module with the given opcode.
+  std::vector<HloInstruction*> FindInstructions(HloModule* module,
+                                                HloOpcode opcode);
 
   // Return an HLO verifier constructed for the test backend.
   HloVerifier& verifier() const { return *hlo_verifier_; }
@@ -410,6 +443,7 @@ class HloTestBase : public ManifestCheckingTest {
 
   // Returns the backend owned by the test runner.
   Backend& backend();
+  int64_t num_devices() { return backend().device_count(); }
 
   HloRunner test_runner_;
   HloRunner reference_runner_;
@@ -431,6 +465,12 @@ class HloTestBase : public ManifestCheckingTest {
   // Helper functions to get test and reference platforms.
   static se::Platform* GetReferencePlatform();
   static se::Platform* GetTestPlatform();
+
+  // Compares the inputs shapes of two modules and returns the list of parameter
+  // indices that mismatch. The mismatch could be either in shape or datatype.
+  // If there is no mismatch, an empty vector is returned.
+  [[nodiscard]] std::vector<int> CompareInputs(const HloModule& module_0,
+                                               const HloModule& module_1);
 
  private:
   // Creates or retrieves the allocator.
@@ -456,6 +496,15 @@ class HloTestBase : public ManifestCheckingTest {
       const std::optional<ErrorSpec>& error, bool run_hlo_passes,
       const std::function<void(HloModule*)>& reference_preprocessor);
 
+  // Runs the two module with or without running hlo passes and compares
+  // the results. Returns whether the results are near or equal. If any
+  // error happens before the results are computed, returns the error status.
+  absl::StatusOr<::testing::AssertionResult>
+  RunAndCompareTwoModulesInternalReplicated(
+      std::unique_ptr<HloModule> module_0, std::unique_ptr<HloModule> module_1,
+      HloRunner::ReplicatedExecuteOptions options,
+      const std::optional<ErrorSpec>& error);
+
   // Runs the two module on with or without running hlo passes and
   // compares the results. Returns whether the results are near or equal. If any
   // error happens before the results are computed, returns the error status.
@@ -469,6 +518,13 @@ class HloTestBase : public ManifestCheckingTest {
   absl::StatusOr<std::unique_ptr<HloRunnerInterface>> GetHloRunnerForTest(
       se::Platform* test_platform);
 };
+
+#define SKIP_TEST_IF_NUM_DEVICES_LESS_THAN(x)                      \
+  int64_t num_devices = backend().device_count();                  \
+  if (num_devices < x) {                                           \
+    GTEST_SKIP() << "Test requires at least " << x << " devices (" \
+                 << num_devices << " available)";                  \
+  }
 
 }  // namespace xla
 

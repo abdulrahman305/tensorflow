@@ -19,7 +19,6 @@ limitations under the License.
 #ifndef XLA_STREAM_EXECUTOR_PLATFORM_H_
 #define XLA_STREAM_EXECUTOR_PLATFORM_H_
 
-#include <map>
 #include <memory>
 #include <string>
 
@@ -118,12 +117,6 @@ class Platform {
   // Returns a device constructed with the options specified in "config".
   // Ownership of the executor is NOT transferred to the caller.
   virtual absl::StatusOr<StreamExecutor*> GetExecutor(
-      const StreamExecutorConfig& config) = 0;
-
-  // Returns a device constructed with the options specified in "config" without
-  // looking in or storing to the Platform's executor cache.
-  // Ownership IS transferred to the caller.
-  virtual absl::StatusOr<std::unique_ptr<StreamExecutor>> GetUncachedExecutor(
       const StreamExecutorConfig& config) = 0;
 };
 
