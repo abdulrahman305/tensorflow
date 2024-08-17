@@ -59,15 +59,9 @@ limitations under the License.
 #include "xla/shape_tree.h"
 #include "xla/shape_util.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/platform/errors.h"
 
 namespace xla {
 namespace spmd {
-
-inline const HloInstruction* PassThroughCustomCallMarkerGetSource(
-    const HloInstruction* ins);
-inline HloInstruction* PassThroughCustomCallMarkerUser(
-    HloInstruction* raw_user, const HloInstruction* inst);
 
 std::optional<HloSharding> GetInputSharding(const HloInstruction* ins,
                                             int64_t op_index,
@@ -221,10 +215,6 @@ InstructionDepthMap BuildInstructionDepthMap(
 
           if (reset) {
             depth_map[node] = 0;
-          } else if (node->opcode() == HloOpcode::kGetTupleElement &&
-                     IsCustomCallMarker(node->operand(0))) {
-            depth_map[node] =
-                depth_map.at(PassThroughCustomCallMarkerGetSource(node));
           } else {
             int64_t max_depth = depth_map.at(inst) + delta;
             for (const HloInstruction* operand : node->operands()) {
@@ -788,12 +778,6 @@ InstructionBatchDimMap BuildInstructionBatchDimMap(
         batch_map[ins->name()] = batch_dim_of_source;
       }
     }
-
-    if (ins->IsCustomCall(kPipelineMarker) &&
-        absl::StrContains(ins->metadata().op_type(), "start")) {
-      // Reset the status after meet a new pipeline marker.
-      set_the_next_dot_conv = true;
-    }
   }
   int64_t previous_cnt = 0;
   while (true) {
@@ -943,8 +927,7 @@ void TryReduceWithCommonAncestor(InstructionSet& replicated_set,
   for (HloInstruction* node : boundary_set) {
     HloInstruction* cur = node;
     while (cur->operand_count() == 1) {
-      HloInstruction* operand =
-          PassThroughCustomCallMarkerOperand(cur->mutable_operand(0), cur);
+      HloInstruction* operand = cur->mutable_operand(0);
       if (replicated_set.contains(operand)) {
         path.insert(cur);
       }
@@ -982,8 +965,7 @@ void UseAllReduceForGradAcc(InstructionSet& replicated_set,
 
   // Find the add instruction for grad accumulation, skip the identity marker
   // for remat and other elementwise ops.
-  HloInstruction* add =
-      PassThroughCustomCallMarkerUser(inst->users().front(), inst);
+  HloInstruction* add = inst->users().front();
   if (add->opcode() == HloOpcode::kGetTupleElement ||
       add->opcode() == HloOpcode::kTranspose) {
     if (add->users().size() != 1) {
@@ -1000,7 +982,7 @@ void UseAllReduceForGradAcc(InstructionSet& replicated_set,
     }
     CHECK_EQ(add->users().size(), 1);
     // Skip the end marker of backward computation
-    add = PassThroughCustomCallMarkerUser(add->users().front(), add);
+    add = add->users().front();
 
     // Do not partition the dot, add and parameter, so we can generate
     // all-reduce for grad accumulation.
@@ -1012,7 +994,7 @@ void UseAllReduceForGradAcc(InstructionSet& replicated_set,
 
       replicated_set.erase(cur);
       for (auto x : cur->operands()) {
-        dfs_remove(PassThroughCustomCallMarkerOperand(x, cur));
+        dfs_remove(x);
       }
     };
 
@@ -1113,39 +1095,23 @@ bool TileAssignmentMatchesMesh(const HloSharding& spec,
   return sharded_dims <= 0;
 }
 
-absl::StatusOr<std::vector<int64_t>> GetTensorDimToMeshDimNoCrash(
-    int64_t tensor_shape_rank, const HloSharding& spec,
-    const Array<int64_t>& device_mesh, bool consider_reverse_device_meshes) {
-  if (spec.IsReplicated()) {
-    return std::vector<int64_t>(tensor_shape_rank, -1);
-  }
-  // Check the compatibility of tensor_shape_rank and spec
-  if (tensor_shape_rank != spec.TiledDataRank()) {
-    return absl::InvalidArgumentError(
-        "Tensor shape rank should be equal to the tiled data rank of the input "
-        "spec.");
-  }
-
+absl::StatusOr<std::vector<int64_t>> GetMeshDimPermutationOrderInShardingSpec(
+    const HloSharding& spec, const Array<int64_t>& device_mesh,
+    bool consider_reverse_device_meshes) {
   auto check_mesh =
       [&](const Array<int64_t>& mesh) -> std::optional<std::vector<int64_t>> {
     // Permute the dimensions (or axes in numpy term), find the transform that
     // makes tile_assignment == device_mesh.
     std::vector<int64_t> axes(mesh.num_dimensions());
     absl::c_iota(axes, 0);
-    bool found = false;
     do {
       Array<int64_t> transposed_mesh = Transpose(mesh, axes);
       if (std::equal(transposed_mesh.begin(), transposed_mesh.end(),
                      spec.tile_assignment().array().begin())) {
-        found = true;
-        break;
+        return axes;
       }
     } while (absl::c_next_permutation(axes));
-    if (found) {
-      return std::optional<std::vector<int64_t>>(axes);
-    } else {
-      return std::nullopt;
-    }
+    return std::nullopt;
   };
 
   // This is an expensive search, as we try all possible meshes obtained by
@@ -1153,7 +1119,6 @@ absl::StatusOr<std::vector<int64_t>> GetTensorDimToMeshDimNoCrash(
   // the somewhat rare kReverse HLO op. The hope therefore is that most calls to
   // the function that reach here will find a mapping within the first iteration
   // of the loop below.
-  bool found = false;
   std::vector<int64_t> axes(device_mesh.num_dimensions());
   size_t num_subsets =
       consider_reverse_device_meshes ? (1 << device_mesh.num_dimensions()) : 1;
@@ -1174,24 +1139,35 @@ absl::StatusOr<std::vector<int64_t>> GetTensorDimToMeshDimNoCrash(
       *device = device_mesh(original_indices);
     });
     if (auto result = check_mesh(new_mesh); result.has_value()) {
-      axes = result.value();
-      found = true;
-      break;
+      return result.value();
     }
   }
+  return absl::NotFoundError(absl::StrCat("Could not find mapping for ",
+                                          spec.ToString(), " with device mesh ",
+                                          device_mesh.ToString()));
+}
 
-  if (!found) {
-    return absl::NotFoundError(
-        absl::StrCat("Could not find mapping for ", spec.ToString(),
-                     " with device mesh ", device_mesh.ToString()));
+absl::StatusOr<std::vector<int64_t>> GetTensorDimToMeshDimNoCrash(
+    int64_t tensor_shape_rank, const HloSharding& spec,
+    const Array<int64_t>& device_mesh, bool consider_reverse_device_meshes) {
+  if (spec.IsReplicated()) {
+    return std::vector<int64_t>(tensor_shape_rank, -1);
   }
-
+  // Check the compatibility of tensor_shape_rank and spec
+  if (tensor_shape_rank != spec.TiledDataRank()) {
+    return absl::InvalidArgumentError(
+        "Tensor shape rank should be equal to the tiled data rank of the input "
+        "spec.");
+  }
   if (!TileAssignmentMatchesMesh(spec, device_mesh)) {
     return absl::InvalidArgumentError(
         "Device mesh and tile assignment need to have the same number of "
         "sharded dims.");
   }
 
+  TF_ASSIGN_OR_RETURN(std::vector<int64_t> axes,
+                      GetMeshDimPermutationOrderInShardingSpec(
+                          spec, device_mesh, consider_reverse_device_meshes));
   // Transform tile_assignment_dimensions using found transformation (axes).
   std::vector<int64_t> tensor_dim_to_device_dim(tensor_shape_rank, -1);
   int mesh_index = 0;
@@ -1533,7 +1509,7 @@ std::vector<std::vector<int64_t>> GetReplicaGroupsAlongOneDimension(
 // Create a HloSharding that tiles some tensor dims on some device mesh dims.
 HloSharding Tile(const Shape& tensor_shape,
                  absl::Span<const int64_t> tensor_dims,
-                 absl::Span<const int64_t> mesh_dims,
+                 const std::vector<std::vector<int64_t>>& mesh_dims,
                  const Array<int64_t>& device_mesh) {
   CHECK_EQ(tensor_dims.size(), mesh_dims.size());
   CHECK(tensor_shape.IsArray());
@@ -1542,8 +1518,12 @@ HloSharding Tile(const Shape& tensor_shape,
   // Split on certain mesh dimensions
   int64_t split_prod = 1;
   for (size_t i = 0; i < tensor_dims.size(); ++i) {
-    tile_assignment_dimensions[tensor_dims[i]] = device_mesh.dim(mesh_dims[i]);
-    split_prod *= device_mesh.dim(mesh_dims[i]);
+    int64_t num_devices_for_tensor_dim = 1;
+    for (int64_t mesh_dim_idx : mesh_dims[i]) {
+      num_devices_for_tensor_dim *= device_mesh.dim(mesh_dim_idx);
+    }
+    tile_assignment_dimensions[tensor_dims[i]] = num_devices_for_tensor_dim;
+    split_prod *= num_devices_for_tensor_dim;
   }
   // Replicate on remaining mesh dimensions
   bool replicate_on_last_tile_dim = false;
@@ -1557,35 +1537,58 @@ HloSharding Tile(const Shape& tensor_shape,
   std::vector<int64_t> tile_assignment_devices;
   tile_assignment_devices.reserve(device_mesh.num_elements());
 
-  std::vector<int64_t> tmp_indices(device_mesh.num_dimensions(), 0);
-  std::function<void(int64_t, std::vector<int64_t>)>
+  std::function<void(int64_t, int64_t, std::vector<int64_t>)>
       generate_tile_assignment_devices;
-  generate_tile_assignment_devices = [&](int64_t tensor_dim,
+  generate_tile_assignment_devices = [&](int64_t current_tensor_dim,
+                                         int64_t current_mesh_dim_idx,
                                          std::vector<int64_t> mesh_indices) {
-    if (tensor_dim == tensor_shape.rank() - 1) {
-      AppendFlattenElements(&tile_assignment_devices, device_mesh, mesh_indices,
-                            -1, tmp_indices);
+    int64_t current_tensor_dim_index =
+        GetIndex(tensor_dims, current_tensor_dim);
+    bool proceed_to_next_tensor_dim = false;
+    if (current_tensor_dim_index >= 0) {
+      proceed_to_next_tensor_dim =
+          (current_mesh_dim_idx ==
+           mesh_dims[current_tensor_dim_index].size() - 1);
     } else {
-      int64_t next_tensor_dim = tensor_dim + 1;
-      int64_t next_mesh_dim = -1;
+      proceed_to_next_tensor_dim = true;
+    }
 
-      int64_t index = GetIndex(tensor_dims, next_tensor_dim);
-      if (index >= 0) {
-        next_mesh_dim = mesh_dims[index];
-      }
+    if (proceed_to_next_tensor_dim &&
+        current_tensor_dim == tensor_shape.rank() - 1) {
+      AppendFlattenElements(&tile_assignment_devices, device_mesh,
+                            mesh_indices);
+      return;
+    }
 
-      for (int64_t i = 0; i < tile_assignment_dimensions[next_tensor_dim];
-           ++i) {
-        if (next_mesh_dim != -1) {
-          mesh_indices[next_mesh_dim] = i;
-        }
-        generate_tile_assignment_devices(next_tensor_dim, mesh_indices);
+    int64_t next_tensor_dim, next_mesh_dim_idx = -1, next_mesh_dim = -1;
+    if (proceed_to_next_tensor_dim) {
+      next_tensor_dim = current_tensor_dim + 1;
+      next_mesh_dim_idx = -1;
+      int64_t next_tensor_dim_index = GetIndex(tensor_dims, next_tensor_dim);
+      if (next_tensor_dim_index >= 0) {
+        next_mesh_dim_idx = 0;
+        next_mesh_dim = mesh_dims[next_tensor_dim_index][0];
       }
+    } else {
+      next_tensor_dim = current_tensor_dim;
+      next_mesh_dim_idx = current_mesh_dim_idx + 1;
+      next_mesh_dim = mesh_dims[current_tensor_dim_index][next_mesh_dim_idx];
+    }
+
+    int64_t limit =
+        (next_mesh_dim_idx >= 0) ? device_mesh.dim(next_mesh_dim) : 1;
+    for (int64_t i = 0; i < limit; ++i) {
+      if (next_mesh_dim != -1) {
+        mesh_indices[next_mesh_dim] = i;
+      }
+      generate_tile_assignment_devices(next_tensor_dim, next_mesh_dim_idx,
+                                       mesh_indices);
     }
   };
 
   std::vector<int64_t> mesh_indices(device_mesh.num_dimensions(), -1);
-  generate_tile_assignment_devices(-1, mesh_indices);
+  generate_tile_assignment_devices(/*current_tensor_dim=*/-1,
+                                   /*current_mesh_dim_idx=*/-1, mesh_indices);
 
   // Make HloSharding
   Array<int64_t> tile_assignment(tile_assignment_dimensions);
@@ -1600,6 +1603,17 @@ HloSharding Tile(const Shape& tensor_shape,
              : HloSharding::Tile(std::move(tile_assignment));
 }
 
+HloSharding Tile(const Shape& tensor_shape,
+                 absl::Span<const int64_t> tensor_dims,
+                 absl::Span<const int64_t> mesh_dims,
+                 const Array<int64_t>& device_mesh) {
+  std::vector<std::vector<int64_t>> mesh_dims_general(mesh_dims.size());
+  for (int i = 0; i < mesh_dims.size(); ++i) {
+    mesh_dims_general[i].push_back(mesh_dims[i]);
+  }
+  return Tile(tensor_shape, tensor_dims, mesh_dims_general, device_mesh);
+}
+
 AliasMap BuildAliasMap(const HloModule* module,
                        const HloInputOutputAliasConfig& alias_config) {
   AliasMap alias_map;
@@ -1607,10 +1621,6 @@ AliasMap BuildAliasMap(const HloModule* module,
   HloComputation* entry = module->entry_computation();
   const auto& parameter_instructions = entry->parameter_instructions();
   const HloInstruction* output_tuple = entry->root_instruction();
-
-  if (IsCustomCallMarker(output_tuple)) {
-    output_tuple = output_tuple->operand(0);
-  }
 
   absl::flat_hash_map<int64_t, absl::flat_hash_map<int64_t, HloInstruction*>>
       parameter_index_to_operand_map;

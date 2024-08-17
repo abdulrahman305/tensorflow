@@ -3,10 +3,6 @@ load("@local_config_cuda//cuda:build_defs.bzl", "if_cuda")
 load("@local_config_rocm//rocm:build_defs.bzl", "if_rocm")
 load("@local_tsl//tsl/platform:build_config.bzl", "tf_proto_library")
 load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
-load(
-    "@local_tsl//tsl/platform/default:cuda_build_defs.bzl",
-    "if_cuda_is_configured",
-)
 load("//xla:pytype.default.bzl", "pytype_strict_library")
 load("//xla:strict.default.bzl", "py_strict_library", "py_strict_test")
 load(
@@ -18,7 +14,6 @@ load(
     "//xla/tsl:tsl.bzl",
     "if_cuda_or_rocm",
     "if_google",
-    "if_oss",
     "internal_visibility",
 )
 load("//xla/tsl:tsl.default.bzl", "get_compatible_with_portable", "tsl_pybind_extension")
@@ -432,9 +427,9 @@ cc_library(
         "@local_tsl//tsl/profiler/protobuf:profiled_instructions_proto_cc",
     ] + if_cuda([
         "@local_config_cuda//cuda:cuda_headers",
-        # TODO(b/324133505): remove this dependency after JAX OSS migrates to cuda plugin.
-        "//xla/stream_executor/cuda:cuda_driver",
     ]) + if_rocm([
+        # keep sorted
+        "@local_config_rocm//rocm:hip",
         "@local_config_rocm//rocm:rocm_headers",
     ]) + if_cuda_or_rocm([
         ":py_client_gpu",  # TODO(b/337876408): remove after migration to plugin
@@ -1175,7 +1170,7 @@ cc_library(
         "//xla/service:hlo_proto_cc",
         "//xla/service:name_uniquer",
         "//xla/service:tuple_simplifier",
-        "@local_tsl//tsl/lib/strings:proto_serialization",
+        "//xla/tsl/lib/strings:proto_serialization",
         "@local_tsl//tsl/platform:env",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:logging",
@@ -1187,26 +1182,6 @@ tf_proto_library(
     name = "py_host_callback_proto",
     srcs = ["py_host_callback.proto"],
     cc_api_version = 2,
-)
-
-# TODO(phawkins): the configuration settings here are overly confusing. The right fix is to split
-# xla_extension.so so that each backend is a separate plugin, however that must wait for a clean
-# ABI separation between devices.
-config_setting(
-    name = "link_gpu_plugin",
-    define_values = {"xla_python_enable_gpu": "true"},
-)
-
-bool_flag(
-    name = "enable_gpu",
-    build_setting_default = True,
-)
-
-config_setting(
-    name = "gpu_enabled",
-    flag_values = {
-        ":enable_gpu": "True",
-    },
 )
 
 # If this flag is enabled, it sets RPATH on the xla_extension to values that are suitable for
@@ -1221,17 +1196,6 @@ config_setting(
     flag_values = {
         ":jax_cuda_pip_rpaths": "True",
     },
-)
-
-# We cannot nest select and if_cuda_is_configured so we introduce
-# a standalone cc_library target.
-cc_library(
-    name = "gpu_plugin_deps",
-    deps = [
-        "//xla/service:gpu_plugin",
-    ] + if_cuda_is_configured([
-        "//xla/stream_executor:cuda_platform",
-    ]),
 )
 
 cc_library(
@@ -1296,13 +1260,6 @@ tsl_pybind_extension(
         "-fexceptions",
         "-fno-strict-aliasing",
     ],
-    defines = if_google(
-        [],
-        select({
-            ":gpu_enabled": ["XLA_PYTHON_ENABLE_GPU=1"],
-            "//conditions:default": [],
-        }),
-    ),
     features = ["-use_header_modules"],
     linkopts = select({
         ":use_jax_cuda_pip_rpaths": [
@@ -1401,11 +1358,12 @@ tsl_pybind_extension(
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform/cloud:gcs_file_system",
     ] + select({
-        # gloo transport only builds on linux
+        # gloo tcp transport only builds on linux
         "//xla/tsl:macos": [
             "//xla/pjrt/cpu:gloo_collectives",
             "//xla/pjrt/cpu:gloo_kv_store",
-        ] + if_oss(["@gloo//:transport_uv"]),
+            "@gloo//:transport_uv",
+        ],
         "//xla/tsl:windows": [],
         "//conditions:default": [
             "//xla/pjrt/cpu:gloo_collectives",
@@ -1418,20 +1376,7 @@ tsl_pybind_extension(
         "//conditions:default": [
             "//xla/pjrt/cpu:mpi_collectives",
         ],
-    }) + if_google(
-        [],
-        select({
-            ":gpu_enabled": [
-                ":gpu_support",
-            ],
-            "//conditions:default": [],
-        }) + select({
-            ":link_gpu_plugin": [
-                ":gpu_plugin_deps",
-            ],
-            "//conditions:default": [],
-        }),
-    ),
+    }),
 )
 
 cc_library(

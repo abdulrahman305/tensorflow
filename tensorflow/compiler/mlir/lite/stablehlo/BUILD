@@ -641,11 +641,15 @@ cc_library(
         "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:custom_call",
         "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:dot_general",
         "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:gather",
+        "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:iota",
         "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:pad",
         "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:reduce",
         "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:reduce_window",
+        "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:slice",
+        "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:sort",
         "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:util",
         "//tensorflow/compiler/mlir/tensorflow",
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
@@ -693,7 +697,7 @@ cc_library(
         "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:conv_util",
         "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:pad_util",
         "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:reduce_window",
-        "@llvm-project//llvm:Support",
+        "//tensorflow/compiler/mlir/lite/stablehlo/transforms/legalize_hlo_conversions:slice",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
@@ -798,6 +802,39 @@ cc_library(
         "@llvm-project//mlir:TransformUtils",
         "@local_xla//xla/mlir_hlo",
     ],
+)
+
+cc_library(
+    name = "lift_callsite_loc_caller",
+    srcs = ["transforms/torch/lift_callsite_loc_caller_pass.cc"],
+    copts = ["-Ithird_party"],
+    deps = [
+        ":passes_inc_gen",
+        ":prepare_hlo",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+    ],
+    alwayslink = True,
+)
+
+cc_library(
+    name = "build_stablehlo_composite",
+    srcs = ["transforms/torch/build_stablehlo_composite_pass.cc"],
+    copts = ["-Ithird_party"],
+    deps = [
+        ":passes_inc_gen",
+        ":prepare_hlo",
+        "@com_google_absl//absl/strings",
+        "@jsoncpp_git//:jsoncpp",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:Analysis",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+        "@stablehlo//:stablehlo_ops",
+    ],
+    alwayslink = True,
 )
 
 cc_library(

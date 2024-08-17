@@ -42,9 +42,20 @@ limitations under the License.
 #include "tsl/platform/test.h"
 
 namespace xla::cpu {
-namespace {
 
-using IrEmitter2Test = HloTestBase;
+class IrEmitter2Test : public HloTestBase {
+ public:
+  // This is a proxy function that allows us call private method
+  // IrEmitter2::EmitKernelPrototype.
+  static auto EmitKernelPrototype(
+      IrEmitter2& ir_emitter,
+      const std::vector<IrEmitter2::KernelParameter>& arguments,
+      const std::vector<IrEmitter2::KernelParameter>& results) {
+    return ir_emitter.EmitKernelPrototype("test", arguments, results);
+  }
+};
+
+namespace {
 
 TEST_F(IrEmitter2Test, BuildKernelPrototype) {
   auto hlo = std::make_unique<HloModule>("test", HloModuleConfig());
@@ -66,9 +77,8 @@ TEST_F(IrEmitter2Test, BuildKernelPrototype) {
                                                       {shape, res1}};
 
   IrEmitter2 ir_emitter(*hlo, module.get(), /*nested_ir_emitter=*/nullptr);
-  TF_ASSERT_OK_AND_ASSIGN(
-      IrEmitter2::KernelPrototype prototype,
-      ir_emitter.EmitKernelPrototype("test", arguments, results));
+  TF_ASSERT_OK_AND_ASSIGN(auto prototype,
+                          EmitKernelPrototype(ir_emitter, arguments, results));
 
   llvm::IRBuilder<> b(context);
   b.SetInsertPoint(prototype.function->getEntryBlock().getTerminator());
@@ -85,45 +95,45 @@ TEST_F(IrEmitter2Test, BuildKernelPrototype) {
   ASSERT_TRUE(*RunFileCheck(llvm_ir::DumpToString(module.get()), R"(
     CHECK: define ptr @test(ptr %0) #0 {
 
-    CHECK-NEXT: getelementptr inbounds %SE_HOST_KernelCallFrame, {{.*}} i32 0
-    CHECK:      getelementptr inbounds %SE_HOST_KernelThreadDim, {{.*}} i32 0
-    CHECK:      getelementptr inbounds %SE_HOST_KernelThreadDim, {{.*}} i32 1
-    CHECK:      getelementptr inbounds %SE_HOST_KernelThreadDim, {{.*}} i32 2
+    CHECK-NEXT: getelementptr inbounds nuw %SE_HOST_KernelCallFrame, {{.*}} i32 0
+    CHECK:      getelementptr inbounds nuw %SE_HOST_KernelThreadDim, {{.*}} i32 0
+    CHECK:      getelementptr inbounds nuw %SE_HOST_KernelThreadDim, {{.*}} i32 1
+    CHECK:      getelementptr inbounds nuw %SE_HOST_KernelThreadDim, {{.*}} i32 2
     CHECK:      load i64
     CHECK:      load i64
     CHECK:      load i64
 
-    CHECK-NEXT: getelementptr inbounds %SE_HOST_KernelCallFrame, {{.*}} i32 1
-    CHECK:      getelementptr inbounds %SE_HOST_KernelThread, {{.*}} i32 0
-    CHECK:      getelementptr inbounds %SE_HOST_KernelThread, {{.*}} i32 1
-    CHECK:      getelementptr inbounds %SE_HOST_KernelThread, {{.*}} i32 2
+    CHECK-NEXT: getelementptr inbounds nuw %SE_HOST_KernelCallFrame, {{.*}} i32 1
+    CHECK:      getelementptr inbounds nuw %SE_HOST_KernelThread, {{.*}} i32 0
+    CHECK:      getelementptr inbounds nuw %SE_HOST_KernelThread, {{.*}} i32 1
+    CHECK:      getelementptr inbounds nuw %SE_HOST_KernelThread, {{.*}} i32 2
     CHECK:      load i64
     CHECK:      load i64
     CHECK:      load i64
 
-    CHECK-NEXT: getelementptr inbounds %SE_HOST_KernelCallFrame, {{.*}} i32 3
+    CHECK-NEXT: getelementptr inbounds nuw %SE_HOST_KernelCallFrame, {{.*}} i32 3
     CHECK:      load ptr
     CHECK:      getelementptr %SE_HOST_KernelArg, {{.*}} i32 0, i32 0
-    CHECK:      %[[ARG0:.+]] = load ptr, {{.*}}, !align ![[ALIGNMENT:.+]]
+    CHECK:      %[[ARG0:.+]] = load ptr, {{.*}}, !invariant.load ![[SCOPE0:.+]], !dereferenceable ![[DEREF_BYTES:.*]], !align ![[ALIGNMENT:.+]]
 
-    CHECK-NEXT: getelementptr inbounds %SE_HOST_KernelCallFrame, {{.*}} i32 3
+    CHECK-NEXT: getelementptr inbounds nuw %SE_HOST_KernelCallFrame, {{.*}} i32 3
     CHECK:      load ptr
     CHECK:      getelementptr %SE_HOST_KernelArg, {{.*}} i32 1, i32 0
-    CHECK:      %[[ARG1:.+]] = load ptr, {{.*}}, !align ![[ALIGNMENT]]
+    CHECK:      %[[ARG1:.+]] = load ptr, {{.*}}, !invariant.load ![[SCOPE0]], !dereferenceable ![[DEREF_BYTES]], !align ![[ALIGNMENT]]
 
-    CHECK-NEXT: getelementptr inbounds %SE_HOST_KernelCallFrame, {{.*}} i32 3
+    CHECK-NEXT: getelementptr inbounds nuw %SE_HOST_KernelCallFrame, {{.*}} i32 3
     CHECK:      load ptr
     CHECK:      getelementptr %SE_HOST_KernelArg, {{.*}} i32 2, i32 0
-    CHECK:      %[[ARG2:.+]] = load ptr, {{.*}}, !align ![[ALIGNMENT]]
+    CHECK:      %[[ARG2:.+]] = load ptr, {{.*}}, !invariant.load ![[SCOPE0]], !dereferenceable ![[DEREF_BYTES]], !align ![[ALIGNMENT]]
 
-    CHECK-NEXT: getelementptr inbounds %SE_HOST_KernelCallFrame, {{.*}} i32 3
+    CHECK-NEXT: getelementptr inbounds nuw %SE_HOST_KernelCallFrame, {{.*}} i32 3
     CHECK:      load ptr
     CHECK:      getelementptr %SE_HOST_KernelArg, {{.*}} i32 3, i32 0
-    CHECK:      %[[ARG3:.+]] = load ptr, {{.*}}, !align ![[ALIGNMENT]]
+    CHECK:      %[[ARG3:.+]] = load ptr, {{.*}}, !invariant.load ![[SCOPE0]], !dereferenceable ![[DEREF_BYTES]], !align ![[ALIGNMENT]]
 
     CHECK-NEXT: %[[PTR0:.+]] = getelementptr inbounds float, ptr %[[ARG0]]
     CHECK:      load float, ptr %[[PTR0]], align 4,
-    CHECK-SAME:                            !invariant.load ![[SCOPE0:.+]],
+    CHECK-SAME:                            !invariant.load ![[SCOPE0]],
     CHECK-SAME:                            !noalias ![[SCOPE1:.+]]
 
     CHECK-NEXT: %[[PTR1:.+]] = getelementptr inbounds float, ptr %[[ARG1]]
@@ -143,7 +153,7 @@ TEST_F(IrEmitter2Test, BuildKernelPrototype) {
     CHECK: }
 
     #0 = { uwtable "frame-pointer"="all" "prefer-vector-width"="256" }
-
+    CHECK-DAG: ![[DEREF_BYTES]] = !{i64 32}
     CHECK-DAG: ![[ALIGNMENT]] = !{i64 16}
     CHECK-DAG: ![[SCOPE0]] = !{}
     CHECK-DAG: ![[SCOPE1]] = !{![[RES0:.+]], ![[RES1:.+]]}

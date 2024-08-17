@@ -124,6 +124,7 @@ cc_library(
     hdrs = ["conv.h"],
     deps = [
         ":conv_util",
+        ":op_util_common",
         "//tensorflow/compiler/mlir/lite:tensorflow_lite",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:ArithDialect",
@@ -153,6 +154,7 @@ cc_library(
     srcs = ["pad.cc"],
     hdrs = ["pad.h"],
     deps = [
+        ":op_util_common",
         ":pad_util",
         "//tensorflow/compiler/mlir/lite:tensorflow_lite",
         "@llvm-project//llvm:Support",
@@ -169,6 +171,7 @@ cc_library(
     srcs = ["pad_util.cc"],
     hdrs = ["pad_util.h"],
     deps = [
+        ":op_util_common",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
@@ -202,6 +205,7 @@ cc_library(
         ":util",
         "//tensorflow/compiler/mlir/lite:tensorflow_lite",
         "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:TransformUtils",
@@ -229,6 +233,54 @@ cc_library(
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Support",
+        "@local_xla//xla/mlir_hlo",
+    ],
+)
+
+cc_library(
+    name = "slice",
+    srcs = ["slice.cc"],
+    hdrs = ["slice.h"],
+    deps = [
+        ":op_util_common",
+        "//tensorflow/compiler/mlir/lite:tensorflow_lite",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:TransformUtils",
+        "@local_xla//xla/mlir_hlo",
+    ],
+)
+
+cc_library(
+    name = "sort",
+    srcs = ["sort.cc"],
+    hdrs = ["sort.h"],
+    deps = [
+        "//tensorflow/compiler/mlir/lite:tensorflow_lite",
+        "//tensorflow/compiler/mlir/lite/stablehlo:hlo_matchers",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:TransformUtils",
+        "@local_xla//xla/mlir_hlo",
+    ],
+)
+
+cc_library(
+    name = "iota",
+    srcs = ["iota.cc"],
+    hdrs = ["iota.h"],
+    deps = [
+        ":op_util_common",
+        "//tensorflow/compiler/mlir/lite:tensorflow_lite",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:TransformUtils",
         "@local_xla//xla/mlir_hlo",
     ],
 )

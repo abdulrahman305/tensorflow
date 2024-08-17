@@ -84,6 +84,7 @@ xla_cc_binary(
     testonly = True,
     tags = [
         "gpu",
+        "no_rocm",
         "nomac",
     ] + tf_gpu_tests_tags(),
     deps = [
@@ -171,12 +172,9 @@ xla_test(
     name = "functional_hlo_runner_test",
     srcs = ["functional_hlo_runner_test.cc"],
     backend_tags = {
-        # This test is tagged "manual" because it requires multiple (2) GPUs.
         "gpu": [
-            "manual",
-            "multi_gpu",
+            "multi_gpu_h100",
             "no_oss",
-            "notap",
         ],
     },
     backends = [
