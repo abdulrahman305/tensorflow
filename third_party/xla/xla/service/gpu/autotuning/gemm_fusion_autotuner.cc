@@ -85,11 +85,11 @@ limitations under the License.
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor_memory_allocator.h"
 #include "xla/tools/hlo_decomposer.h"
+#include "xla/tsl/lib/core/bits.h"
 #include "xla/tsl/util/proto/proto_utils.h"
 #include "xla/util.h"
 #include "xla/xla.pb.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/lib/core/bits.h"
 #include "tsl/platform/blocking_counter.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/path.h"
@@ -1208,7 +1208,10 @@ absl::Status ExchangeResults(KeyValueStoreInterface& key_value_store,
         std::string autotune_results_str,
         key_value_store.Get(
             absl::StrFormat("%s_%d_%d", kKeyPrefix, module_id, i),
-            absl::Hours(24)));  // Infinite duration causes issues with MPI.
+            // TODO(b/361009609): reset to infinite duration once solved.
+            // Using an infinite duration here leads to issues with MPI, see
+            // https://github.com/google/jax/issues/22995.
+            absl::Hours(24)));
     TF_RETURN_IF_ERROR(
         AutotunerUtil::LoadAutotuneResults(autotune_results_str, true));
   }

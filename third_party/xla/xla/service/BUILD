@@ -556,7 +556,9 @@ cc_library(
         "//xla/hlo/ir:hlo",
         "//xla/hlo/ir:hlo_instruction_utils",
         "//xla/hlo/utils:hlo_query",
+        "//xla/service:call_graph",
         "//xla/service:hlo_parser",
+        "//xla/service:tuple_points_to_analysis",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
@@ -825,6 +827,7 @@ cc_library(
     deps = [
         ":hlo_pass",
         "//xla/hlo/ir:hlo",
+        "//xla/service/spmd/shardy:constants",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@local_tsl//tsl/platform:errors",
@@ -3433,6 +3436,7 @@ cc_library(
         "//xla:util",
         "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
+        "//xla/tsl/lib/core:bitmap",
         "@com_google_absl//absl/algorithm",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_map",
@@ -3441,7 +3445,6 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
-        "@local_tsl//tsl/lib/core:bitmap",
         "@local_tsl//tsl/platform:errors",
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:status",
@@ -6470,6 +6473,7 @@ cc_library(
         "//xla:util",
         "//xla/hlo/ir:hlo",
         "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
@@ -6498,6 +6502,7 @@ xla_cc_test(
         "//xla:util",
         "//xla/hlo/ir:hlo",
         "//xla/tests:hlo_test_base",
+        "//xla/tests:verified_hlo_module",
         "//xla/tests:xla_internal_test_main",
         "//xla/tsl/lib/core:status_test_util",
         "@com_google_absl//absl/container:flat_hash_set",
@@ -7672,7 +7677,6 @@ py_strict_test(
     python_version = "PY3",
     tags = [
         "no_oss",
-        "nopip",
     ],
     deps = [
         ":generate_test_hlo_checks",
@@ -7989,6 +7993,25 @@ cc_library(
 )
 
 cc_library(
+    name = "batched_gather_scatter_normalizer",
+    srcs = ["batched_gather_scatter_normalizer.cc"],
+    hdrs = ["batched_gather_scatter_normalizer.h"],
+    deps = [
+        ":op_expander_pass",
+        "//xla:shape_util",
+        "//xla:util",
+        "//xla/hlo/ir:hlo",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_library(
     name = "reduce_window_rewriter",
     srcs = ["reduce_window_rewriter.cc"],
     hdrs = ["reduce_window_rewriter.h"],
@@ -8111,6 +8134,18 @@ xla_cc_test(
         ":gather_simplifier",
         "//xla/tests:hlo_test_base",
         "//xla/tests:xla_internal_test_main",
+    ],
+)
+
+xla_cc_test(
+    name = "batched_gather_scatter_normalizer_test",
+    srcs = ["batched_gather_scatter_normalizer_test.cc"],
+    deps = [
+        ":batched_gather_scatter_normalizer",
+        "//xla/tests:hlo_test_base",
+        "//xla/tests:xla_internal_test_main",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -8447,6 +8482,18 @@ xla_cc_test(
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:test",
         "@local_tsl//tsl/platform:test_main",
+    ],
+)
+
+xla_cc_test(
+    name = "propagate_original_value_test",
+    srcs = ["propagate_original_value_test.cc"],
+    deps = [
+        ":instruction_fusion",
+        "//xla:xla_data_proto_cc",
+        "//xla/tests:hlo_test_base",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 

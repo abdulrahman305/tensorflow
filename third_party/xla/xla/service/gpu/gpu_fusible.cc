@@ -54,7 +54,7 @@ bool HasAnyTiledTransposeRoot(const HloComputation& computation) {
   return absl::c_any_of(GetFusionRoots(computation),
                         [&](const HloInstruction* instr) {
                           return GetDescriptionForTiledTransposeEmitter(
-                                     *instr, FindNonTrivialHero(*instr))
+                                     FindNonTrivialHero(*instr))
                               .has_value();
                         });
 }
@@ -222,7 +222,7 @@ bool IsInputFusibleTranspose(const HloInstruction& instr) {
   if (instr.opcode() == HloOpcode::kFusion) {
     return HasAnyTiledTransposeRoot(*instr.fused_instructions_computation());
   }
-  return GetDescriptionForTiledTransposeEmitter(instr, instr).has_value();
+  return GetDescriptionForTiledTransposeEmitter(instr).has_value();
 }
 
 const HloInstruction* GetRealHeroForMultiOutputFusion(
@@ -234,8 +234,7 @@ const HloInstruction* GetRealHeroForMultiOutputFusion(
   if (!instr.IsMultiOutputFusion()) {
     const auto& hero = FindNonTrivialHero(*fused_expression_root);
     if (IsRealReductionHero(*fused_expression_root, hero) ||
-        GetDescriptionForTiledTransposeEmitter(*fused_expression_root, hero)
-            .has_value()) {
+        GetDescriptionForTiledTransposeEmitter(hero).has_value()) {
       return &hero;
     }
     return fused_expression_root;
@@ -247,7 +246,7 @@ const HloInstruction* GetRealHeroForMultiOutputFusion(
   for (auto* inst : fused_expression_root->mutable_operands()) {
     const auto& hero = FindNonTrivialHero(*inst);
     if (IsRealReductionHero(*inst, hero) ||
-        GetDescriptionForTiledTransposeEmitter(*inst, hero).has_value()) {
+        GetDescriptionForTiledTransposeEmitter(hero).has_value()) {
       return &hero;
     }
   }
@@ -258,13 +257,11 @@ FusionDecision FusionHeroesAreCompatible(const HloInstruction* hero1,
                                          const HloInstruction* hero2) {
   auto hero1_is_unnested_reduce =
       IsReductionFromOrToContiguousDimensions(*hero1);
-  auto tiled_transpose_hero1 =
-      GetDescriptionForTiledTransposeEmitter(*hero1, *hero1);
+  auto tiled_transpose_hero1 = GetDescriptionForTiledTransposeEmitter(*hero1);
   bool hero1_is_unnested_transpose = tiled_transpose_hero1.has_value();
   bool hero2_is_unnested_reduce =
       IsReductionFromOrToContiguousDimensions(*hero2);
-  auto tiled_transpose_hero2 =
-      GetDescriptionForTiledTransposeEmitter(*hero2, *hero2);
+  auto tiled_transpose_hero2 = GetDescriptionForTiledTransposeEmitter(*hero2);
   bool hero2_is_unnested_transpose = tiled_transpose_hero2.has_value();
 
   if (hero1_is_unnested_reduce && hero2_is_unnested_reduce &&
@@ -332,8 +329,7 @@ FusionDecision ShapesCompatibleForMultiOutputFusion(
                            ? FindNonTrivialHero(*element_instr)
                            : *element_instr;
     if (IsReductionFromOrToContiguousDimensions(*element_instr) ||
-        GetDescriptionForTiledTransposeEmitter(*element_instr, hero)
-            .has_value()) {
+        GetDescriptionForTiledTransposeEmitter(hero).has_value()) {
       return hero.operand(0)->shape();
     }
     return element_instr->shape();
@@ -394,7 +390,7 @@ bool IsUniversallyLoopFusible(const HloInstruction& instr) {
 
   switch (instr.opcode()) {
     case HloOpcode::kCopy:
-      return !GetDescriptionForTiledTransposeEmitter(instr, instr).has_value();
+      return !GetDescriptionForTiledTransposeEmitter(instr).has_value();
 
     case HloOpcode::kFusion:
       return instr.fusion_kind() == HloInstruction::FusionKind::kLoop;
@@ -633,7 +629,7 @@ static int64_t SharedMemoryUsageNoCache(const HloInstruction& instr) {
       // from potential x-tiling).
       return 4 * 32 * 33 * primitive_size * num_variadic;
     }
-  } else if (auto tr = GetDescriptionForTiledTransposeEmitter(instr, instr)) {
+  } else if (auto tr = GetDescriptionForTiledTransposeEmitter(instr)) {
     // Tile size for transposition.
     int64_t primitive_size =
         ShapeUtil::ByteSizeOfPrimitiveType(instr.shape().element_type());
@@ -989,32 +985,6 @@ bool IsGenericTritonFusion(const HloInstruction& instr) {
                  .kind() == kTritonFusionKind;
 }
 
-bool MayPreventVectorization(const HloFusionAdaptor& fusion) {
-  // An empirically chosen constant: unrolling concat with a large amount of
-  // arguments causes excessive register spilling.
-  static constexpr int kMaxConcatArgumentsForUnrolling = 10;
-  return HloAnyOf(fusion, [&](auto node) {
-    switch (node.opcode()) {
-      case HloOpcode::kReduceWindow:
-      case HloOpcode::kSort:
-      case HloOpcode::kDot:
-      case HloOpcode::kSin:
-      case HloOpcode::kCos:
-      case HloOpcode::kTan:
-      case HloOpcode::kPower:
-      case HloOpcode::kAtan2:
-        return true;
-      case HloOpcode::kConcatenate:
-        return node.instruction().operand_count() >
-               kMaxConcatArgumentsForUnrolling;
-      case HloOpcode::kReduce:
-        return node.instruction().shape().tuple_shapes_size() > 1;
-      default:
-        return false;
-    }
-  });
-}
-
 std::vector<HloComputation*> GetFusibleComputations(
     const HloModule& module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
@@ -1062,8 +1032,7 @@ LaunchDimensionsConfig ComputeLoopFusionConfig(
   int64_t num_elements = ShapeUtil::ElementsIn(element_shape);
   int64_t n_threads_max = analysis.device_info().threads_per_core_limit() *
                           analysis.device_info().core_count();
-  if (num_elements >= n_threads_max &&
-      !MayPreventVectorization(analysis.fusion())) {
+  if (num_elements >= n_threads_max) {
     unroll_factor = ComputeMaxUnrollFactor(num_elements);
   }
   // CHECK that unroll_factor is a power-of-2, as needed by the logic below.
@@ -1072,10 +1041,7 @@ LaunchDimensionsConfig ComputeLoopFusionConfig(
   // setting unroll_factor to an appropriate number. Setting unroll_factor is
   // safe even if the new unroll_factor doesn't divide the number of elements,
   // as the parallel loop emitter will insert a bounds check in this case to
-  // ensure the out-of-bounds element is not computed and written. Setting
-  // unroll_factor is safe even if MayPreventVectorization returns false, as
-  // the MayPreventVectorization check is an optimization, not a correctness
-  // requirement.
+  // ensure the out-of-bounds element is not computed and written.
   unroll_factor = std::max(
       unroll_factor,
       CeilOfRatio(8, analysis.input_output_info().smallest_output_dtype_bits));
