@@ -18,7 +18,9 @@ limitations under the License.
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <new>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -29,12 +31,14 @@ limitations under the License.
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
 #include "absl/strings/string_view.h"
 #include "xla/hlo/ir/collective_device_list.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
+#include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/ir/hlo_sharding.h"
 #include "xla/hlo/utils/hlo_matchers.h"
@@ -5792,10 +5796,9 @@ ENTRY entry {
                                                             /*num_devices=*/2));
   VLOG(1) << module->ToString();
   const auto root = module->entry_computation()->root_instruction();
-  EXPECT_THAT(root, op::Tuple(op::AllReduce(op::DynamicUpdateSlice(
-                                  _, op::Dot(_, op::Slice(_)), _, _, _)),
-                              op::AllReduce(op::DynamicUpdateSlice(
-                                  _, op::Dot(_, op::Slice(_)), _, _, _))));
+  const auto tuple_element = op::AllReduce(op::DynamicUpdateSlice(
+      _, op::Dot(_, op::AllReduce(op::DynamicUpdateSlice())), _, _, _));
+  EXPECT_THAT(root, op::Tuple(tuple_element, tuple_element));
 }
 
 TEST_P(SpmdPartitioningTest, EinsumRHSWindowedNonContractingNoSharedSharding) {
@@ -9227,9 +9230,9 @@ ENTRY entry {
   constant.1 = f32[6,3]{1,0}
     constant({{2,7,2},{2,9,2},{2,6,2},{3,7,2},{2,9,3},{2,3,2}}),
     sharding={devices=[1,2,2]<=[4] last_tile_dims={manual}}
-   multiply = f32[6,3]{1,0} multiply(constant, constant.1),
+  multiply = f32[6,3]{1,0} multiply(constant, constant.1),
     sharding={devices=[1,2,2]<=[4] last_tile_dims={manual}}
-   ROOT add = f32[6,3]{1,0} add(multiply, constant.1),
+  ROOT add = f32[6,3]{1,0} add(multiply, constant.1),
     sharding={devices=[1,1,2,2]<=[4] last_tile_dims={replicated, manual}}
 }
 )";
@@ -9248,10 +9251,10 @@ ENTRY entry {
                              op::Constant(), op::Reshape()));
   auto multiply =
       AllOf(op::Shape("f32[6,2]"), op::Multiply(multiply_lhs, multiply_rhs));
-  auto replicated_lhs =
-      AllOf(op::Shape("f32[6,3]"),
-            op::Slice(op::AllReduce(op::DynamicUpdateSlice(
-                op::Broadcast(), multiply, op::Constant(), op::Reshape()))));
+  auto replicated_lhs = AllOf(op::Shape("f32[6,3]"),
+                              op::AllReduce(op::DynamicUpdateSlice(
+                                  op::Broadcast(), op::Select(_, multiply, _),
+                                  op::Constant(), op::Reshape())));
   const auto root = module->entry_computation()->root_instruction();
   EXPECT_THAT(root, AllOf(op::Shape("f32[6,3]"),
                           op::Add(replicated_lhs, op::Constant())));
@@ -9357,14 +9360,19 @@ ENTRY entry {
   TF_ASSERT_OK_AND_ASSIGN(auto module,
                           PartitionComputation(hlo_string, /*num_devices=*/6));
   VLOG(1) << module->ToString();
-  auto tiled = AllOf(op::Shape("f32[4,3]"), op::Parameter(0));
+  auto tiled = AllOf(op::Shape("f32[4,3]"), op::Select(_, op::Parameter(0), _));
   auto partially_replicated = AllOf(
       op::Shape("f32[8,4]"),
-      op::Copy(op::Reshape(
-          op::Transpose(op::AllToAll(op::Reshape(op::Slice(op::AllReduce(
-              op::DynamicUpdateSlice(op::Broadcast(), tiled, _, _)))))))));
+      op::Copy(op::Reshape(op::Transpose(op::AllToAll(op::Reshape(op::AllReduce(
+          op::DynamicUpdateSlice(op::Broadcast(), tiled, _, _))))))));
   const auto root = module->entry_computation()->root_instruction();
   EXPECT_THAT(root, partially_replicated);
+
+  const HloInstruction* all_reduce =
+      FindInstruction(module.get(), "all-reduce");
+  EXPECT_NE(all_reduce, nullptr);
+  EXPECT_TRUE(
+      absl::StrContains(all_reduce->ToString(), "replica_groups=[2,3]<=[6]"));
 }
 
 TEST_P(SpmdPartitioningTest, PartialReplicateToTileReshardUnevenPartition) {
@@ -9556,11 +9564,12 @@ ENTRY entry {
   auto piece2 = AllOf(op::Shape("f32[1,3]"), op::Slice(input));
   auto concat = op::Concatenate(piece1, piece2);
   auto partially_replicated =
-      AllOf(op::Shape("f32[4,3]"),
+      AllOf(op::Shape("f32[3,3]"),
             op::AllReduce(op::DynamicUpdateSlice(
-                op::Broadcast(_), op::DynamicSlice(concat, _, _), _, _)));
+                op::Broadcast(_),
+                op::Select(_, op::DynamicSlice(concat, _, _), _), _, _)));
   const auto root = module->entry_computation()->root_instruction();
-  EXPECT_THAT(root, op::Copy(op::Slice(partially_replicated)));
+  EXPECT_THAT(root, op::Copy(partially_replicated));
 }
 
 TEST_P(SpmdPartitioningTest,

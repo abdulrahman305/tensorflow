@@ -29,8 +29,10 @@ limitations under the License.
 #include "absl/strings/str_format.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/synchronization/notification.h"
+#include "xla/stream_executor/gpu/context_map.h"
 #include "xla/stream_executor/gpu/gpu_diagnostics.h"
 #include "xla/stream_executor/gpu/gpu_driver.h"
+#include "xla/stream_executor/gpu/scoped_activate_context.h"
 #include "xla/stream_executor/platform/port.h"
 #include "xla/stream_executor/rocm/rocm_driver_wrapper.h"
 #include "xla/stream_executor/stream_executor.h"
@@ -40,10 +42,6 @@ limitations under the License.
 #include "tsl/platform/numbers.h"
 #include "tsl/platform/stacktrace.h"
 #include "tsl/platform/threadpool.h"
-
-static constexpr bool FLAGS_gpuexec_rocm_driver_inject_init_error = false;
-static constexpr bool FLAGS_gpuexec_rocm_sync_around_driver_calls = false;
-static constexpr bool FLAGS_gpuexec_rocm_device_0_only = false;
 
 #define RETURN_IF_ROCM_ERROR(expr, ...)                                  \
   do {                                                                   \
@@ -67,14 +65,30 @@ static constexpr bool FLAGS_gpuexec_rocm_device_0_only = false;
     }                                                       \
   } while (0)
 
-// Debugging: on each push and pop of a rocm context, verify the current device
-// matches the expected one.
-constexpr bool kVerifyGpuContext = false;
-
 namespace stream_executor {
 namespace gpu {
 
-/* static */ absl::Mutex CreatedContexts::mu_{absl::kConstInit};
+namespace {
+
+// Returns the singleton ContextMap.
+ContextMap<hipCtx_t, GpuContext>* GetContextMap() {
+  static ContextMap<hipCtx_t, GpuContext>* context_map =
+      new ContextMap<hipCtx_t, GpuContext>([](void* ptr) {
+        int device_ordinal;
+        hipError_t result =
+            hipPointerGetAttribute(static_cast<void*>(&device_ordinal),
+                                   HIP_POINTER_ATTRIBUTE_DEVICE_ORDINAL,
+                                   reinterpret_cast<hipDeviceptr_t>(ptr));
+        if (result != hipSuccess) {
+          LOG(FATAL) << "Not able to get the device_ordinal for ptr: " << ptr
+                     << ". Error: " << ToString(result);
+        }
+        return device_ordinal;
+      });
+  return context_map;
+}
+
+}  // namespace
 
 // Formats hipError_t to output prettified values into a log stream.
 // Error summaries taken from:
@@ -158,7 +172,7 @@ namespace {
 // context behind our backs).
 hipCtx_t CurrentContext() {
   hipCtx_t current = rocm::CurrentContextOrDie();
-  if (current != nullptr && !CreatedContexts::Has(current)) {
+  if (current != nullptr && !GetContextMap()->Has(current)) {
     LOG(FATAL) << "current context was not created by the StreamExecutor "
                   "rocm_driver API: "
                << current
@@ -192,73 +206,14 @@ void SynchronizeOrDie() {
   }
 }
 
-thread_local struct ThreadLocalData {
-  int current_device_ordinal;
-  GpuContext* context;  // Only valid if id == a known good context.
-  int depth;
-} tls_data = {};
-
 }  // namespace
 
-ScopedActivateContext::ScopedActivateContext(GpuContext* hip_context) {
-  if (FLAGS_gpuexec_rocm_sync_around_driver_calls) SynchronizeOrDie();
-
-  auto* tls = &tls_data;
-  if (tls->depth == 0) {
-    VLOG(3) << "ScopedActivateContext switching to "
-            << hip_context->device_ordinal();
-    FAIL_IF_ROCM_ERROR(wrap::hipCtxSetCurrent(hip_context->context()),
-                       "Failed setting context");
-    tls->depth = 1;
-    tls->current_device_ordinal = hip_context->device_ordinal();
-    tls->context = hip_context;
-    to_restore_ = nullptr;
-    return;
-  }
-
-  tls->depth++;
-  if (tls->current_device_ordinal == hip_context->device_ordinal()) {
-    if (kVerifyGpuContext) {
-      CHECK_EQ(CurrentContext(), hip_context->context());
-    }
-    DCHECK_EQ(CurrentContext(), hip_context->context());
-    return;
-  }
-  VLOG(3) << "ScopedActivateContext switching device from "
-          << tls->current_device_ordinal << " to "
-          << hip_context->device_ordinal();
-
-  to_restore_ = tls->context;
-  // Set the device and update thread local.
-  FAIL_IF_ROCM_ERROR(wrap::hipCtxSetCurrent(hip_context->context()),
+void GpuContext::SetActive() {
+  FAIL_IF_ROCM_ERROR(wrap::hipCtxSetCurrent(context_),
                      "Failed setting context");
-  tls->current_device_ordinal = hip_context->device_ordinal();
-  tls->context = hip_context;
 }
 
-ScopedActivateContext::~ScopedActivateContext() {
-  if (FLAGS_gpuexec_rocm_sync_around_driver_calls) SynchronizeOrDie();
-
-  auto* tls = &tls_data;
-
-  if (kVerifyGpuContext) {
-    CHECK_EQ(CurrentContext(),
-             tls->context == nullptr ? nullptr : tls->context->context());
-  }
-
-  tls->depth--;
-  DCHECK_GE(tls->depth, 0);
-
-  if (to_restore_ == nullptr) {
-    return;  // Leave context, tls->current_device_ordinal, and tls->context set
-  }
-
-  // Set context and update thread local.
-  FAIL_IF_ROCM_ERROR(wrap::hipCtxSetCurrent(to_restore_->context()),
-                     "Failed setting context");
-  tls->current_device_ordinal = to_restore_->device_ordinal();
-  tls->context = to_restore_;
-}
+bool GpuContext::IsActive() const { return CurrentContext() == context_; }
 
 namespace {
 
@@ -313,12 +268,7 @@ std::string ROCMPointersToCanAccessString(hipDeviceptr_t from,
 // Actually performs the work of ROCM initialization. Wrapped up in one-time
 // execution guard.
 static absl::Status InternalInit() {
-  hipError_t res = hipErrorNoDevice;
-  if (FLAGS_gpuexec_rocm_driver_inject_init_error) {
-    LOG(ERROR) << "injecting ROCM init error; initialization will fail";
-  } else {
-    res = wrap::hipInit(0 /* = flags */);
-  }
+  hipError_t res = wrap::hipInit(0 /* = flags */);
 
   if (res == hipSuccess) {
     return absl::OkStatus();
@@ -418,7 +368,7 @@ static absl::Status InternalInit() {
   CHECK_EQ(hipSuccess, wrap::hipCtxSetCurrent(former_context));
 
   if (res == hipSuccess) {
-    *context = CreatedContexts::Add(new_context, device_ordinal);
+    *context = GetContextMap()->Add(new_context, device_ordinal);
     CHECK(*context != nullptr)
         << "success in this call must entail non-null result";
     VLOG(2) << "created or reused context " << new_context
@@ -445,18 +395,18 @@ static absl::Status InternalInit() {
     return;
   }
   hipCtx_t former_context = CurrentContext();
-  hipError_t res = wrap::hipCtxSetCurrent(context->context());
+  context->SetActive();
   hipDevice_t device;
   CHECK_EQ(hipSuccess, wrap::hipCtxGetDevice(&device));
   CHECK_EQ(hipSuccess, wrap::hipCtxSetCurrent(former_context));
 
-  res = wrap::hipDevicePrimaryCtxRelease(device);
+  auto res = wrap::hipDevicePrimaryCtxRelease(device);
 
   if (res != hipSuccess) {
     LOG(ERROR) << "failed to release HIP context; leaking: " << ToString(res);
   }
 
-  CreatedContexts::Remove(context->context());
+  GetContextMap()->Remove(context->context());
 }
 
 /* static */ absl::Status GpuDriver::FuncGetAttribute(
@@ -1756,9 +1706,6 @@ absl::Status GpuDriver::LaunchKernel(
     return 0;
   }
 
-  if (FLAGS_gpuexec_rocm_device_0_only && device_count > 1) {
-    device_count = 1;
-  }
   return device_count;
 }
 

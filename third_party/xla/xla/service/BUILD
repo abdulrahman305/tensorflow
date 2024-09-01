@@ -49,7 +49,6 @@ package_group(
 tf_proto_library(
     name = "hlo_proto",
     srcs = ["hlo.proto"],
-    cc_api_version = 2,
     make_default_target_header_only = True,
     protodeps = [
         "//xla:xla_data_proto",
@@ -67,20 +66,17 @@ tf_pyclif_proto_library(
 tf_proto_library(
     name = "hlo_profile_printer_data",
     srcs = ["hlo_profile_printer_data.proto"],
-    cc_api_version = 2,
 )
 
 tf_proto_library(
     name = "hlo_execution_profile_data",
     srcs = ["hlo_execution_profile_data.proto"],
-    cc_api_version = 2,
     protodeps = [":hlo_profile_printer_data"],
 )
 
 tf_proto_library(
     name = "metrics_proto",
     srcs = ["metrics.proto"],
-    cc_api_version = 2,
     protodeps = if_google([
         "@com_google_protobuf//:any",
         "@com_google_protobuf//:duration",
@@ -123,6 +119,7 @@ cc_library(
         ":hlo_pass",
         ":shape_inference",
         "//xla:frontend_attributes",
+        "//xla:shape_util",
         "//xla:util",
         "//xla/hlo/ir:hlo",
         "@com_google_absl//absl/container:flat_hash_map",
@@ -1745,9 +1742,6 @@ cc_library(
 xla_test(
     name = "compiler_test",
     srcs = ["compiler_test.cc"],
-    backend_tags = {
-        "gpu": if_google(["requires-gpu-nvidia"]),
-    },
     backends = [
         "gpu",
         "cpu",
@@ -3543,7 +3537,7 @@ cc_library(
 xla_cc_test(
     name = "hlo_unstacker_test",
     srcs = ["hlo_unstacker_test.cc"],
-    tags = ["requires-net:external"],
+    tags = if_google(["requires-net:external"]),
     deps = [
         ":hlo_unstacker",
         "//xla/hlo/ir:hlo",
@@ -5269,6 +5263,8 @@ cc_library(
         ":hlo_verifier",
         "//xla:shape_util",
         "//xla/hlo/ir:hlo",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings:str_format",
         "@local_tsl//tsl/platform:errors",
@@ -7813,7 +7809,6 @@ tf_proto_library(
     name = "test_compilation_environment_proto",
     testonly = 1,
     srcs = ["test_compilation_environment.proto"],
-    cc_api_version = 2,
 )
 
 xla_cc_test(
@@ -8348,7 +8343,6 @@ xla_cc_test(
 tf_proto_library(
     name = "buffer_assignment_proto",
     srcs = ["buffer_assignment.proto"],
-    cc_api_version = 2,
     make_default_target_header_only = True,
 )
 

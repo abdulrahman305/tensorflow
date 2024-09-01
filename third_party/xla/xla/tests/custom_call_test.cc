@@ -1707,6 +1707,43 @@ XLA_FFI_REGISTER_HANDLER(ffi::GetXlaFfiApi(), "__xla_test$$ffi_execution_state",
                              /*execute=*/kIncrementState,
                          });
 
+float last_value = 0.f;
+
+// Similar to InstantiateState above, but takes initial value as an attribute.
+static absl::StatusOr<std::unique_ptr<SomeState>> InstantiateStateWithAttribute(
+    float initial_value) {
+  last_value = initial_value;
+  return std::make_unique<SomeState>(initial_value);
+}
+
+// Similar to IncrementState above, but with attributes. No attribute is used
+// here, but still their type and number must match the instantiate callback.
+static absl::Status IncrementStateWithAttribute(
+    R0F32ResultBuffer out, SomeState* state,
+    [[maybe_unused]] float initial_value) {
+  return IncrementState(out, state);
+}
+
+XLA_FFI_DEFINE_HANDLER(
+    kInstantiateStateWithAttribute, InstantiateStateWithAttribute,
+    ffi::Ffi::BindInstantiate().Attr<float>("initial_value"));
+
+XLA_FFI_DEFINE_HANDLER(kIncrementStateWithAttribute,
+                       IncrementStateWithAttribute,
+                       ffi::Ffi::Bind()
+                           .Ret<R0F32Buffer>()
+                           .Ctx<ffi::State<SomeState>>()
+                           .Attr<float>("initial_value"));
+
+XLA_FFI_REGISTER_HANDLER(ffi::GetXlaFfiApi(),
+                         "__xla_test$$ffi_execution_state_with_attrs", "Host",
+                         {
+                             /*instantiate=*/kInstantiateStateWithAttribute,
+                             /*prepare=*/nullptr,
+                             /*initialize=*/nullptr,
+                             /*execute=*/kIncrementStateWithAttribute,
+                         });
+
 // This test doesn't care about execution results, its intent is just to test if
 // instantiate function was called.
 TEST_F(CustomCallTest, FfiExecutionStateInstantiate) {
@@ -1724,35 +1761,117 @@ TEST_F(CustomCallTest, FfiExecutionStateInstantiate) {
   instantiate_called_counter = 0;
   auto result = Execute(std::move(module), {});
 
-  // Check that instantiate callback was called.
-  EXPECT_EQ(instantiate_called_counter, 1);
+  // Check that instantiate callback was called. Even though we don't care about
+  // the result in this test, log it in case of failure to help debugging.
+  EXPECT_EQ(instantiate_called_counter, 1) << result.status();
 }
 
 TEST_F(CustomCallTest, FfiExecutionStateExecute) {
-  // Execution state is only partially implemented at the moment.
-  GTEST_SKIP() << "Not implemented yet.";
-
-  // TODO(abanas): Actually, this HLO probably creates two custom call thunks,
-  // each one is called once. If yes then fix it, cause the intent is to call
-  // the same custom call twice.
+  // Module that calls custom call in a loop two times.
   const char* const kModuleStr = R"(
     HloModule m
+    lt2 (arg: (s32[], f32[])) -> pred[] {
+      arg = (s32[], f32[]) parameter(0)
+      i =  s32[] get-tuple-element(arg), index=0
+      two = s32[] constant(2)
+      ROOT result = pred[] compare(i, two), direction=LT
+    }
+
+    incr_i_and_call_custom_call (arg: (s32[], f32[])) -> (s32[], f32[]) {
+      arg = (s32[], f32[]) parameter(0)
+      i =  s32[] get-tuple-element(arg), index=0
+      one = s32[] constant(1)
+      i_incr = s32[] add(i, one)
+      custom_call = f32[] custom-call(), custom_call_target=
+        "__xla_test$$ffi_execution_state", api_version=API_VERSION_TYPED_FFI
+      ROOT result = (s32[], f32[]) tuple(i_incr, custom_call)
+    }
+
     ENTRY test {
-      first = f32[] custom-call(), custom_call_target=
-        "__xla_test$$ffi_execution_state", api_version=API_VERSION_TYPED_FFI
-      second = f32[] custom-call(), custom_call_target=
-        "__xla_test$$ffi_execution_state", api_version=API_VERSION_TYPED_FFI
-      ROOT result = (f32[], f32[]) tuple(first, second)
+      i = s32[] constant(0)
+      placeholder = f32[] constant(0.0)
+      tuple = (s32[], f32[]) tuple(i, placeholder)
+      while = (s32[], f32[]) while(tuple), body=incr_i_and_call_custom_call,
+        condition=lt2
+      ROOT result = f32[] get-tuple-element(while), index=1
     }
   )";
   TF_ASSERT_OK_AND_ASSIGN(auto module,
                           ParseAndReturnVerifiedModule(kModuleStr));
 
-  Literal expected0 =
-      LiteralUtil::CreateR0<int32_t>(43.f);  // Incremented once.
-  Literal expected1 =
-      LiteralUtil::CreateR0<int32_t>(44.f);  // Incremented twice.
-  Literal expected = LiteralUtil::MakeTuple({&expected0, &expected1});
+  // Custom call called twice, starting value is hardcoded in the instantiate
+  // callback as 42.0, so we expect 44.0 as a result.
+  Literal expected = LiteralUtil::CreateR0<float>(44.f);
+
+  TF_ASSERT_OK_AND_ASSIGN(auto result, Execute(std::move(module), {}));
+  EXPECT_EQ(result, expected);
+}
+
+// Similarly to FfiExecutionStateInstantiate, this test doesn't care about
+// execution results, its intent is just to test if instantiate function was
+// called (with correct attributes).
+TEST_F(CustomCallTest, FfiExecutionStateInstantiateWithAttribute) {
+  const char* const kModuleStr = R"(
+    HloModule m
+    ENTRY test {
+      ROOT result = f32[] custom-call(), custom_call_target=
+        "__xla_test$$ffi_execution_state_with_attrs",
+        api_version=API_VERSION_TYPED_FFI,
+        backend_config="{initial_value = 43.0 : f32}"
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(kModuleStr));
+
+  // Execute the module, but don't verify the results.
+  last_value = 0;
+  auto result = Execute(std::move(module), {});
+
+  // Check that the correct instantiate callback was called. Even though we
+  // don't care about the result in this test, log it in case of failure to help
+  // debugging.
+  EXPECT_EQ(last_value, 43.f) << result.status();
+}
+
+TEST_F(CustomCallTest, FfiExecutionStateExecuteWithAttribute) {
+  // Module that calls custom call in a loop three times, with initial value set
+  // to 43.0.
+  const char* const kModuleStr = R"(
+    HloModule m
+    lt3 (arg: (s32[], f32[])) -> pred[] {
+      arg = (s32[], f32[]) parameter(0)
+      i =  s32[] get-tuple-element(arg), index=0
+      three = s32[] constant(3)
+      ROOT result = pred[] compare(i, three), direction=LT
+    }
+
+    incr_i_and_call_custom_call (arg: (s32[], f32[])) -> (s32[], f32[]) {
+      arg = (s32[], f32[]) parameter(0)
+      i =  s32[] get-tuple-element(arg), index=0
+      one = s32[] constant(1)
+      i_incr = s32[] add(i, one)
+      custom_call = f32[] custom-call(), custom_call_target=
+        "__xla_test$$ffi_execution_state_with_attrs",
+        api_version=API_VERSION_TYPED_FFI,
+        backend_config="{initial_value = 43.0 : f32}"
+      ROOT result = (s32[], f32[]) tuple(i_incr, custom_call)
+    }
+
+    ENTRY test {
+      i = s32[] constant(0)
+      placeholder = f32[] constant(0.0)
+      tuple = (s32[], f32[]) tuple(i, placeholder)
+      while = (s32[], f32[]) while(tuple), body=incr_i_and_call_custom_call,
+        condition=lt3
+      ROOT result = f32[] get-tuple-element(while), index=1
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(kModuleStr));
+
+  // Custom call called three times, with initial value set to 43.0. So we
+  // expect 46.0 as a result.
+  Literal expected = LiteralUtil::CreateR0<float>(46.f);
 
   TF_ASSERT_OK_AND_ASSIGN(auto result, Execute(std::move(module), {}));
   EXPECT_EQ(result, expected);

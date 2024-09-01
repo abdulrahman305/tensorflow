@@ -294,7 +294,6 @@ void AddRoundingOpsAsUnknown(ConversionTarget& target) {
   target.addDynamicallyLegalOp<
       // go/keep-sorted start
       // clang-format off
-      mhlo::AddOp,
       mhlo::ConstantOp,
       mhlo::FloorOp,
       mhlo::MulOp,
@@ -363,14 +362,13 @@ void SetBinaryBitwiseLegal(ConversionTarget& target) {
 void LegalizeHloToTfLitePass::runOnOperation() {
   MLIRContext* context = &getContext();
   RewritePatternSet patterns(context);
-  patterns.add<odml::ConvertCustomCallOp, odml::LowerDotGeneralOp>(context);
+  patterns.add<odml::LowerDotGeneralOp>(context);
   populateWithGenerated(patterns);
 
   ConversionTarget target(*context);
   target.addLegalDialect<TFL::TensorFlowLiteDialect, mhlo::MhloDialect>();
   target.addLegalOp<func::CallOp, func::ConstantOp, arith::ConstantOp>();
 
-  target.addDynamicallyLegalOp<mhlo::CustomCallOp>(IsCustomCallLegal);
   target.addDynamicallyLegalOp<mhlo::CbrtOp>(IsCbrtLegal);
   target.addDynamicallyLegalOp<mhlo::NotOp>(IsNotOpLegal);
   target.addDynamicallyLegalOp<mhlo::CompareOp>(IsCompareLegal);
@@ -378,6 +376,7 @@ void LegalizeHloToTfLitePass::runOnOperation() {
   target.addIllegalOp<
       // go/keep-sorted start
       // clang-format off
+      mhlo::AddOp,
       mhlo::Atan2Op,
       mhlo::BroadcastInDimOp,
       mhlo::ClampOp,
@@ -419,6 +418,7 @@ void LegalizeHloToTfLitePass::runOnOperation() {
   PopulateWhilePatterns(context, patterns, target);
   PopulateGetDimensionSizePatterns(context, patterns, target);
   PopulateIfPatterns(context, patterns, target);
+  PopulateCustomCallPatterns(context, patterns, target);
 
   if (failed(applyPartialConversion(getOperation(), target,
                                     std::move(patterns)))) {

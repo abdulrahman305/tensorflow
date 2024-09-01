@@ -26,6 +26,7 @@ load(
     "@local_tsl//tsl/platform/default:cuda_build_defs.bzl",
     "if_cuda_is_configured",
 )
+load("//xla:xla.bzl", "xla_cc_test")
 load(
     "//xla/service/gpu:build_defs.bzl",
     "gpu_kernel_library",
@@ -65,6 +66,68 @@ package(
 cc_library(
     name = "gpu_activation_header",
     hdrs = ["gpu_activation.h"],
+    deps = [":scoped_activate_context"],
+)
+
+cc_library(
+    name = "context",
+    hdrs = ["context.h"],
+)
+
+cc_library(
+    name = "context_map",
+    hdrs = ["context_map.h"],
+    deps = [
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/functional:any_invocable",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/synchronization",
+    ],
+)
+
+xla_cc_test(
+    name = "context_map_test",
+    srcs = ["context_map_test.cc"],
+    deps = [
+        ":context_map",
+        "@local_tsl//tsl/platform:test",
+        "@local_tsl//tsl/platform:test_main",
+    ],
+)
+
+cc_library(
+    name = "mock_context",
+    testonly = True,
+    hdrs = ["mock_context.h"],
+    deps = [
+        ":context",
+        "//xla:test",
+    ],
+)
+
+cc_library(
+    name = "scoped_activate_context",
+    srcs = ["scoped_activate_context.cc"],
+    hdrs = ["scoped_activate_context.h"],
+    deps = [
+        ":context",
+        "@com_google_absl//absl/log:check",
+        "@local_tsl//tsl/platform:logging",
+    ],
+)
+
+xla_cc_test(
+    name = "scoped_activate_context_test",
+    srcs = ["scoped_activate_context_test.cc"],
+    deps = [
+        ":mock_context",
+        ":scoped_activate_context",
+        "@com_google_googletest//:gtest_main",
+        "@local_tsl//tsl/platform:env",
+        "@local_tsl//tsl/platform:test",
+        "@local_tsl//tsl/platform:test_main",
+    ],
 )
 
 gpu_only_cc_library(
@@ -72,9 +135,11 @@ gpu_only_cc_library(
     srcs = ["gpu_activation.cc"],
     hdrs = ["gpu_activation.h"],
     deps = [
+        ":context",
         ":gpu_activation_header",
         ":gpu_driver_header",
         ":gpu_executor_header",
+        ":scoped_activate_context",
         "//xla/stream_executor",
     ],
 )
@@ -89,6 +154,7 @@ gpu_only_cc_library(
     name = "gpu_collectives_header",
     hdrs = ["gpu_collectives.h"],
     deps = [
+        ":context",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
     ],
@@ -436,43 +502,18 @@ gpu_only_cc_library(
         "//tensorflow/core/kernels:__subpackages__",
     ]),
     deps = [
-        ":gpu_asm_opts",
-        ":gpu_driver_header",
-        ":gpu_helpers_header",
-        ":gpu_types_header",
-        "//xla:util",
-        "//xla/stream_executor",
-        "//xla/stream_executor/cuda:ptx_compiler",
-        "//xla/stream_executor/cuda:ptx_compiler_support",
-        "//xla/stream_executor/platform",
-        "//xla/tsl/util:env_var",
-        "@com_google_absl//absl/algorithm:container",
-        "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/cleanup",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/container:node_hash_map",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
-        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
-        "@com_google_absl//absl/synchronization",
-        "@com_google_absl//absl/types:span",
-        "@local_config_cuda//cuda:cuda_headers",
-        "@local_tsl//tsl/platform:cuda_libdevice_path",
         "@local_tsl//tsl/platform:env",
         "@local_tsl//tsl/platform:errors",
-        "@local_tsl//tsl/platform:mutex",
         "@local_tsl//tsl/platform:path",
-        "@local_tsl//tsl/platform:regexp",
         "@local_tsl//tsl/platform:status",
-        "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:subprocess",
-    ] + if_rocm_is_configured([
-        "//xla/stream_executor/rocm:rocm_driver",
-    ]),
+    ],
 )
 
 cc_library(

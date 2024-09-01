@@ -31,6 +31,7 @@ limitations under the License.
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/OpDefinition.h"
@@ -216,20 +217,22 @@ struct RewriteXlaGpuLoop : mlir::OpRewritePattern<LoopOp> {
               is_in_bounds,
               [&](OpBuilder& then_builder, Location then_loc) -> void {
                 ImplicitLocOpBuilder then_b(then_loc, then_builder);
-                SmallVector<Value, 4> bb_args(symbol_values);
-                bb_args.append(mlir_converter::ApplyIndexing(
-                    indexing_map, op.getDims(), symbol_values, then_b));
-                bb_args.append(iter_args.begin(), iter_args.end());
-
-                mlir::Block* then_block = then_builder.getInsertionBlock();
-                OpBuilder::InsertionGuard guard(rewriter);
-                rewriter.setInsertionPointToStart(then_block);
-                rewriter.mergeBlocks(op.getBody(), then_block, bb_args);
-
-                auto old_terminator = then_block->getTerminator();
-                then_b.create<mlir::scf::YieldOp>(
-                    old_terminator->getOperands());
-                old_terminator->erase();
+                mlir::IRMapping mapping;
+                mapping.map(op.getInductionVars(), symbol_values);
+                mapping.map(
+                    op.getIndexingMapResults(),
+                    mlir_converter::ApplyIndexing(indexing_map, op.getDims(),
+                                                  symbol_values, then_b));
+                mapping.map(op.getRegionIterArgs(), iter_args);
+                mlir::Block* old_block = op.getBody();
+                for (auto& old_op : old_block->without_terminator()) {
+                  then_b.clone(old_op, mapping);
+                }
+                SmallVector<Value, 4> then_results;
+                for (auto result : old_block->getTerminator()->getOperands()) {
+                  then_results.push_back(mapping.lookupOrDefault(result));
+                }
+                then_b.create<mlir::scf::YieldOp>(then_results);
               },
               [&](OpBuilder& else_b, Location else_loc) {
                 else_b.create<mlir::scf::YieldOp>(loc, iter_args);
@@ -241,21 +244,25 @@ struct RewriteXlaGpuLoop : mlir::OpRewritePattern<LoopOp> {
   }
 };
 
+mlir::VectorType getThreadLevelVectorType(IndexedVectorType indexed_vector) {
+  SmallVector<int64_t> vector_dims;
+  IndexingMap map = indexed_vector.getIndexingMapAttr().getIndexingMap();
+  for (auto bound : map.GetSymbolBounds()) {
+    vector_dims.push_back(bound.GetLoopTripCount());
+  }
+  auto data_type = indexed_vector.getElementType();
+  return mlir::VectorType::get(vector_dims, data_type);
+}
+
 struct RewriteMaterialize : mlir::OpRewritePattern<MaterializeOp> {
   using OpRewritePattern::OpRewritePattern;
 
   mlir::LogicalResult matchAndRewrite(
       MaterializeOp op, mlir::PatternRewriter& rewriter) const override {
-    mlir::ImplicitLocOpBuilder b(op.getLoc(), rewriter);
+    ImplicitLocOpBuilder b(op.getLoc(), rewriter);
 
-    SmallVector<int64_t> vector_dims;
-    IndexingMap out_map =
-        op.getResult().getType().getIndexingMapAttr().getIndexingMap();
-    for (auto bound : out_map.GetSymbolBounds()) {
-      vector_dims.push_back(bound.GetLoopTripCount());
-    }
     auto data_type = op.getResult().getType().getElementType();
-    mlir::VectorType vec_type = mlir::VectorType::get(vector_dims, data_type);
+    auto vec_type = getThreadLevelVectorType(op.getResult().getType());
     Value init_vec;
     if (mlir::isa<mlir::IntegerType>(data_type)) {
       init_vec = b.create<mlir::arith::ConstantOp>(mlir::DenseElementsAttr::get(
@@ -269,25 +276,59 @@ struct RewriteMaterialize : mlir::OpRewritePattern<MaterializeOp> {
 
     auto loop = b.create<LoopOp>(
         op.getMapAttr(), op.getIndices(), ValueRange{init_vec},
-        [&](mlir::OpBuilder&, mlir::Location, ValueRange ivs,
-            ValueRange map_results, ValueRange iter_args) {
+        [&](OpBuilder&, Location, ValueRange ivs, ValueRange map_results,
+            ValueRange iter_args) {
           auto args = SmallVector<Value, 4>(op.getInput());
           args.insert(args.end(), map_results.begin(), map_results.end());
           SmallVector<mlir::Type, 1> types{data_type};
           auto call =
               b.create<PureCallOp>(op.getCalleeAttr(), ValueRange{args}, types);
-          auto out_indexing =
-              b.create<ApplyIndexingOp>(op.getIndices(), ivs, out_map);
-          SmallVector<mlir::OpFoldResult> offset(out_indexing->getResults());
+          SmallVector<mlir::OpFoldResult> offset(ivs);
           auto old_vec = iter_args.back();
-          auto new_vec = b.create<mlir::vector::InsertOp>(call.getResult(0),
-                                                          old_vec, offset);
+          Value new_vec = b.create<mlir::vector::InsertOp>(call.getResult(0),
+                                                           old_vec, offset);
           b.create<YieldOp>(new_vec);
         });
     auto convert = b.create<mlir::UnrealizedConversionCastOp>(
                         op.getResult().getType(), loop->getResults())
                        .getResult(0);
     rewriter.replaceOp(op, convert);
+    return success();
+  }
+};
+
+struct RewriteInsert : mlir::OpRewritePattern<InsertOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  mlir::LogicalResult matchAndRewrite(
+      InsertOp op, mlir::PatternRewriter& rewriter) const override {
+    ImplicitLocOpBuilder b(op.getLoc(), rewriter);
+    auto convert =
+        b.create<mlir::UnrealizedConversionCastOp>(
+             getThreadLevelVectorType(op.getSource().getType()), op.getSource())
+            .getResult(0);
+    // InsertOp's map attribute (op.getMap()) is a mapping from
+    //    indexed_vector index -> tensor index.
+    // We get indexed_vector index by using its encoding map (source_map).
+    // So we loop over indexed_vector encoding map and use the results as the
+    // symbols for InsertOp's map in order to get the final tensor index.
+    auto source_map = op.getSource().getType().getIndexingMapAttr();
+    auto loop = b.create<LoopOp>(
+        source_map, op.getIndices(), ValueRange{op.getDest()},
+        [&](OpBuilder&, Location, ValueRange ivs, ValueRange map_results,
+            ValueRange iter_args) {
+          SmallVector<mlir::OpFoldResult> vector_offset(ivs);
+          auto scalar =
+              b.create<mlir::vector::ExtractOp>(convert, vector_offset);
+          auto tensor_indices = b.create<ApplyIndexingOp>(
+              op.getIndices(), map_results, op.getMap().getIndexingMap());
+          Value new_tensor = b.create<mlir::tensor::InsertOp>(
+              scalar.getResult(), iter_args.back(),
+              tensor_indices->getResults());
+          b.create<YieldOp>(new_tensor);
+        });
+    rewriter.replaceOp(op, loop->getResults());
+
     return success();
   }
 };
@@ -299,7 +340,7 @@ class LowerXlaGpuToScfPass
     auto* ctx = &getContext();
     mlir::RewritePatternSet patterns(ctx);
     patterns.add<RewritePredicatedInsert, RewritePredicatedExtract,
-                 RewriteShuffleReduce, RewriteMaterialize>(ctx);
+                 RewriteShuffleReduce, RewriteMaterialize, RewriteInsert>(ctx);
     if (mlir::failed(mlir::applyPatternsAndFoldGreedily(getOperation(),
                                                         std::move(patterns)))) {
       signalPassFailure();

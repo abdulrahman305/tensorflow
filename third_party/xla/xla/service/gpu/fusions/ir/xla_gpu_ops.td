@@ -111,7 +111,7 @@ def XLAGPU_YieldOp : XLAGPU_Op<"yield", [
     ParentOneOf<["::xla::gpu::AtomicRMWOp", "::xla::gpu::LoopOp"]>,
     ReturnLike, Terminator]> {
   let summary = "Terminator for atomic_rmw ops.";
-  let arguments = (ins AnyType:$result);
+  let arguments = (ins Variadic<AnyType>:$result);
 
   let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
   let assemblyFormat = "$result attr-dict `:` type($result)";
@@ -238,17 +238,17 @@ def XLAGPU_PredicatedExtractOp : XLAGPU_Op<"predicated_extract",
 def ApplyIndexingOp : XLAGPU_Op<"apply_indexing", [Pure]> {
   let summary = "Applies indexing map to a list of SSA values";
   let description = [{
-    The `apply_indexing` operation applies an affine map to a list
+    The `apply_indexing` operation applies an indexing_map to a list
     of SSA values, yielding a single SSA value. The number of dimension and
     symbol arguments must be equal to the respective number of dimensional and
-    symbolic inputs in the affine map. The affine mapping can be
+    symbolic inputs in the indexing_map. The index mapping can be
     multi-dimensional, and so the `apply_indexing` operation always returns one
     value. The operands and results must all have ‘index’ type.
 
     Example:
 
     ```mlir
-    #map = affine_map<(d0, d1)[s0] -> (d0 floordiv 8 + d1 floordiv 128, s0)>
+    #map = #xla_gpu.indexing_map<(d0, d1)[s0] -> (d0 floordiv 8 + d1 floordiv 128, s0)>
     %results:2 = xla_gpu_ops.apply_indexing #map (%0 in [0, 10], %1 in [0, 11])[%2 in [11, 32]]
     ```
   }];
@@ -368,7 +368,9 @@ def XLAGPU_MaterializeOp : XLAGPU_Op<"materialize", [AttrSizedOperandSegments]> 
   }];
 }
 
-def XLAGPU_InsertOp : XLAGPU_Op<"insert", []> {
+def XLAGPU_InsertOp : XLAGPU_Op<"insert", [TypesMatchWith<
+                   "expected result type to match dest type",
+                   "result", "dest", "$_self">]> {
   let summary = "Inserts an indexed vector into a tensor";
   let arguments = (ins XLAGPU_IndexedVectorType:$source,
                        Variadic<Index>:$indices,
@@ -376,7 +378,7 @@ def XLAGPU_InsertOp : XLAGPU_Op<"insert", []> {
                        XLAGPU_IndexingMapAttr:$map);
   let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = [{
-    $source `into` $dest `at` $map `(` $indices `)` attr-dict `:` type($source) `->` type($dest) `into` type($result)
+    $source `into` $dest `at` $map `(` $indices `)` attr-dict `:` type($source) `->` type($result)
   }];
 }
 

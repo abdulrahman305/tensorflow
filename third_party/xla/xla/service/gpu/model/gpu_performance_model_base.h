@@ -30,6 +30,7 @@ limitations under the License.
 #include "xla/service/gpu/model/fusion_analysis_cache.h"
 #include "xla/service/gpu/model/gpu_hlo_cost_analysis.h"
 #include "xla/stream_executor/device_description.h"
+#include "xla/xla_data.pb.h"
 
 namespace xla {
 namespace gpu {
@@ -67,7 +68,11 @@ class GpuPerformanceModelCache {
   std::optional<EstimateRunTimeData> Get(const HloInstruction& instruction);
   std::optional<absl::Duration> Get(const HloInstruction& producer,
                                     const HloInstruction& consumer);
-
+  const absl::flat_hash_map<const HloInstruction*, absl::Duration>&
+  // Returns cache entries for all consumers of this producer.
+  GetAllConsumers(const HloInstruction& producer);
+  // Checks if producer-consumer pair cache entries exist for this producer.
+  bool ContainsConsumers(const HloInstruction& producer);
   // Sets cache value for the instruction or producer-consumer pair.
   void Set(const HloInstruction& instruction,
            const EstimateRunTimeData& runtime_data);

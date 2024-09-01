@@ -43,8 +43,11 @@ ReductionGroups GroupDisjointReductions(const HloFusionAnalysis& analysis,
 
 int RowReductionGetRowsPerWarp(int reduced_dimension_size);
 
-int GetVectorSizeForMlir(const HloFusionAnalysis& analysis,
-                         const ReductionDimensions& reduction_dimensions,
+int GetVectorSize(const HloFusionAnalysis& analysis,
+                  const ReductionDimensions& reduction_dimensions,
+                  int num_threads, Vector3 reduction_tiling);
+
+int GetVectorSizeForMlir(const HloFusionAnalysis& analysis, int64_t minor_dim,
                          int num_threads);
 
 void AddGroupIdConstraint(IndexingMap& map, int64_t root_index,

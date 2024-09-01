@@ -100,8 +100,7 @@ xla_test(
     backends = ["gpu"],
     copts = tf_profiler_copts() + tsl_copts(),
     tags = [
-        "gpu_cupti",
-        "nomac",
+        "no_mac",
     ],
     deps = [
         ":cupti_interface",

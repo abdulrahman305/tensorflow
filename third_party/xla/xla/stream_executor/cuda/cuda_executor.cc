@@ -49,6 +49,7 @@ limitations under the License.
 #include "xla/stream_executor/event.h"
 #include "xla/stream_executor/event_based_timer.h"
 #include "xla/stream_executor/fft.h"
+#include "xla/stream_executor/gpu/context.h"
 #include "xla/stream_executor/gpu/gpu_collectives.h"
 #include "xla/stream_executor/gpu/gpu_command_buffer.h"
 #include "xla/stream_executor/gpu/gpu_diagnostics.h"
@@ -114,7 +115,7 @@ static CUdeviceptr AsCudaDevicePtr(DeviceMemoryBase* gpu_mem) {
   return AsCudaDevicePtr(*gpu_mem);
 }
 
-GpuContext* ExtractGpuContext(GpuExecutor* cuda_exec) {
+Context* ExtractGpuContext(GpuExecutor* cuda_exec) {
   CHECK(cuda_exec != nullptr);
   return cuda_exec->gpu_context();
 }
@@ -134,10 +135,11 @@ absl::Status GpuExecutor::Init() {
       GpuDriver::CreateContext(device_ordinal_, device_, &context_));
   TF_RETURN_IF_ERROR(
       GpuDriver::GetComputeCapability(&cc_major_, &cc_minor_, device_));
+  TF_ASSIGN_OR_RETURN(delay_kernels_supported_, DelayKernelIsSupported());
   return absl::OkStatus();
 }
 
-absl::StatusOr<bool> GpuExecutor::DelayKernelIsSupported(GpuStream* stream) {
+absl::StatusOr<bool> GpuExecutor::DelayKernelIsSupported() {
   // Check the assumption that this device supports unified addressing,
   // otherwise skip the delay kernel
   TF_ASSIGN_OR_RETURN(int status,
@@ -266,20 +268,10 @@ absl::StatusOr<std::unique_ptr<Kernel>> GpuExecutor::LoadKernel(
 absl::StatusOr<std::unique_ptr<EventBasedTimer>>
 GpuExecutor::CreateEventBasedTimer(GpuStream* stream, bool use_delay_kernel) {
   GpuSemaphore semaphore{};
-  if (!use_delay_kernel) {
-    LOG(WARNING)
-        << "Skipping the delay kernel, measurement accuracy will be reduced";
-  }
 
-  if (use_delay_kernel && ShouldLaunchDelayKernel()) {
-    TF_ASSIGN_OR_RETURN(bool is_supported, DelayKernelIsSupported(stream));
-
-    if (is_supported) {
-      TF_ASSIGN_OR_RETURN(semaphore, LaunchDelayKernel(stream));
-    } else {
-      LOG(WARNING) << "Skipping the delay kernel as it's not supported, "
-                      "measurement accuracy will be reduced.";
-    }
+  if (use_delay_kernel && ShouldLaunchDelayKernel() &&
+      delay_kernels_supported_) {
+    TF_ASSIGN_OR_RETURN(semaphore, LaunchDelayKernel(stream));
   }
   TF_ASSIGN_OR_RETURN(auto start_event, CreateGpuEvent(/*allow_timing=*/true));
   TF_ASSIGN_OR_RETURN(auto stop_event, CreateGpuEvent(/*allow_timing=*/true));

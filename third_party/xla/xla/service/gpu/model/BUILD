@@ -45,11 +45,10 @@ cc_library(
 xla_test(
     name = "analytical_latency_estimator_test",
     srcs = ["analytical_latency_estimator_test.cc"],
-    backend_tags = {"gpu": [
-        "requires-gpu-sm70",
-    ]},
     backends = [
-        "gpu",
+        "gpu_v100",
+        "gpu_a100",
+        "gpu_h100",
     ],
     deps = [
         ":analytical_latency_estimator",
@@ -148,6 +147,7 @@ cc_library(
         ":hlo_op_profiles",
         "//xla:shape_util",
         "//xla:util",
+        "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
         "//xla/service:collective_ops_utils",
         "//xla/service:elemental_ir_emitter",
@@ -176,6 +176,7 @@ xla_cc_test(
         ":hlo_op_profiles",
         "//xla:shape_util",
         "//xla:test_helpers",
+        "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
         "//xla/service:hlo_cost_analysis",
         "//xla/tests:hlo_test_base",
@@ -195,6 +196,7 @@ cc_library(
         ":gpu_hlo_cost_analysis",
         "//xla:shape_util",
         "//xla:util",
+        "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
         "//xla/service/gpu:backend_configs_cc",
         "//xla/service/gpu:hlo_fusion_analysis",
@@ -269,6 +271,7 @@ xla_cc_test(
         ":gpu_performance_model_base",
         "//xla:shape_util",
         "//xla:test_helpers",
+        "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
         "//xla/service:hlo_module_config",
         "//xla/service/gpu:backend_configs_cc",
@@ -482,6 +485,7 @@ cc_library(
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/numeric:int128",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
@@ -549,11 +553,9 @@ xla_cc_test(
         ":indexing_test_utils",
         "//xla/hlo/ir:hlo",
         "//xla/service/gpu:hlo_traversal",
-        "//xla/tests:hlo_test_base",
         "//xla/tests:xla_internal_test_main",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_googletest//:gtest",
-        "@llvm-project//mlir:IR",
         "@local_tsl//tsl/platform:test",
     ],
 )
@@ -665,11 +667,11 @@ xla_cc_test(
         ":indexing_test_utils",
         ":tiled_hlo_instruction_or_computation",
         "//xla:shape_util",
+        "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
         "//xla/tests:hlo_test_base",
         "@com_google_googletest//:gtest_main",
         "@llvm-project//mlir:IR",
-        "@local_tsl//tsl/platform:statusor",
     ],
 )
 
@@ -753,6 +755,8 @@ cc_library(
         ":affine_map_evaluator",
         ":symbolic_tile_analysis",
         ":symbolic_tiled_hlo_instruction",
+        "//xla:shape_util",
+        "//xla/stream_executor:device_description",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:span",
         "@llvm-project//llvm:Support",
@@ -768,6 +772,8 @@ xla_cc_test(
         ":triton_emitter_constraints",
         "//xla/hlo/ir:hlo",
         "//xla/service:instruction_fusion",
+        "//xla/service/gpu:gpu_device_info_for_tests",
+        "//xla/stream_executor:device_description",
         "//xla/tests:hlo_test_base",
         "//xla/tests:verified_hlo_module",
         "@com_google_absl//absl/log",
@@ -828,7 +834,6 @@ xla_cc_test(
 tf_proto_library(
     name = "hlo_op_profile_proto",
     srcs = ["hlo_op_profile.proto"],
-    cc_api_version = 2,
     make_default_target_header_only = True,
     protodeps = [
         "//xla/service:hlo_proto",
@@ -866,7 +871,7 @@ xla_cc_test(
         "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
         "//xla/service/gpu:gpu_device_info_for_tests",
-        "//xla/tests:hlo_test_base",
+        "//xla/stream_executor:device_description",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -954,6 +959,7 @@ xla_test(
     local_defines = if_cuda(["GOOGLE_CUDA"]),
     deps = [
         ":hlo_op_profiler_lib",
+        "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
         "//xla/tests:hlo_test_base",
         "@com_google_googletest//:gtest",
