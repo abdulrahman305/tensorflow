@@ -1,4 +1,4 @@
-FROM debian:bullseye-20221219
+FROM debian:bullseye-20241016
 
 LABEL maintainer="Jan Prach <jendap@google.com>"
 
