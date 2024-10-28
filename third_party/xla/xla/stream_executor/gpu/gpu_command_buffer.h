@@ -20,7 +20,6 @@ limitations under the License.
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -44,12 +43,25 @@ namespace stream_executor::gpu {
 // GpuCommandBuffer provides platform-specific CommandBuffer implementation
 // (it's backed by CUDA or HIP graphs on NVIDIA and AMD devices).
 class GpuCommandBuffer : public CommandBuffer {
+  // GraphNodeHandleOpaque is an opaque type that won't be ODR used, hence
+  // doesn't need to fully defined. It's an implementation detail of the
+  // GraphNodeHandle defined below.
+  struct GraphNodeHandleOpaque;
+
  public:
+  // A graph node handle is an opaque handle that identifies a graph node in the
+  // graph associated with a command buffer. GraphNodeHandles are created by
+  // node factory functions and can be referenced in node update functions.
+  // The handle has the same properties as a pointer (can be constructed from a
+  // nullptr, trivial copyable, POD, etc.), that's why we use a pointer to
+  // define it.
+  using GraphNodeHandle = GraphNodeHandleOpaque*;
+
   // A handle to a Gpu graph node and a metadata describing its properties. Each
   // command (launch, memcpy, etc.) creates one or more graph nodes.
   struct GpuGraphNodeInfo {
     // A handle to the gpu graph node corresponding to a command.
-    GpuGraphNodeHandle handle = nullptr;
+    GraphNodeHandle handle{};
   };
 
   // A handle to Gpu graph barrier and metadata describing its properties. Each
@@ -59,7 +71,7 @@ class GpuCommandBuffer : public CommandBuffer {
     // It can be a handle to a `GpuGraphNodeInfo` node or a handle to an empty
     // node created to be a barrier. We try to reuse existing nodes as barriers
     // if possible to reduce the size of constructed gpu graphs.
-    GpuGraphNodeHandle handle = nullptr;
+    GraphNodeHandle handle{};
 
     // If `true` it means `handle` corresponds to an empty node specifically
     // created to act as an execution barrier, otherwise `handle` points to one
@@ -161,8 +173,9 @@ class GpuCommandBuffer : public CommandBuffer {
   static int64_t AliveExecs();
 
  private:
-  using Dependencies = absl::InlinedVector<GpuGraphNodeHandle, 1>;
+  using Dependencies = absl::InlinedVector<GraphNodeHandle, 1>;
 
+ protected:
   using NoOpKernel = TypedKernel<>;
 
   // A signature of a device kernels updating conditional handle(s).
@@ -186,6 +199,7 @@ class GpuCommandBuffer : public CommandBuffer {
   using SetWhileConditionKernel =
       TypedKernel<GpuGraphConditionalHandle, DeviceMemory<bool>>;
 
+ private:
   // A callback to launch a kernel that updates conditional handles state.
   using SetConditionFn = std::function<absl::Status(
       ExecutionScopeId, absl::Span<const GpuGraphConditionalHandle>)>;
@@ -250,12 +264,15 @@ class GpuCommandBuffer : public CommandBuffer {
 
   // Returns loaded auxiliary kernels, or loads them on a given stream executor.
   // Loaded kernels owned by a current command buffer.
-  absl::StatusOr<SetIfConditionKernel*> GetSetIfConditionKernel();
-  absl::StatusOr<SetIfElseConditionKernel*> GetSetIfElseConditionKernel();
-  absl::StatusOr<SetCaseConditionKernel*> GetSetCaseConditionKernel();
-  absl::StatusOr<SetForConditionKernel*> GetSetForConditionKernel();
-  absl::StatusOr<SetWhileConditionKernel*> GetSetWhileConditionKernel();
-  absl::StatusOr<NoOpKernel*> GetNoOpKernel();
+  virtual absl::StatusOr<SetIfConditionKernel*> GetSetIfConditionKernel() = 0;
+  virtual absl::StatusOr<SetIfElseConditionKernel*>
+  GetSetIfElseConditionKernel() = 0;
+  virtual absl::StatusOr<SetCaseConditionKernel*>
+  GetSetCaseConditionKernel() = 0;
+  virtual absl::StatusOr<SetForConditionKernel*> GetSetForConditionKernel() = 0;
+  virtual absl::StatusOr<SetWhileConditionKernel*>
+  GetSetWhileConditionKernel() = 0;
+  virtual absl::StatusOr<NoOpKernel*> GetNoOpKernel() = 0;
 
   // Recursively disable all nodes corresponding to barriers (including nested
   // conditional command buffers). This is work around the fact that we can't
@@ -279,7 +296,7 @@ class GpuCommandBuffer : public CommandBuffer {
       const ConditionalCommandBuffers& cmd_buffers, size_t num_cmd_buffers);
 
   // Creates a new no-op node acting as a barrier.
-  absl::StatusOr<GpuGraphNodeHandle> CreateBarrierNode(
+  absl::StatusOr<GraphNodeHandle> CreateBarrierNode(
       const Dependencies& dependencies);
 
   // Collects a set of dependencies for a new barrier.
@@ -342,14 +359,10 @@ class GpuCommandBuffer : public CommandBuffer {
   // Track the number of command buffer updates for debugging.
   int64_t num_updates_ = 0;
 
-  // Lazy loaded auxiliary kernels required for building CUDA graphs (no-op
-  // barriers, updating conditional handles, etc.).
-  SetIfConditionKernel set_if_condition_kernel_;
-  SetIfElseConditionKernel set_if_else_condition_kernel_;
-  SetCaseConditionKernel set_case_condition_kernel_;
-  SetForConditionKernel set_for_condition_kernel_;
-  SetWhileConditionKernel set_while_condition_kernel_;
-  NoOpKernel noop_kernel_;
+  // Creates a nested command buffer, associated with the same executor.
+  // The given graph will not be owned by the created command buffer.
+  virtual std::unique_ptr<GpuCommandBuffer> CreateNestedCommandBuffer(
+      GpuGraphHandle graph) = 0;
 };
 
 }  // namespace stream_executor::gpu
