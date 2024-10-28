@@ -129,6 +129,18 @@ jobs:
         map sigbuild-r2.17-clang-python3.10 2.17-python3.10
         map sigbuild-r2.17-clang-python3.11 2.17-python3.11
         map sigbuild-r2.17-clang-python3.12 2.17-python3.12
+        # TF 2.18
+        map sigbuild-r2.18 2.18-python3.11
+        map sigbuild-r2.18-python3.9 2.18-python3.9
+        map sigbuild-r2.18-python3.10 2.18-python3.10
+        map sigbuild-r2.18-python3.11 2.18-python3.11
+        map sigbuild-r2.18-python3.12 2.18-python3.12
+        # TF 2.18 + Clang (containers are the same, but env vars in configs.bzl are different)
+        map sigbuild-r2.18-clang 2.18-python3.11
+        map sigbuild-r2.18-clang-python3.9 2.18-python3.9
+        map sigbuild-r2.18-clang-python3.10 2.18-python3.10
+        map sigbuild-r2.18-clang-python3.11 2.18-python3.11
+        map sigbuild-r2.18-clang-python3.12 2.18-python3.12
     - name: Create Pull Request with changes
       uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5
       with:
