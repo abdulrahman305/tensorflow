@@ -13,7 +13,7 @@
 # limitations under the License.
 
 load("//tensorflow/lite/experimental/litert/build_common:litert_build_defs.bzl", "litert_lib", "litert_test")
-load("//tensorflow/lite/experimental/litert/vendors/qualcomm:qualcomm_build_defs.bzl", "litert_lib_with_qnn")
+load("//tensorflow/lite/experimental/litert/vendors/qualcomm:qualcomm_build_defs.bzl", "litert_cc_lib_with_qnn")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -25,7 +25,9 @@ cc_library(
     hdrs = ["common.h"],
     deps = [
         # copybara:uncomment "//third_party/qairt/latest:qnn_lib_headers",
-        "//tensorflow/lite/experimental/litert/c:litert_c_api",
+        "//tensorflow/lite/experimental/litert/c:litert_common",
+        "//tensorflow/lite/experimental/litert/c:litert_model",
+        "//tensorflow/lite/experimental/litert/cc:litert_model",
     ],
 )
 
@@ -47,18 +49,15 @@ cc_library(
     hdrs = ["qnn_manager.h"],
     deps = [
         ":common",
-        ":qnn_log",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/types:span",
         # copybara:uncomment "//third_party/qairt/latest:qnn_lib_headers",
-        "//tensorflow/lite/experimental/litert/c:litert_c_api",
-        "//tensorflow/lite/experimental/litert/core:dynamic_loading",
+        "//tensorflow/lite/experimental/litert/c:litert_common",
+        "//tensorflow/lite/experimental/litert/cc:litert_expected",
     ],
 )
 
-litert_lib_with_qnn(
+litert_cc_lib_with_qnn(
     name = "qnn_manager",
     srcs = [
         "qnn_manager.cc",
@@ -73,14 +72,13 @@ litert_lib_with_qnn(
     deps = [
         ":common",
         ":qnn_log",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/types:span",
         # copybara:uncomment "//third_party/qairt/latest:qnn_lib_headers",
+        "//tensorflow/lite/experimental/litert/c:litert_common",
         "//tensorflow/lite/experimental/litert/c:litert_logging",
-        "//tensorflow/lite/experimental/litert/core:api_internal",
+        "//tensorflow/lite/experimental/litert/cc:litert_expected",
         "//tensorflow/lite/experimental/litert/core:dynamic_loading",
     ],
 )
@@ -101,8 +99,6 @@ litert_test(
     ],
     deps = [
         ":qnn_manager",
-        "//tensorflow/lite/experimental/litert/c:litert_c_api",
-        "//tensorflow/lite/experimental/litert/cc:litert_cc_api",
         "//tensorflow/lite/experimental/litert/test:common",
         "//tensorflow/lite/experimental/litert/vendors/qualcomm/tools:dump",
     ],
@@ -116,11 +112,11 @@ cc_library(
         ":qnn_manager",
         ":qnn_tensor",
         "@com_google_absl//absl/log",
-        "@com_google_absl//absl/log:absl_log",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:string_view",
         # copybara:uncomment "//third_party/qairt/latest:qnn_lib_headers",
+        "//tensorflow/lite/experimental/litert/c:litert_common",
+        "//tensorflow/lite/experimental/litert/c:litert_logging",
+        "//tensorflow/lite/experimental/litert/cc:litert_expected",
     ],
 )
 
@@ -132,9 +128,10 @@ cc_library(
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:absl_check",
         "@com_google_absl//absl/log:absl_log",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:string_view",
         # copybara:uncomment "//third_party/qairt/latest:qnn_lib_headers",
+        "//tensorflow/lite/experimental/litert/c:litert_common",
+        "//tensorflow/lite/experimental/litert/c:litert_logging",
+        "//tensorflow/lite/experimental/litert/cc:litert_expected",
     ],
 )

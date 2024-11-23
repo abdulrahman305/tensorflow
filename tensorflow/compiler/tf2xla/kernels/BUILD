@@ -19,9 +19,8 @@ load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = [
-        # copybara:uncomment "//learning/infra/mira:__subpackages__",
-        "//third_party/cloud_tpu/inference_converter:__subpackages__",
         "//tensorflow/compiler/tf2xla:internal",
+        "//third_party/cloud_tpu/inference_converter:__subpackages__",
     ],
     licenses = ["notice"],
 )
@@ -221,11 +220,12 @@ tf_cuda_library(
         "@local_xla//xla/service:custom_call_status",
         "@local_xla//xla/service:custom_call_target_registry",
         "@local_xla//xla/service:hlo_proto_cc",
-        "@local_xla//xla/stream_executor",
+        "@local_xla//xla/stream_executor:device_memory",
+        "@local_xla//xla/stream_executor:platform",
+        "@local_xla//xla/stream_executor:platform_manager",
+        "@local_xla//xla/stream_executor:stream",
+        "@local_xla//xla/stream_executor:stream_executor_h",
         "@local_xla//xla/stream_executor:stream_finder",
-        "@local_xla//xla/stream_executor/gpu:gpu_executor_header",
-        "@local_xla//xla/stream_executor/gpu:gpu_stream_header",
-        "@local_xla//xla/stream_executor/gpu:gpu_types_header",
         "@local_xla//xla/tsl/lib/strings:proto_serialization",
     ],
     alwayslink = 1,

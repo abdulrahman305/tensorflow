@@ -20,10 +20,10 @@
 #include "absl/strings/string_view.h"
 #include "third_party/qairt/latest/include/QNN/QnnTypes.h"
 #include "tensorflow/lite/experimental/litert/c/litert_common.h"
+#include "tensorflow/lite/experimental/litert/c/litert_logging.h"
 #include "tensorflow/lite/experimental/litert/c/litert_op_code.h"
-#include "tensorflow/lite/experimental/litert/c/litert_support.h"
-#include "tensorflow/lite/experimental/litert/cc/litert_op.h"
-#include "tensorflow/lite/experimental/litert/cc/litert_support.h"
+#include "tensorflow/lite/experimental/litert/cc/litert_macros.h"
+#include "tensorflow/lite/experimental/litert/cc/litert_model.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/compiler/graph_mapper.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/compiler/legalizations/util.h"
 
@@ -33,7 +33,7 @@ static constexpr absl::string_view kQnnAddOpTypeName = "ElementWiseAdd";
 static constexpr absl::string_view kDefaultQnnOpPackageName = "qti.aisw";
 static constexpr absl::string_view kAddOpFmt = "add_%d";
 
-LiteRtStatus AddOpLegalization::LegalizeOp(LiteRtOpManager& src,
+LiteRtStatus AddOpLegalization::LegalizeOp(const litert::Op& src,
                                            Qnn_OpConfig_t& dest,
                                            GraphMapper& graph_mapper) {
   if (src.Code() != kLiteRtOpCodeTflAdd) {

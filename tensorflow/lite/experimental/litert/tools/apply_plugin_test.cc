@@ -25,17 +25,23 @@
 #include "absl/strings/string_view.h"
 #include "tensorflow/lite/experimental/litert/c/litert_common.h"
 #include "tensorflow/lite/experimental/litert/c/litert_model.h"
-#include "tensorflow/lite/experimental/litert/core/graph_tools.h"
-#include "tensorflow/lite/experimental/litert/core/litert_model_init.h"
-#include "tensorflow/lite/experimental/litert/core/litert_model_serialize.h"
-#include "tensorflow/lite/experimental/litert/core/model.h"
+#include "tensorflow/lite/experimental/litert/c/litert_op_code.h"
+#include "tensorflow/lite/experimental/litert/cc/litert_buffer_ref.h"
+#include "tensorflow/lite/experimental/litert/core/byte_code_util.h"
+#include "tensorflow/lite/experimental/litert/core/model/model.h"
+#include "tensorflow/lite/experimental/litert/core/model/model_load.h"
 #include "tensorflow/lite/experimental/litert/test/common.h"
 
+namespace litert::tools {
 namespace {
 
-using ::graph_tools::GetMetadata;
-using ::litert::tools::ApplyPlugin;
-using ::litert::tools::ApplyPluginRun;
+using ::litert::internal::kByteCodeMetadataKey;
+using ::litert::internal::kLiteRtBuildStampKey;
+using ::litert::internal::LoadModelFromMemory;
+using ::litert::internal::ParseBuildStamp;
+using ::litert::internal::ParseByteCodePlaceholder;
+using ::litert::internal::ParseExecInfo;
+using ::litert::internal::Serialization;
 using ::testing::HasSubstr;
 
 static constexpr absl::string_view kPluginSearchPath =
@@ -69,17 +75,16 @@ ApplyPluginRun::Ptr MakeBaseRun(ApplyPluginRun::Cmd cmd) {
 
 TEST(TestApplyPluginTool, TestInfoBadConfig) {
   auto run = MakeBaseRun(ApplyPluginRun::Cmd::INFO);
-  run->dump_out = {};
   run->lib_search_paths.clear();
-  ASSERT_STATUS_HAS_CODE(ApplyPlugin(std::move(run)),
-                         kLiteRtStatusErrorInvalidToolConfig);
+  LITERT_ASSERT_STATUS_HAS_CODE(ApplyPlugin(std::move(run)),
+                                kLiteRtStatusErrorInvalidToolConfig);
 }
 
 TEST(TestApplyPluginTool, TestInfo) {
   auto run = MakeBaseRun(ApplyPluginRun::Cmd::INFO);
   std::stringstream out;
   run->outs.push_back(out);
-  ASSERT_STATUS_OK(ApplyPlugin(std::move(run)));
+  LITERT_ASSERT_STATUS_OK(ApplyPlugin(std::move(run)));
   EXPECT_THAT(out.str(),
               ::testing::HasSubstr(
                   "< LiteRtCompilerPlugin > \"ExampleSocManufacturer\" | "
@@ -89,52 +94,48 @@ TEST(TestApplyPluginTool, TestInfo) {
 TEST(TestApplyPluginTool, TestNoopBadConfig) {
   auto run = MakeBaseRun(ApplyPluginRun::Cmd::NOOP);
   run->model.reset();
-  ASSERT_STATUS_HAS_CODE(ApplyPlugin(std::move(run)),
-                         kLiteRtStatusErrorInvalidToolConfig);
+  LITERT_ASSERT_STATUS_HAS_CODE(ApplyPlugin(std::move(run)),
+                                kLiteRtStatusErrorInvalidToolConfig);
 }
 
 TEST(TestApplyPluginTool, TestNoop) {
   auto run = MakeBaseRun(ApplyPluginRun::Cmd::NOOP);
   std::stringstream out;
   run->outs.push_back(out);
-  ASSERT_STATUS_OK(ApplyPlugin(std::move(run)));
+  LITERT_ASSERT_STATUS_OK(ApplyPlugin(std::move(run)));
 
-  LiteRtModel model;
-  ASSERT_STATUS_OK(
-      LoadModel(reinterpret_cast<const uint8_t*>(out.view().data()),
-                out.view().size(), &model));
-  UniqueLiteRtModel u_model(model);
-
-  EXPECT_EQ(model->subgraphs.size(), 1);
+  auto model = LoadModelFromMemory(
+      BufferRef<uint8_t>(out.view().data(), out.view().size()));
+  EXPECT_EQ(model->Get()->subgraphs.size(), 1);
 }
 
 TEST(TestApplyPluginTool, TestPartitionBadConfig) {
   auto run = MakeBaseRun(ApplyPluginRun::Cmd::PARTITION);
   run->model.reset();
-  ASSERT_STATUS_HAS_CODE(ApplyPlugin(std::move(run)),
-                         kLiteRtStatusErrorInvalidToolConfig);
+  LITERT_ASSERT_STATUS_HAS_CODE(ApplyPlugin(std::move(run)),
+                                kLiteRtStatusErrorInvalidToolConfig);
 }
 
 TEST(TestApplyPluginTool, TestPartition) {
   auto run = MakeBaseRun(ApplyPluginRun::Cmd::PARTITION);
   std::stringstream out;
   run->outs.push_back(out);
-  ASSERT_STATUS_OK(ApplyPlugin(std::move(run)));
+  LITERT_ASSERT_STATUS_OK(ApplyPlugin(std::move(run)));
   EXPECT_FALSE(out.str().empty());
 }
 
 TEST(TestApplyPluginTool, TestCompileBadConfig) {
   auto run = MakeBaseRun(ApplyPluginRun::Cmd::COMPILE);
   run->model.reset();
-  ASSERT_STATUS_HAS_CODE(ApplyPlugin(std::move(run)),
-                         kLiteRtStatusErrorInvalidToolConfig);
+  LITERT_ASSERT_STATUS_HAS_CODE(ApplyPlugin(std::move(run)),
+                                kLiteRtStatusErrorInvalidToolConfig);
 }
 
 TEST(TestApplyPluginTool, TestCompile) {
   auto run = MakeBaseRun(ApplyPluginRun::Cmd::COMPILE);
   std::stringstream out;
   run->outs.push_back(out);
-  ASSERT_STATUS_OK(ApplyPlugin(std::move(run)));
+  LITERT_ASSERT_STATUS_OK(ApplyPlugin(std::move(run)));
   EXPECT_FALSE(out.str().empty());
   EXPECT_THAT(out.str(), HasSubstr("Partition_0_with_1_muls"));
 }
@@ -142,33 +143,86 @@ TEST(TestApplyPluginTool, TestCompile) {
 TEST(TestApplyPluginTool, TestApplyBadConfig) {
   auto run = MakeBaseRun(ApplyPluginRun::Cmd::APPLY);
   run->model.reset();
-  ASSERT_STATUS_HAS_CODE(ApplyPlugin(std::move(run)),
-                         kLiteRtStatusErrorInvalidToolConfig);
+  LITERT_ASSERT_STATUS_HAS_CODE(ApplyPlugin(std::move(run)),
+                                kLiteRtStatusErrorInvalidToolConfig);
 }
 
 TEST(TestApplyPluginTool, TestApply) {
   auto run = MakeBaseRun(ApplyPluginRun::Cmd::APPLY);
   std::stringstream out;
   run->outs.push_back(out);
-  ASSERT_STATUS_OK(ApplyPlugin(std::move(run)));
+  LITERT_ASSERT_STATUS_OK(ApplyPlugin(std::move(run)));
 
-  LiteRtModel model;
-  ASSERT_STATUS_OK(
-      LoadModel(reinterpret_cast<const uint8_t*>(out.view().data()),
-                out.view().size(), &model));
-  UniqueLiteRtModel u_model(model);
-  EXPECT_EQ(model->subgraphs.size(), 1);
+  auto model = LoadModelFromMemory(
+      BufferRef<uint8_t>(out.str().data(), out.str().size()));
+  EXPECT_EQ(model->Get()->subgraphs.size(), 1);
 
-  ASSERT_RESULT_OK_ASSIGN(auto byte_code_buffer,
-                          GetMetadata(model, kLiteRtMetadataByteCodeKey));
-  EXPECT_THAT(byte_code_buffer.StrView(), HasSubstr("Partition_0_with_1_muls"));
+  {
+    auto stamp_buffer = model->Get()->FindMetadata(kLiteRtBuildStampKey);
+    auto stamp = ParseBuildStamp(*stamp_buffer);
+    auto [man, soc_model, serial] = *stamp;
+    EXPECT_EQ(man, kSocManufacturer);
+    EXPECT_EQ(soc_model, kSocModel);
+    EXPECT_EQ(serial, Serialization::kMetadata);
+  }
 
-  ASSERT_RESULT_OK_ASSIGN(auto tag_buffer,
-                          GetMetadata(model, kLiteRtBuildTagKey));
-  EXPECT_EQ(tag_buffer.StrView(),
-            "soc_man:ExampleSocManufacturer,soc_model:ExampleSocModel,"
-            "serialization_strategy:"
-            "METADATA");
+  {
+    auto custom_op = model->Get()->subgraphs.front().ops.front();
+    ASSERT_EQ(custom_op->op_code, kLiteRtOpCodeTflCustom);
+    EXPECT_EQ(custom_op->custom_options.StrView(), "Partition_0");
+  }
+
+  {
+    auto byte_code_buffer = model->Get()->FindMetadata(kByteCodeMetadataKey);
+    EXPECT_THAT(byte_code_buffer->StrView(),
+                HasSubstr("Partition_0_with_1_muls"));
+  }
 }
 
+// NOLINTBEGIN
+TEST(TestApplyPluginTool, TestApplyWithAppendSerialization) {
+#ifndef NDEBUG
+  GTEST_SKIP() << "Flatbuffers assertion will fail in append mode\n";
+#endif
+  std::stringstream out;
+  {
+    auto run = MakeBaseRun(ApplyPluginRun::Cmd::APPLY);
+    run->serialization = Serialization::kAppend;
+    run->outs.push_back(out);
+    LITERT_ASSERT_STATUS_OK(ApplyPlugin(std::move(run)));
+  }
+
+  BufferRef<uint8_t> serialized(out.str().data(), out.str().size());
+
+  auto model = LoadModelFromMemory(serialized);
+  EXPECT_EQ(model->Get()->subgraphs.size(), 1);
+
+  {
+    auto stamp_buffer = model->Get()->FindMetadata(kLiteRtBuildStampKey);
+    auto stamp = ParseBuildStamp(*stamp_buffer);
+    auto [man, model, serial] = *stamp;
+    EXPECT_EQ(man, kSocManufacturer);
+    EXPECT_EQ(model, kSocModel);
+    EXPECT_EQ(serial, Serialization::kAppend);
+  }
+
+  {
+    auto custom_op = model->Get()->subgraphs.front().ops.front();
+    ASSERT_EQ(custom_op->op_code, kLiteRtOpCodeTflCustom);
+
+    auto options = ParseExecInfo(custom_op->custom_options);
+    auto [entry_point, metadata_key] = *options;
+    EXPECT_EQ(entry_point, "Partition_0");
+
+    auto metadata = model->Get()->FindMetadata(metadata_key);
+    auto byte_code_info = ParseByteCodePlaceholder(*metadata);
+    auto [offset, size] = *byte_code_info;
+
+    EXPECT_EQ(serialized.StrView().substr(offset, size),
+              "Partition_0_with_1_muls:");
+  }
+}
+// NOLINTEND
+
 }  // namespace
+}  // namespace litert::tools

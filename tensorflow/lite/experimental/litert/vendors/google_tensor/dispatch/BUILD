@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("//tensorflow/lite/experimental/litert/build_common:litert_build_defs.bzl", "litert_dynamic_lib")
+
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = ["//tensorflow/lite/experimental/litert:__subpackages__"],
 )
 
-cc_library(
+litert_dynamic_lib(
     name = "dispatch_api",
     srcs = [
         "dispatch_api.cc",
@@ -33,29 +35,27 @@ cc_library(
         "southbound.h",
         # copybara:uncomment "//third_party/odml/infra/southbound:sb_api.h",
     ],
+    export_litert_only = True,
     linkopts = select({
         "//tensorflow:android": ["-landroid"],
         "//conditions:default": [],
     }),
+    linkstatic = 1,
+    shared_lib_name = "dispatch_api_so",
+    so_name = "libLiteRtDispatch.so",
+    visibility = ["//tensorflow/lite/experimental/litert:__subpackages__"],
     deps = [
-        "//tensorflow/lite/experimental/litert/c:litert_c_api",
+        "//tensorflow/lite/experimental/litert/c:litert_common",
         "//tensorflow/lite/experimental/litert/c:litert_logging",
+        "//tensorflow/lite/experimental/litert/c:litert_model",
         "//tensorflow/lite/experimental/litert/c:litert_tensor_buffer",
-        "//tensorflow/lite/experimental/litert/core:utils",
+        "//tensorflow/lite/experimental/litert/cc:litert_expected",
+        "//tensorflow/lite/experimental/litert/core/util:tensor_type_util",
         "//tensorflow/lite/experimental/litert/vendors/c:litert_dispatch_c_api",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/container:node_hash_set",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:string_view",
     ],
-)
-
-cc_shared_library(
-    name = "dispatch_api_shared",
-    shared_lib_name = "libLiteRtDispatch.so",
-    visibility = ["//visibility:public"],
-    deps = [":dispatch_api"],
 )
 
 cc_test(
@@ -64,7 +64,7 @@ cc_test(
         "dispatch_api_google_tensor_test.cc",
     ],
     data = [
-        ":dispatch_api_shared",
+        ":dispatch_api_so",
     ],
     linkopts = select({
         "//tensorflow:android": ["-landroid"],
@@ -72,14 +72,15 @@ cc_test(
     }),
     deps = [
         ":dispatch_api",
-        "//tensorflow/lite/experimental/litert/c:litert_c_api",
+        "//tensorflow/lite/experimental/litert/c:litert_common",
         "//tensorflow/lite/experimental/litert/c:litert_tensor_buffer",
-        "//tensorflow/lite/experimental/litert/core/dispatch",
+        "//tensorflow/lite/experimental/litert/core:filesystem",
         "//tensorflow/lite/experimental/litert/test:common",
-        "//tensorflow/lite/experimental/litert/test:simple_model",
+        "//tensorflow/lite/experimental/litert/test:simple_model_npu",
         "//tensorflow/lite/experimental/litert/vendors/c:litert_dispatch_c_api",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:absl_log",
+        "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
 )

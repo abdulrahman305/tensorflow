@@ -23,7 +23,7 @@
 
 #include "third_party/qairt/latest/include/QNN/QnnTypes.h"
 #include "tensorflow/lite/experimental/litert/c/litert_common.h"
-#include "tensorflow/lite/experimental/litert/cc/litert_op.h"
+#include "tensorflow/lite/experimental/litert/cc/litert_model.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/compiler/graph_mapper.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/compiler/legalizations/legalization.h"
 
@@ -33,12 +33,10 @@ class ReshapeOpLegalization : public Legalization {
  public:
   ReshapeOpLegalization() = default;
   ~ReshapeOpLegalization() = default;
-  using UniquePtr = std::unique_ptr<ReshapeOpLegalization>;
-  static UniquePtr Create() {
-    return std::make_unique<ReshapeOpLegalization>();
-  }
+  using Ptr = std::unique_ptr<ReshapeOpLegalization>;
+  static Ptr Create() { return std::make_unique<ReshapeOpLegalization>(); }
 
-  LiteRtStatus LegalizeOp(LiteRtOpManager& src, Qnn_OpConfig_t& dest,
+  LiteRtStatus LegalizeOp(const litert::Op& src, Qnn_OpConfig_t& dest,
                           GraphMapper& graph_mapper);
 
  private:

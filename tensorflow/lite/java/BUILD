@@ -3,6 +3,7 @@
 
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("@build_bazel_rules_android//android:rules.bzl", "android_library")
+load("@rules_java//java:defs.bzl", "java_library", "java_test")
 load("//tensorflow/java:build_defs.bzl", "JAVACOPTS")
 load("//tensorflow/lite:build_def.bzl", "tflite_cc_library_with_c_headers_test", "tflite_jni_linkopts", "tflite_linkopts_no_undefined")
 load("//tensorflow/lite/core/shims:cc_library_with_tflite.bzl", "android_library_with_tflite", "cc_library_with_tflite", "java_library_with_tflite", "java_test_with_tflite", "jni_binary_with_tflite")
@@ -143,7 +144,9 @@ TFLITE_HEADERS = [
     "//tensorflow/lite/core/c:c_api.h",
     "//tensorflow/lite/core/c:c_api_opaque.h",
     "//tensorflow/lite/core/c:c_api_types.h",
+    "//tensorflow/compiler/mlir/lite/core/c:tflite_types.h",
     "//tensorflow/lite/core/c:builtin_op_data.h",
+    "//tensorflow/compiler/mlir/lite/core/c:builtin_op_data.h",
     "//tensorflow/lite/core/c:c_api_experimental.h",
     "//tensorflow/lite/core/c:common.h",
     "//tensorflow/lite/core/c:operator.h",
@@ -692,6 +695,7 @@ java_test_with_tflite(
 #         "src/testdata/add.bin",
 #         "src/testdata/add_unknown_dimensions.bin",
 #         "src/testdata/mul_add_signature_def.bin",
+#         "src/testdata/multi_signature_def.bin",
 #         "src/testdata/tile_with_bool_input.bin",
 #         "//tensorflow/lite:testdata/dynamic_shapes.bin",
 #         "//tensorflow/lite:testdata/multi_add.bin",
@@ -902,6 +906,7 @@ filegroup(
         "src/test/java/org/tensorflow/lite/DataTypeTest.java",
         "src/test/java/org/tensorflow/lite/InterpreterApiTest.java",
         "src/test/java/org/tensorflow/lite/NativeInterpreterWrapperTest.java",
+        "src/test/java/org/tensorflow/lite/SupportedFeatures.java",
         "src/test/java/org/tensorflow/lite/TensorFlowLiteTest.java",
         "src/test/java/org/tensorflow/lite/TensorTest.java",
         "src/test/java/org/tensorflow/lite/TestInit.java",

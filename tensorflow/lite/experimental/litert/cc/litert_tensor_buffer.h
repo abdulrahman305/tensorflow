@@ -18,123 +18,136 @@
 #include <cstddef>
 #include <utility>
 
-#include "absl/status/status.h"
-#include "absl/status/statusor.h"
 #include "tensorflow/lite/experimental/litert/c/litert_common.h"
 #include "tensorflow/lite/experimental/litert/c/litert_event.h"
 #include "tensorflow/lite/experimental/litert/c/litert_model.h"
 #include "tensorflow/lite/experimental/litert/c/litert_tensor_buffer.h"
+#include "tensorflow/lite/experimental/litert/cc/litert_expected.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_handle.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_model.h"
 
 namespace litert {
 
 // Tensor and associated backing buffer. C++ equivalent of LiteRtTensorBuffer.
-class TensorBuffer {
+class TensorBuffer
+    : public internal::Handle<LiteRtTensorBuffer, LiteRtDestroyTensorBuffer> {
  public:
   TensorBuffer() = default;
 
   // Parameter `owned` indicates if the created TensorBuffer object should take
   // ownership of the provided `tensor_buffer` handle.
   explicit TensorBuffer(LiteRtTensorBuffer tensor_buffer, bool owned = true)
-      : handle_(tensor_buffer, owned ? LiteRtDestroyTensorBuffer : nullptr) {}
+      : internal::Handle<LiteRtTensorBuffer, LiteRtDestroyTensorBuffer>(
+            tensor_buffer, owned) {}
 
-  TensorBuffer(TensorBuffer&& other) { *this = std::move(other); }
-
-  TensorBuffer& operator=(TensorBuffer&& other) {
-    std::swap(handle_, other.handle_);
-    return *this;
+  // Creates a duplicate of the current TensorBuffer object. The returned
+  // object is reference counted so the underlying LiteRtTensorBuffer handle is
+  // not released with the destructor until the last reference is removed.
+  Expected<TensorBuffer> Duplicate() const {
+    if (!IsOwned()) {
+      return Unexpected(kLiteRtStatusErrorInvalidArgument,
+                        "Cannot duplicate a non-owned tensor buffer");
+    }
+    if (auto status = LiteRtDuplicateTensorBuffer(Get());
+        status != kLiteRtStatusOk) {
+      return Unexpected(status, "Failed to duplicate managed tensor buffer");
+    }
+    return TensorBuffer(Get());
   }
 
-  static absl::StatusOr<TensorBuffer> CreateManaged(
+  static Expected<TensorBuffer> CreateManaged(
       LiteRtTensorBufferType buffer_type, const RankedTensorType& tensor_type,
       size_t buffer_size) {
     LiteRtTensorBuffer tensor_buffer;
-    auto& litert_tensor_type =
-        static_cast<const LiteRtRankedTensorType&>(tensor_type);
+    auto litert_tensor_type = static_cast<LiteRtRankedTensorType>(tensor_type);
     if (auto status = LiteRtCreateManagedTensorBuffer(
             buffer_type, &litert_tensor_type, buffer_size, &tensor_buffer);
         status != kLiteRtStatusOk) {
-      return absl::InternalError("Failed to create managed tensor buffer");
+      return Unexpected(status, "Failed to create managed tensor buffer");
     }
     return TensorBuffer(tensor_buffer);
   }
 
-  // Return true if the underlying LiteRtTensorBuffer handle is valid.
-  explicit operator bool() const { return static_cast<bool>(handle_); }
+  litert::Expected<AHardwareBuffer*> GetAhwb() const {
+#if LITERT_HAS_AHWB_SUPPORT
+    AHardwareBuffer* ahwb;
+    if (LiteRtGetTensorBufferAhwb(Get(), &ahwb) == kLiteRtStatusOk) {
+      return ahwb;
+    } else {
+      return litert::Unexpected(
+          kLiteRtStatusErrorRuntimeFailure,
+          "Failed to get AHardwareBuffer from tensor buffer");
+    }
+#else
+    return litert::Unexpected(
+        kLiteRtStatusErrorRuntimeFailure,
+        "AHardwareBuffer is not supported on this platform");
+#endif
+  }
 
-  // Return the underlying LiteRtTensorBuffer handle.
-  explicit operator LiteRtTensorBuffer() { return handle_.get(); }
-
-  absl::StatusOr<LiteRtTensorBufferType> BufferType() const {
+  Expected<LiteRtTensorBufferType> BufferType() const {
     LiteRtTensorBufferType tensor_buffer_type;
-    if (auto status =
-            LiteRtGetTensorBufferType(handle_.get(), &tensor_buffer_type);
+    if (auto status = LiteRtGetTensorBufferType(Get(), &tensor_buffer_type);
         status != kLiteRtStatusOk) {
-      return absl::InternalError("Failed to get tensor buffer type");
+      return Unexpected(status, "Failed to get tensor buffer type");
     }
     return tensor_buffer_type;
   }
 
-  absl::StatusOr<RankedTensorType> TensorType() const {
+  Expected<RankedTensorType> TensorType() const {
     LiteRtRankedTensorType tensor_type;
-    if (auto status =
-            LiteRtGetTensorBufferTensorType(handle_.get(), &tensor_type);
+    if (auto status = LiteRtGetTensorBufferTensorType(Get(), &tensor_type);
         status != kLiteRtStatusOk) {
-      return absl::InternalError("Failed to get tensor type");
+      return Unexpected(status, "Failed to get tensor type");
     }
     return RankedTensorType(tensor_type);
   }
 
-  absl::StatusOr<size_t> Size() const {
+  Expected<size_t> Size() const {
     size_t size;
-    if (auto status = LiteRtGetTensorBufferSize(handle_.get(), &size);
+    if (auto status = LiteRtGetTensorBufferSize(Get(), &size);
         status != kLiteRtStatusOk) {
-      return absl::InternalError("Failed to get tensor size");
+      return Unexpected(status, "Failed to get tensor size");
     }
     return size;
   }
 
-  absl::StatusOr<size_t> Offset() const {
+  Expected<size_t> Offset() const {
     size_t offset;
-    if (auto status = LiteRtGetTensorBufferOffset(handle_.get(), &offset);
+    if (auto status = LiteRtGetTensorBufferOffset(Get(), &offset);
         status != kLiteRtStatusOk) {
-      return absl::InternalError("Failed to get tensor offset");
+      return Unexpected(status, "Failed to get tensor offset");
     }
     return offset;
   }
 
-  absl::StatusOr<void*> Lock(LiteRtEvent event = nullptr) {
+  Expected<void*> Lock(LiteRtEvent event = nullptr) {
     void* host_mem_addr;
-    if (auto status =
-            LiteRtLockTensorBuffer(handle_.get(), &host_mem_addr, event);
+    if (auto status = LiteRtLockTensorBuffer(Get(), &host_mem_addr, event);
         status != kLiteRtStatusOk) {
-      return absl::InternalError("Failed to lock the tensor buffer");
+      return Unexpected(status, "Failed to lock the tensor buffer");
     }
     return host_mem_addr;
   }
 
-  absl::Status Unlock() {
-    if (auto status = LiteRtUnlockTensorBuffer(handle_.get());
+  Expected<void> Unlock() {
+    if (auto status = LiteRtUnlockTensorBuffer(Get());
         status != kLiteRtStatusOk) {
-      return absl::InternalError("Failed to unlock the tensor buffer");
+      return Unexpected(status, "Failed to unlock the tensor buffer");
     }
     return {};
   }
-
- private:
-  internal::Handle<LiteRtTensorBufferT> handle_;
 };
 
 class TensorBufferScopedLock {
  public:
   ~TensorBufferScopedLock() { (void)tensor_buffer_.Unlock(); }
 
-  static absl::StatusOr<std::pair<TensorBufferScopedLock, void*>> Create(
+  static Expected<std::pair<TensorBufferScopedLock, void*>> Create(
       TensorBuffer& tensor_buffer, LiteRtEvent event = nullptr) {
     auto addr = tensor_buffer.Lock(event);
-    if (!addr.ok()) {
-      return addr.status();
+    if (!addr) {
+      return addr.Error();
     }
     return std::make_pair(TensorBufferScopedLock(tensor_buffer), *addr);
   }

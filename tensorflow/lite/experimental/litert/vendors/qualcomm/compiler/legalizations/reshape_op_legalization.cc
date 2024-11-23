@@ -21,10 +21,10 @@
 #include "third_party/qairt/latest/include/QNN/QnnTypes.h"
 #include "tensorflow/lite/experimental/litert/c/litert_common.h"
 #include "tensorflow/lite/experimental/litert/c/litert_op_code.h"
-#include "tensorflow/lite/experimental/litert/c/litert_support.h"
-#include "tensorflow/lite/experimental/litert/cc/litert_op.h"
-#include "tensorflow/lite/experimental/litert/cc/litert_support.h"
-#include "tensorflow/lite/experimental/litert/core/graph_tools.h"
+#include "tensorflow/lite/experimental/litert/cc/litert_expected.h"
+#include "tensorflow/lite/experimental/litert/cc/litert_macros.h"
+#include "tensorflow/lite/experimental/litert/cc/litert_model.h"
+#include "tensorflow/lite/experimental/litert/cc/litert_model_predicates.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/common.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/compiler/graph_mapper.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/compiler/legalizations/util.h"
@@ -38,7 +38,7 @@ static constexpr absl::string_view kReshapeOpFmt = "reshape_%d";
 static constexpr int kReshapeOpInputSize = 1;
 static constexpr int kReshapeOpOutputSize = 1;
 
-LiteRtStatus ReshapeOpLegalization::LegalizeOp(LiteRtOpManager& src,
+LiteRtStatus ReshapeOpLegalization::LegalizeOp(const litert::Op& src,
                                                Qnn_OpConfig_t& dest,
                                                GraphMapper& graph_mapper) {
   if (src.Code() != kLiteRtOpCodeTflReshape) {
@@ -48,25 +48,23 @@ LiteRtStatus ReshapeOpLegalization::LegalizeOp(LiteRtOpManager& src,
   LITERT_RETURN_STATUS_IF_NOT_OK(SetOpInfo(op_name.c_str(),
                                            kDefaultQnnOpPackageName.data(),
                                            kQnnReshapeOpTypeName.data(), dest));
-  DumpLegalization(*src.Op());
+  DumpLegalization(*src.Get());
   // Look up op input tensors in scope.
-  LITERT_ASSIGN_OR_RETURN_STATUS(auto op_ins,
-                                 ::graph_tools::GetOpIns(src.Op()));
+  const auto op_ins = src.Inputs();
   LITERT_STACK_ARRAY(Qnn_Tensor_t, qnn_op_ins, kReshapeOpInputSize,
                      QNN_TENSOR_INIT);
   LITERT_RETURN_STATUS_IF_NOT_OK(
-      graph_mapper.LookupInScope(op_ins[0], qnn_op_ins[0]));
+      graph_mapper.LookupInScope(op_ins.front().Get(), qnn_op_ins[0]));
 
   // Legalize op outputs and update scope.
 
-  LITERT_ASSIGN_OR_RETURN_STATUS(auto op_outs,
-                                 ::graph_tools::GetOpOuts(src.Op()));
+  const auto op_outs = src.Outputs();
   LITERT_STACK_ARRAY(Qnn_Tensor_t, qnn_op_outs, kReshapeOpOutputSize,
                      QNN_TENSOR_INIT);
   LITERT_RETURN_STATUS_IF_NOT_OK(
-      graph_mapper.LegalizeAndRegister(op_outs[0], qnn_op_outs[0]));
+      graph_mapper.LegalizeAndRegister(op_outs.front().Get(), qnn_op_outs[0]));
   LITERT_RETURN_STATUS_IF_NOT_OK(
-      graph_mapper.PushToScope(op_outs[0], qnn_op_outs[0]));
+      graph_mapper.PushToScope(op_outs.front().Get(), qnn_op_outs[0]));
 
   dest.v1.numOfInputs = kReshapeOpInputSize;
   dest.v1.inputTensors = qnn_op_ins;

@@ -40,6 +40,8 @@ default_visibility = [
     "//waymo/ml/deploy/benchmark:__subpackages__",
     # copybara:uncomment #internal tuning service,
     # copybara:uncomment "//third_party/odml/experimental:__subpackages__",
+    #internal nexus library,
+    #internal nexus library tests,
 ]
 
 package(
@@ -720,7 +722,6 @@ cc_library(
         "//learning/brain/experimental/jax_pst/grpc/tf:__pkg__",
         "//learning/brain/google/data/core/kernels:__pkg__",
         "//learning/brain/google/data/core/parse_proto:__pkg__",
-        "//learning/deepmind/tensorflow/queues:__pkg__",
         "//learning/deepmind/tensorflow/sstable:__pkg__",
         "//learning/deepmind/video/tensorflow:__pkg__",
         "//learning/sibyl/tfx/state/kernels:__pkg__",
@@ -844,6 +845,7 @@ tf_cuda_library(
         "//tensorflow/core/runtime_fallback:__subpackages__",
         "//tensorflow/core/tfrt:__subpackages__",
         "//tensorflow/core/util:__pkg__",
+        "//tensorflow/python/profiler/internal:__pkg__",
         "//tensorflow/security/fuzzing:__subpackages__",
     ],
     deps = [
@@ -1103,6 +1105,7 @@ cc_library(
     name = "op",
     srcs = ["op.cc"],
     hdrs = ["op.h"],
+    visibility = default_visibility + ["//tensorflow/python/profiler/internal:__pkg__"],
     deps = [
         ":full_type_proto_cc",
         ":full_type_util",
@@ -1695,6 +1698,7 @@ tf_proto_library(
     visibility = [
         "//tensorflow/core:__subpackages__",
         "//tensorflow/python:__pkg__",
+        "//tensorflow/python/profiler/internal:__pkg__",
         "//tensorflow/security/fuzzing:__subpackages__",
         "//waymo/ml/deploy/benchmark:__subpackages__",
     ],

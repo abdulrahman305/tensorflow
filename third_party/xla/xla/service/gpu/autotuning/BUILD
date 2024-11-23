@@ -5,12 +5,13 @@ load(
     "@local_tsl//tsl/platform:build_config.bzl",
     "tf_proto_library",
 )
-load(
-    "@local_tsl//tsl/platform/default:cuda_build_defs.bzl",
-    "if_cuda_is_configured",
-)
 load("//xla:xla.bzl", "xla_cc_test")
 load("//xla/tests:build_defs.bzl", "xla_test")
+load("//xla/tsl:tsl.bzl", "if_oss")
+load(
+    "//xla/tsl/platform/default:cuda_build_defs.bzl",
+    "if_cuda_is_configured",
+)
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -35,6 +36,7 @@ cc_library(
     ],
     deps = [
         ":autotuner_compile_util",
+        ":autotuner_status_key",
         ":autotuner_util",
         "//xla:autotune_results_proto_cc",
         "//xla:autotuning_proto_cc",
@@ -115,7 +117,7 @@ xla_test(
     backends = [
         "gpu_a100",
         "gpu_h100",
-    ],
+    ] + if_oss(["gpu_b100"]),
     tags = [
         "cuda-only",
         "no_mac",
@@ -212,11 +214,19 @@ cc_library(
 )
 
 cc_library(
+    name = "autotuner_status_key",
+    srcs = ["autotuner_status_key.cc"],
+    hdrs = ["autotuner_status_key.h"],
+    deps = ["@com_google_absl//absl/strings"],
+)
+
+cc_library(
     name = "autotuner_util",
     srcs = ["autotuner_util.cc"],
     hdrs = ["autotuner_util.h"],
     tags = ["gpu"],
     deps = [
+        ":autotuner_status_key",
         "//xla:autotune_results_proto_cc",
         "//xla:autotuning_proto_cc",
         "//xla:shape_util",
@@ -225,7 +235,6 @@ cc_library(
         "//xla:xla_proto_cc",
         "//xla/hlo/ir:hlo",
         "//xla/service:dump",
-        "//xla/service/gpu:gpu_asm_opts_util",
         "//xla/service/gpu:stream_executor_util",
         "//xla/stream_executor:device_description",
         "//xla/stream_executor:device_memory",
@@ -528,6 +537,7 @@ xla_cc_test(
         "gpu",
     ],
     deps = [
+        ":autotuner_status_key",
         ":autotuner_util",
         "//xla:autotune_results_proto_cc",
         "//xla:autotuning_proto_cc",

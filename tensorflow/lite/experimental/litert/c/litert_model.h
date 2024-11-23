@@ -26,17 +26,26 @@
 extern "C" {
 #endif  // __cplusplus
 
+//
+// Handles + Common
+//
+
+// Constant data behind a tensor stored in the model.
 LITERT_DEFINE_HANDLE(LiteRtWeights);
 
+// Values/edges of the models graph.
 LITERT_DEFINE_HANDLE(LiteRtTensor);
 LITERT_DEFINE_HANDLE_ARRAY(LiteRtTensor);
 
+// Operations/nodes of the models graph.
 LITERT_DEFINE_HANDLE(LiteRtOp);
 LITERT_DEFINE_HANDLE_ARRAY(LiteRtOp);
 
+// Fundamental block of program, i.e. a function body.
 LITERT_DEFINE_HANDLE(LiteRtSubgraph);
 LITERT_DEFINE_HANDLE_ARRAY(LiteRtSubgraph);
 
+// A collection of subgraph + metadata.
 LITERT_DEFINE_HANDLE(LiteRtModel);
 
 // Append only list of ops.
@@ -46,9 +55,16 @@ LITERT_DEFINE_HANDLE(LiteRtOpList);
 typedef uint64_t LiteRtParamIndex;
 
 //
-// Tensors
+// LiteRtTensor + Types
 //
 
+// Get the string name associated with this tensor. This is an optional
+// attribute and if not set will return a zero-length string.
+LiteRtStatus LiteRtGetTensorName(LiteRtTensor tensor, const char** name);
+
+// TENSOR TYPES
+
+// Primitive types for elements in a tensor.
 typedef enum {
   kLiteRtElementTypeNone = kTfLiteNoType,
   kLiteRtElementTypeBool = kTfLiteBool,
@@ -72,123 +88,202 @@ typedef enum {
   kLiteRtElementTypeTfVariant = kTfLiteVariant,
 } LiteRtElementType;
 
+// The shape information for tensor types of fixed rank.
 typedef struct {
+  // The number of dimensions.
   uint32_t rank;
-  // TODO: b/365299994 - Decide on canonical type(s) for indices({s}32/64). Also
-  // representation of dynamic dim.
+
+  // Dimension sizes, array of length `rank`. Dynamic dimensions are anything
+  // less than 0.
   const int32_t* dimensions;
+
   // Strides for a nomimal NWHC layout. NULL if unused.
   const uint32_t* strides;
 } LiteRtLayout;
 
 // Tensor whose rank is dynamic.
 typedef struct {
+  // The primitive element type of the constituent data.
   LiteRtElementType element_type;
 } LiteRtUnrankedTensorType;
 
 // Tensor whose rank is static but dimenions may be dynamic.
 typedef struct {
+  // The primitive element type of the constituent data.
   LiteRtElementType element_type;
+
+  // Shape information.
   LiteRtLayout layout;
 } LiteRtRankedTensorType;
 
+// The identifier for tensor type union.
 typedef enum {
+  // Type with fix ranked and possibly dynamic dimensions.
   kLiteRtRankedTensorType = 0,
+
+  // Type with dynamic rank.
   kLiteRtUnrankedTensorType = 1,
-  // TODO: b/365299994 - q types.
 } LiteRtTensorTypeId;
 
 // Get type identifier from tensor.
-LiteRtStatus GetTensorTypeId(LiteRtTensor tensor, LiteRtTensorTypeId* type_id);
+LiteRtStatus LiteRtGetTensorTypeId(LiteRtTensor tensor,
+                                   LiteRtTensorTypeId* type_id);
 
 // Get unranked tensor type info, return bad status if not unranked.
-LiteRtStatus GetUrankedTensorType(
+LiteRtStatus LiteRtGetUnrankedTensorType(
     LiteRtTensor tensor, LiteRtUnrankedTensorType* unranked_tensor_type);
 
 // Get ranked tensor type info, return bad status if not ranked.
-LiteRtStatus GetRankedTensorType(LiteRtTensor tensor,
-                                 LiteRtRankedTensorType* ranked_tensor_type);
+LiteRtStatus LiteRtGetRankedTensorType(
+    LiteRtTensor tensor, LiteRtRankedTensorType* ranked_tensor_type);
 
-// Get opaque array from given tensor weights.
-LiteRtStatus GetWeightsInfo(LiteRtWeights weights, size_t* size,
-                            const void** addr);
+// QUANTIZATION
+
+// Schema for tensors quantized with one set of q-params.
+typedef struct {
+  // Scaling factor.
+  float scale;
+
+  // The value that float:0 maps to in q-space.
+  size_t zero_point;
+} LiteRtQuantizationPerTensor;
+
+// The identifier for quantization scheme type union.
+typedef enum {
+  // Tag for tensors without quantization.
+  kLiteRtQuantizationNone = 0,
+
+  // Basic quantization, one set of q-params per tensor.
+  kLiteRtQuantizationPerTensor = 1,
+
+  // [NOT IMPLEMENTED YET] Q-params for each element accross a single dimension.
+  kLiteRtQuantizationPerChannel = 2,
+
+  // [NOT IMPLEMENTED YET] Q-params accross blocks of fixed size (e.g. 2048).
+  kLiteRtQuantizationBlockWise = 3,
+} LiteRtQuantizationTypeId;
+
+// Get the identifier for the type of quantization for a given tensor.
+LiteRtStatus LiteRtGetQuantizationTypeId(LiteRtTensor tensor,
+                                         LiteRtQuantizationTypeId* q_type_id);
+
+// Get the per-tensor quantization information for a given tensor if it has it.
+LiteRtStatus LiteRtGetPerTensorQuantization(
+    LiteRtTensor tensor, LiteRtQuantizationPerTensor* per_tensor_quantization);
+
+// EDGES
+
+// Information about the about that defines a tensor.
+typedef struct LiteRtTensorDefiningOp {
+  // The defining op itself.
+  LiteRtOp op;
+
+  // The op output index that defines the specific tensor.
+  LiteRtParamIndex op_output_index;
+} LiteRtTensorDefiningOp;
+
+// Information about a reference to a tensor in the graph.
+typedef struct LiteRtTensorUserOp {
+  // The referring op itself.
+  LiteRtOp op;
+
+  // Index of which operand the op refers to a specific tensor on.
+  LiteRtParamIndex op_input_index;
+} LiteRtTensorUserOp;
+
+// Get all the ops that reference given tensor, and at what operand index.
+LiteRtStatus LiteRtGetTensorUses(LiteRtTensor tensor,
+                                 LiteRtParamIndex* num_uses,
+                                 LiteRtOpArray* users,
+                                 LiteRtParamIndex** user_arg_inds);
+
+// Get the op that defines this tensor and the corresponding output index. If
+// tensor is a subgraph input, has_defining_op will be false.
+LiteRtStatus LiteRtGetTensorDefiningOp(LiteRtTensor tensor,
+                                       bool* has_defining_op,
+                                       LiteRtTensorDefiningOp* defining_op);
+
+// WEIGHTS (constant data)
 
 // Get static weights associated with a given tensor. All tensors have weights,
 // null weights have size = 0;
-LiteRtStatus GetTensorWeights(LiteRtTensor tensor, LiteRtWeights* weights);
-
-// Get all the ops that reference given tensor, and at what operand index.
-LiteRtStatus GetTensorUses(LiteRtTensor tensor, LiteRtParamIndex* num_uses,
-                           LiteRtOpArray* users,
-                           LiteRtParamIndex** user_arg_inds);
-
-// Get the op that defines this tensor and the corresponding output index. If
-// tensor is a subgraph input, defining op will be null.
-LiteRtStatus GetTensorDefiningOp(
-    LiteRtTensor tensor, LiteRtOp* maybe_defining_op,
-    LiteRtParamIndex* maybe_defining_op_output_ind);
+LiteRtStatus LiteRtGetTensorWeights(LiteRtTensor tensor,
+                                    LiteRtWeights* weights);
 
 //
-// Op
+// LiteRtWeights
 //
 
-// Get output tensors of given op.
-LiteRtStatus GetOpOutputs(LiteRtOp op, LiteRtParamIndex* num_outputs,
-                          LiteRtTensorArray* output);
+// Get opaque array from given tensor weights.
+LiteRtStatus LiteRtGetWeightsBytes(LiteRtWeights weights, const void** addr,
+                                   size_t* size);
 
-// Get input tensors of given op.
-LiteRtStatus GetOpInputs(LiteRtOp op, LiteRtParamIndex* num_inputs,
-                         LiteRtTensorArray* inputs);
+//
+// LiteRtOp
+//
 
 // Get code corresponding to operation type for given op.
-LiteRtStatus GetOpCode(LiteRtOp op, LiteRtOpCode* code);
+LiteRtStatus LiteRtGetOpCode(LiteRtOp op, LiteRtOpCode* code);
+
+// Get input tensors of given op.
+LiteRtStatus LiteRtGetOpInputs(LiteRtOp op, LiteRtParamIndex* num_inputs,
+                               LiteRtTensorArray* inputs);
+
+// Get output tensors of given op.
+LiteRtStatus LiteRtGetOpOutputs(LiteRtOp op, LiteRtParamIndex* num_outputs,
+                                LiteRtTensorArray* outputs);
 
 //
-// Subgraph
+// LiteRtSubgraph
 //
 
 // Get input tensors for given subgraph.
-LiteRtStatus GetSubgraphInputs(LiteRtSubgraph subgraph,
-                               LiteRtParamIndex* num_inputs,
-                               LiteRtTensorArray* inputs);
+LiteRtStatus LiteRtGetSubgraphInputs(LiteRtSubgraph subgraph,
+                                     LiteRtParamIndex* num_inputs,
+                                     LiteRtTensorArray* inputs);
 
 // Get output tensors for given subgraph.
-LiteRtStatus GetSubgraphOutputs(LiteRtSubgraph subgraph,
-                                LiteRtParamIndex* num_outputs,
-                                LiteRtTensorArray* outputs);
+LiteRtStatus LiteRtGetSubgraphOutputs(LiteRtSubgraph subgraph,
+                                      LiteRtParamIndex* num_outputs,
+                                      LiteRtTensorArray* outputs);
 
 // Get all ops in given subgraph in a topological order.
-LiteRtStatus GetSubgraphOps(LiteRtSubgraph subgraph, LiteRtParamIndex* num_ops,
-                            LiteRtOpArray* ops);
+LiteRtStatus LiteRtGetSubgraphOps(LiteRtSubgraph subgraph,
+                                  LiteRtParamIndex* num_ops,
+                                  LiteRtOpArray* ops);
 
 //
-// Model
+// LiteRtModel
 //
 
 // Get the metadata buffer associated with given key if it exists.
-LiteRtStatus LiteRtModelGetMetadata(LiteRtModel model, const char* metadata_key,
+LiteRtStatus LiteRtGetModelMetadata(LiteRtModel model, const char* metadata_key,
                                     const void** metadata_buffer,
                                     size_t* metadata_buffer_size);
 
-// Get number of subgraphs in model.
-LiteRtStatus GetModelNumSubgraphs(LiteRtModel model,
-                                  LiteRtParamIndex* num_subgraphs);
-
-// Get subgraph at given index in model.
-LiteRtStatus GetModelSubgraph(LiteRtModel model,
-                              LiteRtParamIndex subgraph_index,
-                              LiteRtSubgraph* subgraph);
-
 // Get the index of the entry subgraph.
 // TODO: b/365299994 - Figure out signatures.
-LiteRtStatus GetModelMainSubgraph(LiteRtModel model,
-                                  LiteRtParamIndex* main_subgraph_index);
+LiteRtStatus LiteRtGetMainModelSubgraphIndex(
+    LiteRtModel model, LiteRtParamIndex* main_subgraph_index);
+
+// Get number of subgraphs in model.
+LiteRtStatus LiteRtGetNumModelSubgraphs(LiteRtModel model,
+                                        LiteRtParamIndex* num_subgraphs);
+
+// Get subgraph at given index in model.
+LiteRtStatus LiteRtGetModelSubgraph(LiteRtModel model,
+                                    LiteRtParamIndex subgraph_index,
+                                    LiteRtSubgraph* subgraph);
+
+// Destroy the given model, freeing any memory it owns.
+void LiteRtModelDestroy(LiteRtModel model);
 
 //
 // Utility Types
 //
 
-LiteRtStatus PushOp(LiteRtOpList op_list, LiteRtOp op);
+// An append only list of ops.
+LiteRtStatus LiteRtPushOp(LiteRtOpList op_list, LiteRtOp op);
 
 #ifdef __cplusplus
 }

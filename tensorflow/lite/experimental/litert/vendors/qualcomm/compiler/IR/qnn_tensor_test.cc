@@ -18,7 +18,7 @@
 #include <gtest/gtest.h>
 #include "absl/types/span.h"
 #include "third_party/qairt/latest/include/QNN/QnnTypes.h"
-#include "tensorflow/lite/experimental/litert/core/graph_tools.h"
+#include "tensorflow/lite/experimental/litert/cc/litert_model_predicates.h"
 #include "tensorflow/lite/experimental/litert/test/common.h"
 
 namespace {
@@ -85,13 +85,14 @@ TEST(TestInitQnnTensor, MoveToId) {
 
 TEST(TestLegalizeTensor, SimpleSupportedTensorSubgraphInput) {
   auto model = litert::testing::LoadTestFileModel("one_mul.tflite");
-  ASSERT_RESULT_OK_ASSIGN(auto subgraph,
-                          ::graph_tools::GetSubgraph(model.get()));
-  ASSERT_RESULT_OK_ASSIGN(auto outputs,
-                          ::graph_tools::GetSubgraphOutputs(subgraph));
+  auto subgraph = model.MainSubgraph();
+  EXPECT_TRUE(subgraph);
+  auto outputs = subgraph->Outputs();
 
   auto qnn_tensor = litert::qnn::BuildDefaultTensor();
-  ASSERT_STATUS_OK(litert::qnn::LegalizeTensor(outputs[0], qnn_tensor));
+  const auto& output_tensor = outputs.front();
+  LITERT_ASSERT_STATUS_OK(
+      litert::qnn::LegalizeTensor(output_tensor, qnn_tensor));
 
   ASSERT_EQ(qnn_tensor.version, QNN_TENSOR_VERSION_2);
   EXPECT_EQ(qnn_tensor.v2.dataType, QNN_DATATYPE_FLOAT_32);
@@ -108,17 +109,18 @@ TEST(TestLegalizeTensor, SimpleSupportedTensorSubgraphInput) {
 TEST(TestLegalizeTensor, SimpleSupportedTensor) {
   auto model = litert::testing::LoadTestFileModel("simple_multi_op.tflite");
 
-  ASSERT_RESULT_OK_ASSIGN(auto subgraph,
-                          ::graph_tools::GetSubgraph(model.get()));
-  ASSERT_RESULT_OK_ASSIGN(auto ops, ::graph_tools::GetSubgraphOps(subgraph));
-  ASSERT_RESULT_OK_ASSIGN(auto op_outs, ::graph_tools::GetOpOuts(ops[1]));
+  auto subgraph = model.MainSubgraph();
+  EXPECT_TRUE(subgraph);
+  auto ops = subgraph->Ops();
+  auto op_outs = ops.at(1).Outputs();
 
   auto qnn_tensor = litert::qnn::BuildDefaultTensor();
-  ASSERT_STATUS_OK(litert::qnn::LegalizeTensor(op_outs[0], qnn_tensor));
+  const auto& op_out = op_outs.front();
+  LITERT_ASSERT_STATUS_OK(litert::qnn::LegalizeTensor(op_out, qnn_tensor));
 
   ASSERT_EQ(qnn_tensor.version, QNN_TENSOR_VERSION_2);
   EXPECT_EQ(qnn_tensor.v2.dataType, QNN_DATATYPE_FLOAT_32);
-  EXPECT_EQ(qnn_tensor.v2.type, QNN_TENSOR_TYPE_UNDEFINED);
+  EXPECT_EQ(qnn_tensor.v2.type, QNN_TENSOR_TYPE_NATIVE);
 
   ASSERT_EQ(qnn_tensor.v2.rank, 2);
   ASSERT_NE(qnn_tensor.v2.dimensions, nullptr);

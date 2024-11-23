@@ -2586,32 +2586,6 @@ func.func @DontConvertConstSelectMixed(%arg0: tensor<2xf32>, %arg1: tensor<2xf32
   // CHECK: return %0, %1
 }
 
-// CHECK-LABEL: FuseBroadcastToIntoSelect
-func.func @FuseBroadcastToIntoSelect(%arg0: tensor<1x8x1024x2048xf32>, %arg1: tensor<1x8x1024x2048xf32>, %arg2: tensor<1x1x1x2048xi1>) -> (tensor<1x8x1024x2048xf32>, tensor<1x8x1024x2048xf32>) {
-  %cst_0 = arith.constant dense<[1, 8, 1024, 2048]> : tensor<4xi32>
-  %0 = "tfl.broadcast_to"(%arg2, %cst_0) : (tensor<1x1x1x2048xi1>, tensor<4xi32>) -> tensor<1x8x1024x2048xi1>
-  %1 = "tfl.select"(%0, %arg0, %arg1) : (tensor<1x8x1024x2048xi1>, tensor<1x8x1024x2048xf32>, tensor<1x8x1024x2048xf32>) -> tensor<1x8x1024x2048xf32>
-  %2 = "tfl.select_v2"(%0, %arg0, %arg1) : (tensor<1x8x1024x2048xi1>, tensor<1x8x1024x2048xf32>, tensor<1x8x1024x2048xf32>) -> tensor<1x8x1024x2048xf32>
-  func.return %1, %2 : tensor<1x8x1024x2048xf32>, tensor<1x8x1024x2048xf32>
-  // CHECK: %0 = "tfl.select_v2"(%arg2, %arg0, %arg1) : (tensor<1x1x1x2048xi1>, tensor<1x8x1024x2048xf32>, tensor<1x8x1024x2048xf32>) -> tensor<1x8x1024x2048xf32>
-  // CHECK: %1 = "tfl.select_v2"(%arg2, %arg0, %arg1) : (tensor<1x1x1x2048xi1>, tensor<1x8x1024x2048xf32>, tensor<1x8x1024x2048xf32>) -> tensor<1x8x1024x2048xf32>
-  // CHECK: return %0, %1
-}
-
-// CHECK-LABEL: FuseBroadcastToIntoSelect1
-func.func @FuseBroadcastToIntoSelect1(%arg0: tensor<1x1x8x1024x2048xf32>, %arg1: tensor<1x1x8x1024x2048xf32>, %arg2: tensor<1x1x1x1x2048xi1>) -> tensor<1x1x8x1024x2048xf32> {
-  %cst_0 = arith.constant dense<[1, 1, 8, 1024, 2048]> : tensor<5xi32>
-  %0 = "tfl.broadcast_to"(%arg2, %cst_0) : (tensor<1x1x1x1x2048xi1>, tensor<5xi32>) -> tensor<1x1x8x1024x2048xi1>
-  %1 = "tfl.select"(%0, %arg0, %arg1) : (tensor<1x1x8x1024x2048xi1>, tensor<1x1x8x1024x2048xf32>, tensor<1x1x8x1024x2048xf32>) -> tensor<1x1x8x1024x2048xf32>
-
-  func.return %1 : tensor<1x1x8x1024x2048xf32>
-  // CHECK-DAG: %cst = arith.constant dense<[1, 1, 8, 1024, 2048]> : tensor<5xi32>
-  // CHECK: %0 = "tfl.broadcast_to"(%arg2, %cst) : (tensor<1x1x1x1x2048xi1>, tensor<5xi32>) -> tensor<1x1x8x1024x2048xi1>
-  // CHECK: %1 = "tfl.select"(%0, %arg0, %arg1) : (tensor<1x1x8x1024x2048xi1>, tensor<1x1x8x1024x2048xf32>, tensor<1x1x8x1024x2048xf32>) -> tensor<1x1x8x1024x2048xf32>
-
-  // CHECK: return %1
-}
-
 // CHECK-LABEL: CheckSelectNegated
 func.func @CheckSelectNegated(%arg0: tensor<1x2x3x4xi1>, %arg1: tensor<1x2x3x4xf32>, %arg2: tensor<1x2x3x4xf32>) -> (tensor<1x2x3x4xf32>, tensor<1x2x3x4xf32>) {
   %not = "tfl.logical_not"(%arg0) : (tensor<1x2x3x4xi1>) -> tensor<1x2x3x4xi1>
@@ -2861,6 +2835,20 @@ func.func @ReorderReshapex2Add(%arg0: tensor<1x2x3x4xf32>, %arg1: tensor<1x2x3x4
   // CHECK: %[[VAL_0:.*]] = tfl.add %arg0, %arg1 {fused_activation_function = "NONE"} : tensor<1x2x3x4xf32>
   // CHECK: %[[VAL_1:.*]] = "tfl.reshape"(%[[VAL_0]], %[[CST]]) : (tensor<1x2x3x4xf32>, tensor<2xi32>) -> tensor<6x4xf32>
   // CHECK: return %[[VAL_1]]
+}
+
+// CHECK-LABEL: @NotReorderReshapeAndMul_MultipleUsers
+func.func @NotReorderReshapeAndMul_MultipleUsers(%arg0: tensor<3x40xf32>, %arg1: tensor<1x3x8x1xf32>) -> (tensor<1x3x8x5xf32>, tensor<1x3x8x5xf32>) {
+  %cst_1 = arith.constant dense<[1, 3, 8, 5]> : tensor<4xi32>
+  %2 = "tfl.reshape"(%arg0, %cst_1) : (tensor<3x40xf32>, tensor<4xi32>) -> tensor<1x3x8x5xf32>
+  %3 = tfl.mul %2, %2 {fused_activation_function = "NONE"} : tensor<1x3x8x5xf32>
+  %9 = tfl.mul(%2, %arg1) <{fused_activation_function = "NONE"}> : (tensor<1x3x8x5xf32>, tensor<1x3x8x1xf32>) -> tensor<1x3x8x5xf32>
+  return %3, %9 : tensor<1x3x8x5xf32>, tensor<1x3x8x5xf32>
+  // CHECK:  %cst = arith.constant dense<[1, 3, 8, 5]> : tensor<4xi32>
+  // CHECK:  %0 = "tfl.reshape"(%arg0, %cst) : (tensor<3x40xf32>, tensor<4xi32>) -> tensor<1x3x8x5xf32>
+  // CHECK:  %1 = tfl.mul %0, %0 {fused_activation_function = "NONE"} : tensor<1x3x8x5xf32>
+  // CHECK:  %2 = tfl.mul(%0, %arg1) <{fused_activation_function = "NONE"}> : (tensor<1x3x8x5xf32>, tensor<1x3x8x1xf32>) -> tensor<1x3x8x5xf32>
+  // CHECK:  return %1, %2 : tensor<1x3x8x5xf32>, tensor<1x3x8x5xf32>
 }
 
 // CHECK-LABEL: @DontReorderReshapex2Add

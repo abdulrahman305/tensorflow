@@ -612,9 +612,6 @@ class PjRtClient {
   // Pending completion of b/237720161, `options` is a mandatory argument in
   // most implementations of this interface. They _are_ optional for
   // implementations related to the PJRT C API.
-  //
-  // If `options` are provided, then they override the compile options
-  // from the serialized executable (`serialized`).
   virtual absl::StatusOr<std::unique_ptr<PjRtLoadedExecutable>>
   DeserializeExecutable(absl::string_view serialized,
                         std::optional<CompileOptions> options) {
@@ -1426,51 +1423,6 @@ class PjRtBuffer {
   virtual absl::StatusOr<std::unique_ptr<PjRtBuffer>>
   DonateWithControlDependency(PjRtFuture<> dependency) {
     return Unimplemented("DonateWithControlDependency is not supported.");
-  }
-
-  // Helper to allow a caller to indicate that it is going to do some "sends"
-  // of the buffer a later date, where a send is a transfer out of a device
-  // buffer, either copying to host, or to a remote device.
-  //
-  // An AsyncSendPlaceholder is associated with a particular buffer, and acts as
-  // a way for the caller to inform the system of a partial ordering on actions.
-  // If the caller writes:
-  //   1) auto placeholder = buffer->CreateAsyncSendPlaceholder();
-  //   2) auto results = client->ExecuteSharded(...);
-  //   3) [..] other client work
-  //   4) auto s = placeholder->ToLiteral(...);
-  // then that means that the ToLiteral in (4) is earlier than the work in
-  // (2+3) in the partial order. For example, the work in (2+3) may depend
-  // on the D2H in (4), for example via a cross-host dependency that is
-  // otherwise not visible to the PjRtClient.
-  //
-  // The AsyncSendPlaceholder may not outlive the buffer it was created by,
-  // and it should be destroyed as soon as possible after its last use.
-  class AsyncSendPlaceholder {
-   public:
-    virtual ~AsyncSendPlaceholder() = default;
-
-    // Equivalent to PjRtBuffer::ToLiteral on the underlying buffer;
-    virtual PjRtFuture<> ToLiteral(MutableLiteralBase* literal) = 0;
-
-    // Equivalent to PjRtBuffer::CopyRawToHost on the underlying buffer;
-    virtual PjRtFuture<> CopyRawToHost(void* dst, int64_t offset,
-                                       int64_t transfer_size) = 0;
-
-    // Equivalent to PjRtBuffer::CopyToRemoteDevice on the underlying buffer;
-    virtual void CopyToRemoteDevice(absl::string_view serialized_descriptor,
-                                    RemoteSendCallback on_done) = 0;
-
-    // Equivalent to PjRtBuffer::CopyToRemoteDeviceScattered on the underlying
-    // buffer;
-    virtual void CopyToRemoteDeviceScattered(
-        std::vector<std::string> serialized_descriptors,
-        std::vector<PjRtBuffer::RemoteSendCallback> callbacks,
-        const ScatterDetails& scatter_details) = 0;
-  };
-  virtual absl::StatusOr<std::unique_ptr<AsyncSendPlaceholder>>
-  CreateAsyncSendPlaceholder() {
-    return Unimplemented("AsyncSendPlaceholder is not supported.");
   }
 
   // Returns a future that can be used to discover when the data in the

@@ -8,6 +8,14 @@
 
 * <DOCUMENT BREAKING CHANGES HERE>
 * <THIS SECTION SHOULD CONTAIN API, ABI AND BEHAVIORAL BREAKING CHANGES>
+* `LiteRT`, a.k.a. `tf.lite`:
+  * C++ API:
+    * The public constants `tflite::Interpreter:kTensorsReservedCapacity`
+      and `tflite::Interpreter:kTensorsCapacityHeadroom` are now const
+      references, rather than `constexpr` compile-time constants.
+      (This is to enable better API compatibility for TFLite in Play services
+      while preserving the implementation flexibility to change the values of
+      these constants in the future.)
 
 ### Known Caveats
 
@@ -17,7 +25,8 @@
 
 ### Major Features and Improvements
 
-*   <INSERT MAJOR FEATURE HERE, USING MARKDOWN SYNTAX>
+*  `tf.lite`
+    * `tfl.Cast` op is now supporting `bfloat16` in runtime kernel.
 *   <IF RELEASE CONTAINS MULTIPLE FEATURES FROM SAME AREA, GROUP THEM TOGETHER>
 
 ### Bug Fixes and Other Changes
@@ -65,6 +74,8 @@ This release contains contributions from many people at Google, as well as:
 ### Breaking Changes
 
 * `tf.lite`
+    * Interpreter:
+      * `tf.lite.Interpreter` gives warning of future deletion and a redirection notice to its new location at `ai_edge_litert.interpreter`. See the [migration guide](https://ai.google.dev/edge/litert/migration) for details.
     * C API:
       * An optional, fourth parameter was added `TfLiteOperatorCreate` as a step forward towards a cleaner API for `TfLiteOperator`. Function `TfLiteOperatorCreate` was added recently, in TensorFlow Lite version 2.17.0, released on 7/11/2024, and we do not expect there will be much code using this function yet. Any code breakages can be easily resolved by passing nullptr as the new, 4th parameter.
 

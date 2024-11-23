@@ -23,14 +23,15 @@
 #include <cstdint>
 #include <ostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "tensorflow/lite/experimental/litert/c/litert_model.h"
 #include "tensorflow/lite/experimental/litert/c/litert_op_code.h"
-#include "tensorflow/lite/experimental/litert/core/compiler_plugin/compiler_plugin.h"
-#include "tensorflow/lite/experimental/litert/core/model.h"
+#include "tensorflow/lite/experimental/litert/compiler/plugin/compiler_plugin.h"
+#include "tensorflow/lite/experimental/litert/core/model/model.h"
 
 namespace litert::internal {
 
@@ -47,6 +48,7 @@ void DumpNode(const LiteRtTensorT& tensor, std::ostream& out) {
     default:
       out << "UKNOWN_TENSOR_TYPE" << tensor.type_id;
   }
+  Dump(std::make_pair(tensor.q_type_id, tensor.q_type_detail), out);
 }
 
 void DumpNode(const LiteRtOpT& op, std::ostream& out) { Dump(op.op_code, out); }
@@ -111,6 +113,36 @@ void Dump(LiteRtOpCode code, std::ostream& out) {
       break;
     case kLiteRtOpCodeTflBatchMatmul:
       out << "TFL_BATCH_MATMUL";
+      break;
+    case kLiteRtOpCodeTflSum:
+      out << "TFL_SUM";
+      break;
+    case kLiteRtOpCodeTflConcatenation:
+      out << "TFL_CONCATENATION";
+      break;
+    case kLiteRtOpCodeTflSoftmax:
+      out << "TFL_SOFTMAX";
+      break;
+    case kLiteRtOpCodeTflCast:
+      out << "TFL_CAST";
+      break;
+    case kLiteRtOpCodeTflTranspose:
+      out << "TFL_TRANSPOSE";
+      break;
+    case kLiteRtOpCodeTflSin:
+      out << "TFL_SIN";
+      break;
+    case kLiteRtOpCodeTflCos:
+      out << "TFL_COS";
+      break;
+    case kLiteRtOpCodeTflSelect:
+      out << "TFL_SELECT";
+      break;
+    case kLiteRtOpCodeTflSelectV2:
+      out << "TFL_SELECT_V2";
+      break;
+    case kLiteRtOpCodeTflFullyConnected:
+      out << "TFL_FULLY_CONNECTED";
       break;
     default:
       out << "UKNOWN_OP_CODE: " << code;
@@ -272,6 +304,10 @@ void Dump(const LiteRtModelT& model, std::ostream& out) {
 }
 
 void DumpOptions(const LiteRtOpT& op, std::ostream& out) {
+  if (op.option.value == nullptr) {
+    out << "null options\n";
+    return;
+  }
   switch (op.op_code) {
     case kLiteRtOpCodeTflAdd:
       out << "fused_activation_function: "
@@ -289,19 +325,16 @@ void DumpOptions(const LiteRtOpT& op, std::ostream& out) {
           << "\n";
       break;
     case kLiteRtOpCodeTflConcatenation:
+      out << "axis: " << op.option.AsConcatenationOptions()->axis << "\n";
       out << "fused_activation_function: "
           << op.option.AsConcatenationOptions()->fused_activation_function
           << "\n";
-      out << "axis: " << op.option.AsConcatenationOptions()->axis << "\n";
       break;
     case kLiteRtOpCodeTflDiv:
       out << "fused_activation_function: "
           << op.option.AsDivOptions()->fused_activation_function << "\n";
       break;
     case kLiteRtOpCodeTflFullyConnected:
-      out << "fused_activation_function: "
-          << op.option.AsFullyConnectedOptions()->fused_activation_function
-          << "\n";
       out << "weights_format: "
           << op.option.AsFullyConnectedOptions()->weights_format << "\n";
       out << "keep_num_dims: "
@@ -310,6 +343,9 @@ void DumpOptions(const LiteRtOpT& op, std::ostream& out) {
           << op.option.AsFullyConnectedOptions()->quantized_bias_type << "\n";
       out << "asymmetric_quantize_input: "
           << op.option.AsFullyConnectedOptions()->asymmetric_quantize_inputs
+          << "\n";
+      out << "fused_activation_function: "
+          << op.option.AsFullyConnectedOptions()->fused_activation_function
           << "\n";
       break;
     case kLiteRtOpCodeTflSoftmax:
@@ -343,9 +379,28 @@ void DumpOptions(const LiteRtOpT& op, std::ostream& out) {
         }
       }
       break;
+    case kLiteRtOpCodeTflSum:
+      out << "keepdims: " << op.option.AsReducerOptions()->keep_dims << "\n";
+      break;
     default:
       out << "No options for op code: " << op.op_code;
       break;
   }
 }
+
+void Dump(Quantization quantization, std::ostream& out) {
+  switch (quantization.first) {
+    case kLiteRtQuantizationNone:
+      return;
+    case kLiteRtQuantizationPerTensor:
+      out << absl::StreamFormat(" <q PerTensor [ .z = %ld, .s = %f ]>",
+                                quantization.second.per_tensor.zero_point,
+                                quantization.second.per_tensor.scale);
+      return;
+    default:
+      out << " <q UNKNOWN>";
+      return;
+  }
+}
+
 }  // namespace litert::internal

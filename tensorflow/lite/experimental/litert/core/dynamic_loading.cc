@@ -18,7 +18,9 @@
 
 #ifndef __ANDROID__
 #include <glob.h>
+#if __has_include(<link.h>)
 #include <link.h>
+#endif
 #endif
 
 #include <cstddef>
@@ -29,21 +31,21 @@
 #include "absl/strings/string_view.h"
 #include "tensorflow/lite/experimental/litert/c/litert_common.h"
 #include "tensorflow/lite/experimental/litert/c/litert_logging.h"
-#include "tensorflow/lite/experimental/litert/cc/litert_support.h"
+#include "tensorflow/lite/experimental/litert/cc/litert_macros.h"
 
-namespace litert {
+namespace litert::internal {
 
 LiteRtStatus OpenLib(absl::string_view so_path, void** lib_handle) {
-#ifdef __ANDROID__
-  void* res = ::dlopen(so_path.data(), RTLD_NOW | RTLD_LOCAL);
-#else
+#ifdef RTLD_DEEPBIND
   void* res = ::dlopen(so_path.data(), RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
+#else
+  void* res = ::dlopen(so_path.data(), RTLD_NOW | RTLD_LOCAL);
 #endif
 
   if (res == nullptr) {
-    LITERT_LOG(LITERT_ERROR,
-               "Failed to load .so at path: %s, with error:\n\t %s\n",
-               so_path.data(), ::dlerror());
+    LITERT_LOG(LITERT_ERROR, "Failed to load .so at path: %s\n",
+               so_path.data());
+    LogDlError();
 
     return kLiteRtStatusErrorDynamicLoading;
   }
@@ -61,12 +63,14 @@ LiteRtStatus CloseLib(void* lib_handle) {
 
 LiteRtStatus MakePluginLibGlobPattern(absl::string_view search_path,
                                       std::string& pattern) {
-  LITERT_ENSURE(!search_path.ends_with("/"), kLiteRtStatusErrorInvalidArgument,
+  bool search_path_ends_with_slash =
+      !search_path.empty() && (search_path[search_path.size() - 1] == '/');
+  LITERT_ENSURE(!search_path_ends_with_slash, kLiteRtStatusErrorInvalidArgument,
                 "Search paths must not have trailing slash");
 
-  // NOTE: Compiler plugin shared libraries also have "Plugin" appended
-  // to the standard prefix.
-  constexpr absl::string_view kGlobPluginLibTemplate = "%s/%sPlugin*.so";
+  // NOTE: Compiler plugin shared libraries also have "Plugin" somewhere after
+  // the standard prefix.
+  constexpr absl::string_view kGlobPluginLibTemplate = "%s/%s*Plugin*.so";
   pattern = absl::StrFormat(kGlobPluginLibTemplate, search_path,
                             kLiteRtSharedLibPrefix);
   return kLiteRtStatusOk;
@@ -82,7 +86,7 @@ LiteRtStatus FindLiteRtSharedLibs(absl::string_view search_path,
   glob_t glob_result = {};
   const int glob_status =
       glob(glob_pattern.c_str(), GLOB_ERR, nullptr, &glob_result);
-  if (glob_status == GLOB_NOMATCH) {
+  if (glob_status == GLOB_NOMATCH || glob_status == GLOB_ABORTED) {
     LITERT_LOG(LITERT_WARNING, "%s", "Didn't find any plugin libs to load\n");
     globfree(&glob_result);
     return kLiteRtStatusOk;
@@ -104,4 +108,4 @@ LiteRtStatus FindLiteRtSharedLibs(absl::string_view search_path,
   return kLiteRtStatusErrorUnsupported;
 }
 
-}  // namespace litert
+}  // namespace litert::internal
