@@ -15,6 +15,8 @@
 
 # buildifier: disable=out-of-order-load
 
+# Placeholder: load proto_library
+# Placeholder: load java_lite_proto_library
 load("@flatbuffers//:build_defs.bzl", "DEFAULT_FLATC_ARGS", "flatbuffer_android_library", "flatbuffer_cc_library", "flatbuffer_java_library", "flatc_path")
 
 # copybara:comment_begin(oss-only)
@@ -176,6 +178,7 @@ cc_test(
     name = "proto_to_flatbuffer_test",
     srcs = ["proto_to_flatbuffer_test.cc"],
     deps = [
+        ":configuration_cc_proto",
         ":proto_to_flatbuffer",
         "@com_google_googletest//:gtest_main",
     ],

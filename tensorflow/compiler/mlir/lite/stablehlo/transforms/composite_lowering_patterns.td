@@ -126,6 +126,27 @@ def LegalizeCompositeApproximateAtenGELU : Pat<
         (TFL_GeluOp $inputs, ConstBoolAttrTrue),
         [(IsStrCompositeAttribute<"approximate", "tanh"> $attrs)]>;
 
+def LegalizeCompositeGELU : Pat<
+        (MHLO_CompositeOp:$composite
+          (variadic $inputs),
+          ConstantStrAttr<StrAttr, "tfl.gelu">, $attrs, $_, $_),
+        (TFL_GeluOp $inputs,
+          (GetCompositeAttributeAs<"approximate", "BoolAttr"> $attrs))>;
+
+def LegalizeCompositeGELUDynamicShaped : Pat<
+        (MHLO_CompositeOp:$composite
+          (variadic $_, $inputs),
+          ConstantStrAttr<StrAttr, "tfl.gelu">, $attrs, $_, $_),
+        (TFL_GeluOp $inputs,
+          (GetCompositeAttributeAs<"approximate", "BoolAttr"> $attrs))>;
+
+def LegalizeCompositeGELUDynamicShaped2 : Pat<
+        (MHLO_CompositeOp:$composite
+          (variadic $_, $_, $inputs),
+          ConstantStrAttr<StrAttr, "tfl.gelu">, $attrs, $_, $_),
+        (TFL_GeluOp $inputs,
+          (GetCompositeAttributeAs<"approximate", "BoolAttr"> $attrs))>;
+
 def LegalizeCompositeOdmlEmbeddingLookup : Pat<
         (MHLO_CompositeOp:$composite
           (variadic $indices, $table),
@@ -143,3 +164,45 @@ def LegalizeCompositeOdmlEmbeddingLookupDynamicShaped : Pat<
         [(HasRank<1> $indices),
         (I32ElementsVal $indices),
         (HasRankAtLeast<2> $table)]>;
+
+def LegalizeCompositeOdmlEmbeddingLookupDynamicShaped2 : Pat<
+        (MHLO_CompositeOp:$composite
+          (variadic $_, $_, $indices, $table),
+          ConstantStrAttr<StrAttr, "odml.embedding_lookup">, $attrs, $_, $_),
+        (TFL_EmbeddingLookupOp $indices, $table),
+        [(HasRank<1> $indices),
+        (I32ElementsVal $indices),
+        (HasRankAtLeast<2> $table)]>;
+
+def LegalizeCompositeOdmlEmbeddingLookupDynamicShaped3 : Pat<
+        (MHLO_CompositeOp:$composite
+          (variadic $_, $indices, $table),
+          ConstantStrAttr<StrAttr, "odml.embedding_lookup">, $attrs, $_, $_),
+        (TFL_EmbeddingLookupOp $indices, $table),
+        [(HasRank<1> $indices),
+        (I32ElementsVal $indices),
+        (HasRankAtLeast<2> $table)]>;
+
+def LegalizeCompositeOdmlRandomUniform : Pat<
+        (MHLO_CompositeOp:$composite
+          (variadic $shape),
+          ConstantStrAttr<StrAttr, "odml.random_uniform">, $attrs, $_, $_),
+        (TFL_RandomUniformOp $shape,
+          (GetCompositeAttributeAs<"seed", "IntegerAttr"> $attrs),
+          (GetCompositeAttributeAs<"seed2", "IntegerAttr"> $attrs))>;
+
+def LegalizeCompositeOdmlRandomStandardNormal : Pat<
+        (MHLO_CompositeOp:$composite
+          (variadic $shape),
+          ConstantStrAttr<StrAttr, "odml.random_standard_normal">, $attrs, $_, $_),
+        (TFL_RandomStandardNormalOp $shape,
+          (GetCompositeAttributeAs<"seed", "IntegerAttr"> $attrs),
+          (GetCompositeAttributeAs<"seed2", "IntegerAttr"> $attrs))>;
+
+def LegalizeCompositeUnpack : Pat<
+        (MHLO_CompositeOp:$composite
+          (variadic $inputs),
+          ConstantStrAttr<StrAttr, "tfl.unpack">, $attrs, $_, $_),
+        (TFL_UnpackOp $inputs,
+          (GetCompositeAttributeAs<"num", "IntegerAttr"> $attrs),
+          (GetCompositeAttributeAs<"axis", "IntegerAttr"> $attrs))>;

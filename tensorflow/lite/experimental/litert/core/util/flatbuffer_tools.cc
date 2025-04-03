@@ -14,9 +14,12 @@
 
 #include "tensorflow/lite/experimental/litert/core/util/flatbuffer_tools.h"
 
+#include <algorithm>
 #include <memory>
 #include <utility>
+#include <vector>
 
+#include "flatbuffers/flatbuffer_builder.h"  // from @flatbuffers
 #include "tensorflow/compiler/mlir/lite/allocation.h"
 #include "tensorflow/lite/experimental/litert/core/filesystem.h"
 
@@ -155,6 +158,14 @@ Expected<BufferRef<uint8_t>> GetTflBuffer(const TflModel& tfl_model,
   return *buffer;
 }
 
+Expected<const TflBuffer*> GetBuffer(const TflModel& tfl_model,
+                                     uint32_t buffer_ind) {
+  if (buffer_ind >= tfl_model.buffers.size()) {
+    return Error(kLiteRtStatusErrorIndexOOB);
+  }
+  return tfl_model.buffers.at(buffer_ind).get();
+}
+
 Expected<TflBufferPtr> TakeBuffer(TflModel& tfl_model, uint32_t buffer_ind) {
   if (buffer_ind >= tfl_model.buffers.size()) {
     return Error(kLiteRtStatusErrorIndexOOB);
@@ -169,27 +180,44 @@ Expected<uint32_t> PushTflBuffer(TflModel& tfl_model,
   return tfl_model.buffers.size() - 1;
 }
 
-Expected<TflOpCode> GetTflOpCode(const TflModel& tfl_model,
-                                 uint32_t op_code_ind) {
+Expected<TflOpCodeEnum> GetTflOpCode(const TflModel& tfl_model,
+                                     uint32_t op_code_ind) {
   if (op_code_ind >= tfl_model.operator_codes.size()) {
     return Error(kLiteRtStatusErrorIndexOOB);
   }
   return std::move(tfl_model.operator_codes.at(op_code_ind)->builtin_code);
 }
 
-bool IsRankedTensor(const TflTensor& tensor) { return tensor.has_rank; }
-
-bool HasStaticShape(const TflTensor& tensor) {
-  return IsRankedTensor(tensor) && tensor.shape_signature.empty();
+bool IsRankedTensorType(const TflShapeInfo& tfl_shape) {
+  return tfl_shape.has_rank;
 }
 
-Expected<TflStaticTensorTypeInfo> GetStaticTensorTypeInfo(
-    const TflTensor& tensor) {
-  if (!HasStaticShape(tensor)) {
+bool IsStaticTensorType(const TflShapeInfo& tfl_shape) {
+  return !IsRankedTensorType(tfl_shape) ||
+         std::none_of(tfl_shape.shape_signature.begin(),
+                      tfl_shape.shape_signature.end(),
+                      [](auto d) { return d < 0; });
+}
+
+Expected<absl::Span<const int32_t>> AsStaticShape(
+    const TflShapeInfo& tfl_shape) {
+  if (!IsStaticTensorType(tfl_shape)) {
     return Error(kLiteRtStatusErrorInvalidArgument);
   }
-  return std::make_pair(tensor.type, TflStaticShapeInfo(tensor.shape.data(),
-                                                        tensor.shape.size()));
+  return absl::MakeConstSpan(tfl_shape.shape.data(), tfl_shape.shape.size());
+}
+
+Expected<absl::Span<const int32_t>> AsDynamicShape(
+    const TflShapeInfo& tfl_shape) {
+  auto static_shape = AsStaticShape(tfl_shape);
+  if (static_shape) {
+    return static_shape;
+  }
+  if (!IsRankedTensorType(tfl_shape)) {
+    return Error(kLiteRtStatusErrorInvalidArgument);
+  }
+  return absl::MakeConstSpan(tfl_shape.shape_signature.data(),
+                             tfl_shape.shape_signature.size());
 }
 
 bool IsQuantized(const TflQuantization* tfl_quantization) {
@@ -217,13 +245,24 @@ bool IsCustomQuantized(const TflQuantization* tfl_quantization) {
                                  tflite::QuantizationDetails_CustomQuantization;
 }
 
-Expected<std::pair<int64_t, float>> GetPerTensorQparams(
+Expected<TflPerTensorQParams> AsPerTensorQparams(
     const TflQuantization* tfl_quantization) {
   if (!IsPerTensorQuantized(tfl_quantization)) {
     return Error(kLiteRtStatusErrorInvalidArgument);
   }
   return std::make_pair(tfl_quantization->zero_point.front(),
                         tfl_quantization->scale.front());
+}
+
+Expected<TflPerChannelQParams> AsPerChannelQparams(
+    const TflQuantization* tfl_quantization) {
+  if (!IsPerChannelQuantized(tfl_quantization)) {
+    return Error(kLiteRtStatusErrorInvalidArgument);
+  }
+  return TflPerChannelQParams(tfl_quantization->quantized_dimension,
+                              tfl_quantization->zero_point.size(),
+                              tfl_quantization->zero_point,
+                              tfl_quantization->scale);
 }
 
 ::tflite::Allocation::Ptr MakeAllocation(BufferRef<uint8_t> buf) {
@@ -233,7 +272,9 @@ Expected<std::pair<int64_t, float>> GetPerTensorQparams(
 
 Expected<FlatbufferWrapper::Ptr> FlatbufferWrapper::CreateFromBuffer(
     OwningBufferRef<uint8_t>&& buffer) {
-  if (!VerifyFlatbuffer(buffer.Data(), buffer.Size())) {
+  static constexpr size_t k2GiB = 2e+9;
+  if (buffer.Size() < k2GiB &&
+      !VerifyFlatbuffer(buffer.Data(), buffer.Size())) {
     return Error(kLiteRtStatusErrorInvalidFlatbuffer);
   }
 
@@ -266,6 +307,24 @@ Expected<FlatbufferWrapper::Ptr> FlatbufferWrapper::CreateFromTflFile(
     return buf.Error();
   }
   return FlatbufferWrapper::CreateFromBuffer(std::move(*buf));
+}
+
+OwningBufferRef<uint8_t> SerializeFlatbuffer(const TflModel& tfl_model) {
+  flatbuffers::FlatBufferBuilder b;
+  auto model_offset = tflite::Model::Pack(b, &tfl_model);
+  tflite::FinishModelBuffer(b, model_offset);
+
+  OwningBufferRef<uint8_t> buffer;
+  auto [new_buf, new_size, new_offset] = buffer.GetWeak();
+  new_buf = b.ReleaseRaw(new_size, new_offset);
+
+  return buffer;
+}
+
+OwningBufferRef<uint8_t> SerializeFlatbuffer(
+    const FlatbufferWrapper& flatbuffer) {
+  auto tfl_model = flatbuffer.Unpack();
+  return SerializeFlatbuffer(*tfl_model);
 }
 
 }  // namespace litert::internal

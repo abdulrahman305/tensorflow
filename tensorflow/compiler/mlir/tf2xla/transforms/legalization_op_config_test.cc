@@ -30,6 +30,7 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/compiler/mlir/tf2xla/transforms/passes.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
+#include "tensorflow/core/framework/kernel_def.pb.h"
 
 namespace mlir {
 namespace mhlo {
@@ -82,8 +83,8 @@ TEST(LegalizationOpConfigTest, CountLoweringsSet) {
   // from MLIR to TF2XLA), these numbers should change. Or if TF Dialect adds
   // a new op, we should expect these to change too.
   EXPECT_EQ(mlir_lowering_count, 67);
-  EXPECT_EQ(tf2xla_fallback_count, 323);
-  EXPECT_EQ(non_categorized_count, 430);
+  EXPECT_EQ(tf2xla_fallback_count, 324);
+  EXPECT_EQ(non_categorized_count, 431);
 }
 
 // Just a counter test to see which ops have duplicate lowerings. This isn't a

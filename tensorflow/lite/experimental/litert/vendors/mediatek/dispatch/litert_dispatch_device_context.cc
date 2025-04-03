@@ -14,81 +14,134 @@
 
 #include "tensorflow/lite/experimental/litert/vendors/mediatek/dispatch/litert_dispatch_device_context.h"
 
+#include <sys/mman.h>
+
 #include <cstddef>
 #include <memory>
 
+#include "neuron/api/NeuronAdapter.h"
 #include "tensorflow/lite/experimental/litert/c/litert_common.h"
 #include "tensorflow/lite/experimental/litert/c/litert_logging.h"
 #include "tensorflow/lite/experimental/litert/c/litert_tensor_buffer.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_expected.h"
-#include "tensorflow/lite/experimental/litert/cc/litert_tensor_buffer.h"
+#include "tensorflow/lite/experimental/litert/cc/litert_macros.h"
 #include "tensorflow/lite/experimental/litert/vendors/c/litert_dispatch.h"
-#include "tensorflow/lite/experimental/litert/vendors/mediatek/neuron_adapter.h"
+#include "tensorflow/lite/experimental/litert/vendors/mediatek/neuron_adapter_api.h"
 
-// NOLINTNEXTLINE
-using litert::mediatek::NEURON_NO_ERROR;
-using litert::mediatek::NeuronMemory;
+using litert::Error;
 
 LiteRtDispatchDeviceContextT::~LiteRtDispatchDeviceContextT() = default;
 
 litert::Expected<LiteRtDispatchDeviceContextT::Ptr>
 LiteRtDispatchDeviceContextT::Create(
-    const litert::mediatek::NeuronAdapter& neuron_adapter) {
+    const litert::mediatek::NeuronAdapterApi& neuron_adapter_api) {
   return std::unique_ptr<LiteRtDispatchDeviceContextT>(
-      new LiteRtDispatchDeviceContextT(neuron_adapter));
+      new LiteRtDispatchDeviceContextT(neuron_adapter_api));
 }
 
 litert::Expected<LiteRtTensorBufferHandle>
 LiteRtDispatchDeviceContextT::RegisterTensorBuffer(
-    const litert::TensorBuffer& tensor_buffer) {
-  auto tensor_buffer_type = tensor_buffer.BufferType();
-  if (!tensor_buffer_type) {
-    return tensor_buffer_type.Error();
+    LiteRtTensorBuffer tensor_buffer) {
+  LiteRtTensorBufferType tensor_buffer_type;
+  LITERT_RETURN_IF_ERROR(
+      LiteRtGetTensorBufferType(tensor_buffer, &tensor_buffer_type));
+
+  if (tensor_buffer_type != kLiteRtTensorBufferTypeAhwb &&
+      tensor_buffer_type != kLiteRtTensorBufferTypeDmaBuf) {
+    return Error(kLiteRtStatusErrorUnsupported, "Unsupported buffer type");
   }
 
-  if (*tensor_buffer_type != kLiteRtTensorBufferTypeAhwb) {
-    LITERT_LOG(LITERT_ERROR, "Unsupported buffer type: %d",
-               *tensor_buffer_type);
-    return litert::Unexpected(kLiteRtStatusErrorUnsupported);
+  size_t tensor_buffer_size;
+  LITERT_RETURN_IF_ERROR(
+      LiteRtGetTensorBufferSize(tensor_buffer, &tensor_buffer_size));
+
+  size_t tensor_buffer_offset;
+  if (auto status =
+          LiteRtGetTensorBufferOffset(tensor_buffer, &tensor_buffer_offset);
+      status != kLiteRtStatusOk) {
+    if (status == kLiteRtStatusErrorNotFound) {
+      tensor_buffer_offset = 0;
+    } else {
+      return Error(kLiteRtStatusErrorRuntimeFailure,
+                   "Failed to get buffer offset");
+    }
   }
 
-  auto tensor_buffer_size = tensor_buffer.Size();
-  if (!tensor_buffer_size) {
-    return tensor_buffer_size.Error();
+  LiteRtRankedTensorType tensor_type;
+  LITERT_RETURN_IF_ERROR(
+      LiteRtGetTensorBufferTensorType(tensor_buffer, &tensor_type));
+
+  auto* tensor_strides = tensor_type.layout.strides;
+  if (tensor_strides != nullptr) {
+    return Error(kLiteRtStatusErrorRuntimeFailure,
+                 "Tensor strides are not supported");
   }
 
-  auto tensor_buffer_offset = tensor_buffer.Offset();
-  if (!tensor_buffer_offset) {
-    return tensor_buffer_offset.Error();
-  }
-
-  auto ahwb = tensor_buffer.GetAhwb();
-  if (!ahwb) {
-    return ahwb.Error();
-  }
-
-#ifdef __ANDROID__
-  NeuronMemory* neuron_memory;
-  if (neuron_adapter_.api().memory_create_from_ahwb(*ahwb, &neuron_memory) !=
-      NEURON_NO_ERROR) {
-    return litert::Unexpected(kLiteRtStatusErrorRuntimeFailure,
-                              "Failed to create NeuronMemory from AHWB");
-  }
-  return neuron_memory_registry_.Register(neuron_memory, *tensor_buffer_size,
-                                          *tensor_buffer_offset);
+  switch (tensor_buffer_type) {
+    case kLiteRtTensorBufferTypeAhwb:
+#if LITERT_HAS_AHWB_SUPPORT
+      AHardwareBuffer* ahwb;
+      if (auto status = LiteRtGetTensorBufferAhwb(tensor_buffer, &ahwb);
+          status != kLiteRtStatusOk) {
+        return Error(status, "Failed to get AHWB");
+      }
 #else
-  (void)neuron_adapter_;
-  return litert::Unexpected(
-      kLiteRtStatusErrorRuntimeFailure,
-      "AHardwareBuffer is not supported on this platform");
-#endif
+      return Error(kLiteRtStatusErrorRuntimeFailure,
+                   "AHardwareBuffer is not supported on this platform");
+#endif  // LITERT_HAS_AHWB_SUPPORT
+      NeuronMemory* neuron_memory;
+#if LITERT_HAS_AHWB_SUPPORT
+      if (neuron_adapter_api_.api().memory_create_from_ahwb(
+              ahwb, &neuron_memory) != NEURON_NO_ERROR) {
+        return litert::Unexpected(kLiteRtStatusErrorRuntimeFailure,
+                                  "Failed to create NeuronMemory from AHWB");
+      }
+      return neuron_memory_registry_.Register(neuron_memory, tensor_buffer_size,
+                                              tensor_buffer_offset);
+#else
+      (void)neuron_adapter_api_;
+      return litert::Unexpected(
+          kLiteRtStatusErrorRuntimeFailure,
+          "AHardwareBuffer is not supported on this platform");
+#endif  // LITERT_HAS_AHWB_SUPPORT
+      break;
+
+    case kLiteRtTensorBufferTypeDmaBuf:
+
+      int fd;
+#if LITERT_HAS_DMABUF_SUPPORT
+      void* addr;
+      if (auto status =
+              LiteRtGetTensorBufferDmaBufBuffer(tensor_buffer, &addr, &fd);
+          status != kLiteRtStatusOk) {
+        return Error(status, "Failed to get DMA-BUF");
+      }
+#else
+      return Error(kLiteRtStatusErrorRuntimeFailure,
+                   "DMA-BUF is not supported on this platform");
+#endif  // LITERT_HAS_DMABUF_SUPPORT
+      if (neuron_adapter_api_.api().memory_create_from_fd(
+              tensor_buffer_size, /*protect*/ PROT_READ | PROT_WRITE, fd,
+              tensor_buffer_offset, &neuron_memory) != NEURON_NO_ERROR) {
+        return litert::Unexpected(kLiteRtStatusErrorRuntimeFailure,
+                                  "Failed to create NeuronMemory from DMA-BUF");
+      }
+      return neuron_memory_registry_.Register(neuron_memory, tensor_buffer_size,
+                                              tensor_buffer_offset);
+      break;
+
+    default:
+      LITERT_LOG(LITERT_ERROR, "Unsupported buffer type: %d",
+                 tensor_buffer_type);
+      return litert::Unexpected(kLiteRtStatusErrorUnsupported);
+  }
 }
 
 LiteRtDispatchDeviceContextT::NeuronMemoryRegistry::~NeuronMemoryRegistry() {
   for (auto i = 0; i < records_.size(); ++i) {
     auto& record = records_[i];
     if (record.neuron_memory != nullptr) {
-      neuron_adapter_.api().memory_free(record.neuron_memory);
+      neuron_adapter_api_.api().memory_free(record.neuron_memory);
     }
   }
 }
@@ -120,7 +173,7 @@ LiteRtDispatchDeviceContextT::NeuronMemoryRegistry::Unregister(
     return record.Error();
   } else {
     auto& mem = (*record)->neuron_memory;
-    neuron_adapter_.api().memory_free(mem);
+    neuron_adapter_api_.api().memory_free(mem);
     mem = nullptr;
     return {};
   }

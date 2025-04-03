@@ -28,10 +28,10 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/testlib/filecheck.h"
+#include "xla/hlo/testlib/hlo_hardware_independent_test_base.h"
 #include "xla/hlo/utils/hlo_matchers.h"
-#include "xla/tests/hlo_test_base.h"
 #include "xla/tsl/lib/core/status_test_util.h"
-#include "tsl/platform/statusor.h"
+#include "xla/tsl/platform/statusor.h"
 
 namespace xla {
 namespace {
@@ -39,9 +39,9 @@ namespace {
 namespace op = ::xla::testing::opcode_matchers;
 using ::testing::HasSubstr;
 
-class CollectiveSelectFolderTest : public HloTestBase {
+class CollectiveSelectFolderTest : public HloHardwareIndependentTestBase {
  public:
-  absl::Status ExpectNoTranform(std::string_view hlo_template) {
+  absl::Status ExpectNoTranform(absl::string_view hlo_template) {
     return RunAndCheckHloRewrite(hlo_template, CollectiveSelectFolder(),
                                  /*expect_change=*/false)
         .status();
@@ -49,8 +49,8 @@ class CollectiveSelectFolderTest : public HloTestBase {
 };
 
 void VerifyDirectDataFeedSPMD(HloModule* module,
-                              std::string_view expected_fwd_operand,
-                              std::string_view expected_bwd_operand) {
+                              absl::string_view expected_fwd_operand,
+                              absl::string_view expected_bwd_operand) {
   auto root = module->entry_computation()->root_instruction();
   EXPECT_EQ(root->opcode(), HloOpcode::kSelect);
   EXPECT_EQ(root->operand(1)->opcode(), HloOpcode::kCollectivePermute);
@@ -423,26 +423,61 @@ TEST_F(CollectiveSelectFolderTest,
     }
   )";
 
-  TF_ASSERT_OK_AND_ASSIGN(auto module,
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
                           RunAndCheckHloRewrite(kHlo, CollectiveSelectFolder(),
                                                 /*expect_change=*/true));
   const absl::string_view kExpected = R"(
     // CHECK:      ENTRY %computation
     // CHECK:        %[[PARAM:.*]] = (f32[8192]{0}, f32[8192]{0}) parameter(0)
     // CHECK:        %[[OPERAND_BWD:.*]] = {{.*}} get-tuple-element
-    // CHECK-SAME:       ({{.*}} %[[PARAM]]), index=0
+    // CHECK-SAME:       ({{.*}}%[[PARAM]]), index=0
     // CHECK:        %[[OPERAND_FWD:.*]] = {{.*}} get-tuple-element
-    // CHECK-SAME:       ({{.*}} %[[PARAM]]), index=1
+    // CHECK-SAME:       ({{.*}}%[[PARAM]]), index=1
     // CHECK:        %[[CP_BWD:.*]] = {{.*}} collective-permute
-    // CHECK-SAME:       ({{.*}} %[[OPERAND_BWD]]), channel_id=1,
+    // CHECK-SAME:       ({{.*}}%[[OPERAND_BWD]]), channel_id=1,
     // CHECK-SAME:       source_target_pairs={{\{}}{3,0}}
     // CHECK:        %[[CP_FWD:.*]] = {{.*}} collective-permute
-    // CHECK-SAME:       ({{.*}} %[[OPERAND_FWD]]), channel_id=2,
+    // CHECK-SAME:       ({{.*}}%[[OPERAND_FWD]]), channel_id=2,
     // CHECK-SAME:       source_target_pairs={{\{}}{0,1},{1,2},{2,3}}
     // CHECK:        ROOT %{{.*}} =
-    // CHECK-SAME:       select({{.*}} %{{.*}}, {{.*}} %[[CP_BWD]],
-    // CHECK-SAME:       %[[CP_FWD]])
+    // CHECK-SAME:       select({{.*}}, {{.*}}%[[CP_BWD]],
+    // CHECK-SAME:       {{.*}}%[[CP_FWD]])
     // CHECK:      }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(bool filecheck_result,
+                          RunFileCheck(module->ToString(), kExpected));
+  EXPECT_TRUE(filecheck_result);
+}
+
+TEST_F(CollectiveSelectFolderTest, DtypeConvertedPartitionId) {
+  const absl::string_view kHlo = R"(
+    HloModule test
+
+    ENTRY computation {
+      param = (f32[1,1,28672,2048]{3,2,1,0}, f32[1,1,28672,2048]{3,2,1,0})
+          parameter(0)
+      get-tuple-element-a = f32[1,1,28672,2048]{3,2,1,0}
+          get-tuple-element(param), index=0
+      get-tuple-element-b = f32[1,1,28672,2048]{3,2,1,0}
+          get-tuple-element(param), index=1
+      partition-id.1 = u32[] partition-id()
+      convert = s32[] convert(partition-id.1)
+      constant.148 = s32[] constant(3)
+      compare.83 = pred[] compare(convert, constant.148), direction=EQ
+      select.33 = f32[1,1,28672,2048]{3,2,1,0} select(compare.83,
+          get-tuple-element-a, get-tuple-element-b)
+      ROOT cp-a = f32[1,1,28672,2048]{3,2,1,0} collective-permute(select.33),
+          channel_id=1, source_target_pairs={{3,0}}
+    }
+  )";
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          RunAndCheckHloRewrite(kHlo, CollectiveSelectFolder(),
+                                                /*expect_change=*/true));
+  const absl::string_view kExpected = R"(
+    // CHECK: %[[PARAM:.*]] = {{.*}} parameter(0)
+    // CHECK: %[[DATA_A:.*]] = {{.*}} get-tuple-element({{.*}}%[[PARAM]]), index=0
+    // CHECK: ROOT %[[DATA_A_:.*]] = {{.*}} collective-permute({{.*}}%[[DATA_A]])
   )";
   TF_ASSERT_OK_AND_ASSIGN(bool filecheck_result,
                           RunFileCheck(module->ToString(), kExpected));

@@ -22,8 +22,7 @@
 #include "third_party/odml/infra/southbound/sb_api.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_expected.h"
 
-namespace litert {
-namespace google_tensor {
+namespace litert::google_tensor {
 
 class Southbound {
  public:
@@ -110,11 +109,18 @@ struct Southbound::ThrFunctions {
       thr_invocation_context_attach_input_buffer_sync_fence = nullptr;
   decltype(&thrInvocationContextGetOutputBufferSyncFence)
       thr_invocation_context_get_output_buffer_sync_fence = nullptr;
+  decltype(&thrInvocationContextDetachInputBufferSyncFence)
+      thr_invocation_context_detach_input_buffer_sync_fence = nullptr;
 
   decltype(&thrInvocationContextQueryNodeScratchPad)
       thr_invocation_context_query_node_scratch_pad = nullptr;
   decltype(&thrInvocationContextAttachScratchPadBuffer)
       thr_invocation_context_attach_scratch_pad_buffer = nullptr;
+
+  decltype(&thrInvocationContextStartMetricsCollection)
+      thr_invocation_context_start_metrics_collection = nullptr;
+  decltype(&thrInvocationContextStopMetricsCollection)
+      thr_invocation_context_stop_metrics_collection = nullptr;
 
   decltype(&thrVendorSetSystemAttributeStr)
       thr_vendor_set_system_attribute_str = nullptr;
@@ -122,7 +128,6 @@ struct Southbound::ThrFunctions {
       thr_vendor_set_system_attribute_int64 = nullptr;
 };
 
-}  // namespace google_tensor
-}  // namespace litert
+}  // namespace litert::google_tensor
 
 #endif  // TENSORFLOW_LITE_EXPERIMENTAL_LITERT_VENDORS_GOOGLE_TENSOR_DISPATCH_SOUTHBOUND_H_

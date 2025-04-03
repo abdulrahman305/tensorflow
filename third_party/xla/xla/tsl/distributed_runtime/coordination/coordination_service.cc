@@ -20,6 +20,7 @@ limitations under the License.
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <string>
@@ -47,12 +48,12 @@ limitations under the License.
 #include "xla/tsl/distributed_runtime/call_options.h"
 #include "xla/tsl/distributed_runtime/coordination/coordination_client.h"
 #include "xla/tsl/distributed_runtime/coordination/coordination_service_error_util.h"
+#include "xla/tsl/platform/env.h"
+#include "xla/tsl/platform/status.h"
 #include "xla/tsl/protobuf/coordination_config.pb.h"
 #include "xla/tsl/protobuf/coordination_service.pb.h"
 #include "xla/tsl/util/device_name_utils.h"
-#include "tsl/platform/env.h"
 #include "tsl/platform/random.h"
-#include "tsl/platform/status.h"
 
 namespace tsl {
 namespace {
@@ -71,7 +72,8 @@ constexpr int kDefaultHeartbeatTimeoutMs = 10 * 1000;  // 10 seconds
 constexpr int kServiceToClientTimeoutMs = 10 * 1000;   // 10 seconds
 constexpr size_t kOngoingBarriersSoftLimit = 20;
 constexpr char kHealthCheckThread[] = "CoordinationServiceHealthCheck";
-constexpr int kPendingTaskLogLimit = 20;
+// Limit the number of stragglers we log to avoid `RESOURCE_EXHAUSTED` errors in
+// the RPC layer from sending overly verbose errors.
 constexpr int kPendingStragglerLogLimit = 3;
 constexpr int kUniqueBarrierCounter = 0;
 
@@ -104,6 +106,10 @@ struct CoordinatedTaskEqual {
     return lhs.job_name() == rhs.job_name() && lhs.task_id() == rhs.task_id();
   }
 };
+
+using CoordinatedTaskSet =
+    absl::flat_hash_set<CoordinatedTask, CoordinatedTaskHash,
+                        CoordinatedTaskEqual>;
 
 absl::Status MakeShutdownBarrierError(const absl::Status& error) {
   return MakeCoordinationError(absl::InternalError(absl::StrCat(
@@ -142,6 +148,8 @@ class CoordinationServiceStandaloneImpl : public CoordinationServiceInterface {
                                const absl::Status& error) override;
   std::vector<CoordinatedTaskStateInfo> GetTaskState(
       const std::vector<CoordinatedTask>& task) override;
+  std::vector<CoordinatedTaskStateInfo> GetJobState(
+      absl::string_view job) override;
   absl::Status InsertKeyValue(std::string_view key,
                               std::string_view value) override;
   absl::Status InsertKeyValue(std::string_view key, std::string_view value,
@@ -158,6 +166,9 @@ class CoordinationServiceStandaloneImpl : public CoordinationServiceInterface {
                     BarrierCallback done) override;
   absl::Status CancelBarrier(std::string barrier_id, int64_t counter,
                              const CoordinatedTask& task) override;
+  void GetAliveTasksAsync(const tensorflow::CoordinatedTask& requesting_task,
+                          const std::vector<tensorflow::CoordinatedTask>& tasks,
+                          GetAliveTasksCallback done) override;
   void PollForErrorAsync(const CoordinatedTask& task,
                          StatusCallback done) override;
 
@@ -308,7 +319,7 @@ class CoordinationServiceStandaloneImpl : public CoordinationServiceInterface {
   // Returns whether the clients are polling for error from the service. If the
   // clients are not polling for error from the service, the service should stop
   // when there is an error. Otherwise, the service should not stop.
-  bool IsClientPollingForError() const;
+  bool IsClientPollingForError() const ABSL_EXCLUSIVE_LOCKS_REQUIRED(state_mu_);
 
   class ErrorPollingState {
    public:
@@ -356,11 +367,11 @@ class CoordinationServiceStandaloneImpl : public CoordinationServiceInterface {
 
     explicit TaskState(absl::string_view task) { task_name_ = task; }
 
-    CoordinatedTaskState GetState() { return state_; }
-    absl::Status GetStatus() { return status_; }
-    bool IsRecoverable() { return recoverable_; }
+    CoordinatedTaskState GetState() const { return state_; }
+    absl::Status GetStatus() const { return status_; }
+    bool IsRecoverable() const { return recoverable_; }
     void SetRecoverable(bool recoverable) { recoverable_ = recoverable; }
-    uint64_t GetTaskIncarnation() { return task_incarnation_; }
+    uint64_t GetTaskIncarnation() const { return task_incarnation_; }
     void SetTaskIncarnation(uint64_t task_incarnation) {
       task_incarnation_ = task_incarnation;
     }
@@ -419,6 +430,28 @@ class CoordinationServiceStandaloneImpl : public CoordinationServiceInterface {
     bool recoverable_ = false;
   };
 
+  // AlivenessState tracks the state of pending GetAliveTasks calls.
+  struct AlivenessState {
+    // All tasks that can participate in the GetAliveTasks barrier.
+    CoordinatedTaskSet tasks;
+    // All tasks currently blocked on the barrier.
+    CoordinatedTaskSet in_barrier;
+    // Done callbacks for the tasks blocked on the barrier.
+    std::vector<GetAliveTasksCallback> dones;
+  };
+
+  // Returns the set of alive tasks drawn from the provided set of tasks.
+  CoordinatedTaskSet AliveTasks(const CoordinatedTaskSet& tasks) const
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(state_mu_);
+
+  // Refreshes the AlivenessStates of all pending GetAliveTasks call,
+  // potentially finishing some of the pending calls. The AlivenessStates should
+  // be refreshed, for example, after a task has failed.
+  void RefreshAliveness() ABSL_EXCLUSIVE_LOCKS_REQUIRED(state_mu_);
+
+  static CoordinatedTaskStateInfo CreateTaskStateInfo(
+      const CoordinatedTask& task, const TaskState& state);
+
   std::unique_ptr<CoordinationClientCache> client_cache_;
   Env& env_;
   const uint64_t service_incarnation_ = random::New64();
@@ -430,10 +463,6 @@ class CoordinationServiceStandaloneImpl : public CoordinationServiceInterface {
   // silently if configured. This is useful when we know that a task can
   // immediately resume work upon re-connecting to the service.
   bool allow_new_incarnation_to_reconnect_ = false;
-  // Whether the agents are polling for error from the service. It will be set
-  // to true when the service sees the first error polling request. Once set to
-  // true, the value will never change back to false, so no mutex is needed.
-  bool client_polling_for_error_ = false;
   std::function<DeviceInfo(const DeviceInfo& devices)>
       post_aggregate_device_fn_;
 
@@ -461,8 +490,15 @@ class CoordinationServiceStandaloneImpl : public CoordinationServiceInterface {
   // use a set.
   absl::flat_hash_set<std::string> ongoing_barriers_ ABSL_GUARDED_BY(state_mu_);
 
+  // The state of all pending GetAliveTasks calls.
+  std::vector<AlivenessState> aliveness_states_ ABSL_GUARDED_BY(state_mu_);
+
   absl::flat_hash_set<std::string> recoverable_jobs_;
 
+  // Whether the agents are polling for error from the service. It will be set
+  // to true when the service sees the first error polling request. Once set to
+  // true, the value will never change back to false.
+  bool client_polling_for_error_ ABSL_GUARDED_BY(state_mu_) = false;
   ErrorPollingState error_polling_state_ ABSL_GUARDED_BY(state_mu_);
 
   absl::CondVar check_staleness_thread_cv_;
@@ -676,7 +712,7 @@ void CoordinationServiceStandaloneImpl::CheckBarrierTimeout() {
         continue;
       }
       ++pending_task_count;
-      if (pending_task_count < kPendingTaskLogLimit) {
+      if (pending_task_count < kPendingStragglerLogLimit) {
         absl::StrAppend(&pending_tasks, GetTaskName(task), "\n");
       }
     }
@@ -1033,6 +1069,7 @@ absl::Status CoordinationServiceStandaloneImpl::DisconnectTask(
   task_state->Disconnect(
       /*grace_period_duration_us=*/heartbeat_timeout_ms_ * 1000);
   LeaveOngoingBarriers(task, "task disconnected");
+  RefreshAliveness();
   error_polling_state_.RemoveTask(task, "task has disconnected.");
   LOG(INFO) << task_name << " has disconnected from coordination service.";
   return absl::OkStatus();
@@ -1066,26 +1103,46 @@ absl::Status CoordinationServiceStandaloneImpl::ReportTaskError(
   return absl::OkStatus();
 }
 
+CoordinatedTaskStateInfo CoordinationServiceStandaloneImpl::CreateTaskStateInfo(
+    const CoordinatedTask& task, const TaskState& state) {
+  CoordinatedTaskStateInfo info;
+  info.set_state(state.GetState());
+  info.set_incarnation(state.GetTaskIncarnation());
+  absl::Status error = state.GetStatus();
+  *info.mutable_task() = task;
+  info.set_error_code(error.raw_code());
+  info.set_error_message(std::string(error.message()));
+  if (!error.ok()) {
+    *info.mutable_error_payload()->mutable_source_task() = task;
+    info.mutable_error_payload()->set_is_reported_error(false);
+  }
+  return info;
+}
+
 std::vector<CoordinatedTaskStateInfo>
 CoordinationServiceStandaloneImpl::GetTaskState(
     const std::vector<CoordinatedTask>& tasks) {
   std::vector<CoordinatedTaskStateInfo> states_info;
+  states_info.reserve(tasks.size());
+
+  absl::MutexLock l(&state_mu_);
   for (const auto& task : tasks) {
-    const std::string task_name = GetTaskName(task);
-    auto& state_info = states_info.emplace_back();
-    absl::Status error;
-    {
-      absl::MutexLock l(&state_mu_);
-      state_info.set_state(cluster_state_[task_name]->GetState());
-      error = cluster_state_[task_name]->GetStatus();
+    states_info.push_back(
+        CreateTaskStateInfo(task, *cluster_state_[GetTaskName(task)]));
+  }
+  return states_info;
+}
+
+std::vector<CoordinatedTaskStateInfo>
+CoordinationServiceStandaloneImpl::GetJobState(absl::string_view job_name) {
+  absl::MutexLock l(&state_mu_);
+  std::vector<CoordinatedTaskStateInfo> states_info;
+  for (const auto& [name, task_state] : cluster_state_) {
+    const CoordinatedTask task = GetTaskFromName(name);
+    if (task.job_name() != job_name) {
+      continue;
     }
-    *state_info.mutable_task() = task;
-    state_info.set_error_code(error.raw_code());
-    state_info.set_error_message(std::string(error.message()));
-    if (!error.ok()) {
-      *state_info.mutable_error_payload()->mutable_source_task() = task;
-      state_info.mutable_error_payload()->set_is_reported_error(false);
-    }
+    states_info.push_back(CreateTaskStateInfo(task, *cluster_state_[name]));
   }
   return states_info;
 }
@@ -1318,8 +1375,9 @@ std::vector<KeyValueEntry> CoordinationServiceStandaloneImpl::GetKeyValueDir(
   for (it = begin; it != kv_store_.end(); ++it) {
     // Stop once the next key does not have the directory prefix. Since keys are
     // ordered, none of the other keys would have a matching prefix.
-    if (std::mismatch(dir.begin(), dir.end(), it->first.begin()).first !=
-        dir.end()) {
+    if (std::mismatch(dir.begin(), dir.end(), it->first.begin(),
+                      it->first.end())
+            .first != dir.end()) {
       break;
     }
     KeyValueEntry kv;
@@ -1341,8 +1399,9 @@ absl::Status CoordinationServiceStandaloneImpl::DeleteKeyValue(
   auto begin = kv_store_.lower_bound(dir);
   std::map<std::string, std::string>::iterator end;
   for (end = begin; end != kv_store_.end(); end++) {
-    if (std::mismatch(dir.begin(), dir.end(), end->first.begin()).first !=
-        dir.end())
+    if (std::mismatch(dir.begin(), dir.end(), end->first.begin(),
+                      end->first.end())
+            .first != dir.end())
       break;
   }
   kv_store_.erase(begin, end);
@@ -1367,6 +1426,7 @@ void CoordinationServiceStandaloneImpl::SetTaskError(
   if (task_state->SetError(error)) {
     LeaveOngoingBarriers(
         task, absl::StrCat("task is set to ERROR: ", error.ToString()));
+    RefreshAliveness();
   }
 }
 
@@ -1764,6 +1824,103 @@ void CoordinationServiceStandaloneImpl::PassBarrier(
   }
   if (ServiceHasStopped()) {
     return;
+  }
+}
+
+// Returns true if x is a (non-strict) subset of y.
+bool TaskSetSubset(const CoordinatedTaskSet& x, const CoordinatedTaskSet& y) {
+  return std::all_of(x.begin(), x.end(), [&y](const CoordinatedTask& task) {
+    return y.contains(task);
+  });
+}
+
+// Returns true if sets x and y are equal.
+//
+// Note that the default equality operator (==) on absl::flat_hash_set invokes
+// the equal operator on the underlying elements in the sets, but the equal
+// operator is not defined on protos. Thus, we have to implement our own
+// equality function.
+bool TaskSetEqual(const CoordinatedTaskSet& x, const CoordinatedTaskSet& y) {
+  return x.size() == y.size() && TaskSetSubset(x, y);
+}
+
+CoordinatedTaskSet CoordinationServiceStandaloneImpl::AliveTasks(
+    const CoordinatedTaskSet& tasks) const {
+  CoordinatedTaskSet alive_tasks;
+  for (const CoordinatedTask& task : tasks) {
+    auto it = cluster_state_.find(GetTaskName(task));
+    if (it != cluster_state_.end() &&
+        it->second->GetState() == CoordinatedTaskState::TASKSTATE_CONNECTED) {
+      // We consider a task alive if it is CONNECTED.
+      alive_tasks.insert(task);
+    }
+  }
+  return alive_tasks;
+}
+
+void CoordinationServiceStandaloneImpl::RefreshAliveness() {
+  // Try to finish every pending GetAliveTasks call.
+  auto it = aliveness_states_.begin();
+  while (it != aliveness_states_.end()) {
+    CoordinatedTaskSet alive_tasks = AliveTasks(it->tasks);
+    if (TaskSetSubset(alive_tasks, it->in_barrier)) {
+      // Every alive task is in the barrier, so the barrier is satisfied. Return
+      // the same set of alive tasks (alive_tasks) to every task in the barrier.
+      std::vector<CoordinatedTask> v{alive_tasks.begin(), alive_tasks.end()};
+      for (const GetAliveTasksCallback& done : it->dones) {
+        done(absl::OkStatus(), v);
+      }
+
+      // Remove the pending GetAliveTasks call because it is no longer pending.
+      it = aliveness_states_.erase(it);
+    } else {
+      // The pending GetAliveTasks call is still pending.
+      ++it;
+    }
+  }
+}
+
+void CoordinationServiceStandaloneImpl::GetAliveTasksAsync(
+    const tensorflow::CoordinatedTask& requesting_task,
+    const std::vector<tensorflow::CoordinatedTask>& tasks,
+    GetAliveTasksCallback done) {
+  // TODO(mwhittaker): Figure out good timeout semantics and add timeouts.
+
+  // Validate that the requesting task is a member of tasks.
+  CoordinatedTaskSet task_set{tasks.begin(), tasks.end()};
+  if (!task_set.contains(requesting_task)) {
+    // TODO(mwhittaker): Consider relaxing the requirement that the requesting
+    // task is one of the specified tasks.
+    absl::Status err = absl::InvalidArgumentError(absl::StrCat(
+        "Requesting task ", GetTaskName(requesting_task),
+        " is not one of the tasks specified in a GetAliveTasks request."));
+    done(err, {});
+    return;
+  }
+
+  // Find the corresponding AlivenessState, creating a new one if needed.
+  absl::MutexLock l(&state_mu_);
+  auto it = std::find_if(aliveness_states_.begin(), aliveness_states_.end(),
+                         [&task_set](const AlivenessState& state) {
+                           return TaskSetEqual(state.tasks, task_set);
+                         });
+  if (it == aliveness_states_.end()) {
+    aliveness_states_.push_back(AlivenessState{task_set});
+    it = std::prev(aliveness_states_.end());
+  }
+
+  // Enter the requesting task into the barrier.
+  it->in_barrier.insert(requesting_task);
+  it->dones.push_back(std::move(done));
+
+  // Finish the barrier, if possible.
+  CoordinatedTaskSet alive_tasks = AliveTasks(task_set);
+  if (TaskSetSubset(alive_tasks, it->in_barrier)) {
+    std::vector<CoordinatedTask> v{alive_tasks.begin(), alive_tasks.end()};
+    for (const GetAliveTasksCallback& done : it->dones) {
+      done(absl::OkStatus(), v);
+    }
+    aliveness_states_.erase(it);
   }
 }
 

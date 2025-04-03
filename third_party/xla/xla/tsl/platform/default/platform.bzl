@@ -1,3 +1,9 @@
+"""Platform specific paths for various libraries and utilities."""
+
+load("//xla/tsl:package_groups.bzl", "DEFAULT_LOAD_VISIBILITY")
+
+visibility(DEFAULT_LOAD_VISIBILITY)
+
 CUDA_VERSION = ""
 
 CUDNN_VERSION = ""
@@ -10,6 +16,7 @@ def cuda_sdk_version():
 def cudnn_sdk_version():
     return CUDNN_VERSION
 
+# buildifier: disable=function-docstring
 def cuda_library_path(name, version = cuda_sdk_version()):
     if PLATFORM == "Darwin":
         if not version:
@@ -27,6 +34,7 @@ def cuda_static_library_path(name):
     else:
         return "lib64/lib{}_static.a".format(name)
 
+# buildifier: disable=function-docstring
 def cudnn_library_path(version = cudnn_sdk_version()):
     if PLATFORM == "Darwin":
         if not version:
@@ -38,6 +46,7 @@ def cudnn_library_path(version = cudnn_sdk_version()):
     else:
         return "lib64/libcudnn.so.{}".format(version)
 
+# buildifier: disable=function-docstring
 def cupti_library_path(version = cuda_sdk_version()):
     if PLATFORM == "Darwin":
         if not version:

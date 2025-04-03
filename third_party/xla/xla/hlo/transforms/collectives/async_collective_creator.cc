@@ -37,6 +37,7 @@ limitations under the License.
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/util.h"
+#include "xla/xla_data.pb.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/statusor.h"
 
@@ -90,28 +91,29 @@ absl::StatusOr<ReplacedAsync> CreateAsyncCollectivePermute(
     HloInstruction* instruction, absl::Span<const Shape> context_shapes) {
   auto* cp = Cast<HloCollectivePermuteInstruction>(instruction);
   HloInstruction* start;
-  HloInstruction* operand = cp->mutable_operand(0);
-  if (cp->operand_count() == 1) {
+  std::vector<const Shape*> operand_shapes;
+  absl::c_transform(
+      cp->operands(), std::back_inserter(operand_shapes),
+      [](const HloInstruction* operand) { return &(operand->shape()); });
+  if (!cp->inplace()) {
     start = instruction->AddInstruction(
         HloInstruction::CreateCollectivePermuteStart(
             ShapeInference::InferCollectivePermuteStartShape(
-                {&operand->shape()}, context_shapes)
+                operand_shapes, context_shapes, false)
                 .value(),
-            operand, cp->source_target_pairs(), cp->channel_id()));
+            cp->operands(), cp->source_target_pairs(), cp->channel_id()));
   } else {
+    // TODO support grouped partial collective permutes
     CHECK_EQ(cp->operand_count(), 4);
-    std::vector<const Shape*> operand_shapes;
-    absl::c_transform(
-        cp->operands(), std::back_inserter(operand_shapes),
-        [](const HloInstruction* operand) { return &(operand->shape()); });
     start = instruction->AddInstruction(
         HloInstruction::CreateCollectivePermuteStart(
-            ShapeInference::InferCollectivePermuteStartShape(operand_shapes,
-                                                             context_shapes)
+            ShapeInference::InferCollectivePermuteStartShape(
+                operand_shapes, context_shapes, true)
                 .value(),
-            operand, cp->mutable_operand(1), cp->mutable_operand(2),
-            cp->mutable_operand(3), cp->source_target_pairs(),
-            cp->dynamic_slice_sizes_list(), cp->channel_id()));
+            cp->mutable_operand(0), cp->mutable_operand(1),
+            cp->mutable_operand(2), cp->mutable_operand(3),
+            cp->source_target_pairs(), cp->dynamic_slice_sizes_list(),
+            cp->channel_id()));
     if (HasDisjointReadWriteRegionsAttr(cp)) {
       SetDisjointReadWriteRegionsAttr(start);
     }
@@ -172,7 +174,9 @@ std::vector<HloInstruction*> AsyncCollectiveCreator::MatchCollectives(
         (op == HloOpcode::kAllToAll &&
          config_.convert_all_to_all(instruction)) ||
         (op == HloOpcode::kReduceScatter &&
-         config_.convert_reduce_scatter(instruction))) {
+         config_.convert_reduce_scatter(instruction)) ||
+        (op == HloOpcode::kRaggedAllToAll &&
+         config_.convert_ragged_all_to_all(instruction))) {
       supported_collectives.push_back(instruction);
     }
   }
@@ -204,6 +208,7 @@ absl::StatusOr<bool> AsyncCollectiveCreator::ReplaceCollectives(
       case HloOpcode::kCollectiveBroadcast:
       case HloOpcode::kAllToAll:
       case HloOpcode::kReduceScatter:
+      case HloOpcode::kRaggedAllToAll:
         async_pair = CreateAsyncStartDone(
             instruction, config_.get_context_shapes(instruction));
         break;

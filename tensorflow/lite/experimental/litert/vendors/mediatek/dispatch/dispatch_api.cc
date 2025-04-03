@@ -28,16 +28,16 @@
 #include "tensorflow/lite/experimental/litert/c/litert_tensor_buffer.h"
 #include "tensorflow/lite/experimental/litert/c/litert_tensor_buffer_requirements.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_expected.h"
-#include "tensorflow/lite/experimental/litert/cc/litert_tensor_buffer.h"
 #include "tensorflow/lite/experimental/litert/vendors/c/litert_dispatch.h"
 #include "tensorflow/lite/experimental/litert/vendors/c/litert_dispatch_api.h"
 #include "tensorflow/lite/experimental/litert/vendors/mediatek/dispatch/litert_dispatch_device_context.h"
 #include "tensorflow/lite/experimental/litert/vendors/mediatek/dispatch/litert_dispatch_invocation_context.h"
-#include "tensorflow/lite/experimental/litert/vendors/mediatek/neuron_adapter.h"
+#include "tensorflow/lite/experimental/litert/vendors/mediatek/neuron_adapter_api.h"
+#include "tensorflow/lite/experimental/litert/vendors/mediatek/schema/schema_resolver.h"
 
 namespace {
 
-litert::mediatek::NeuronAdapter* TheNeuronAdapter;
+litert::mediatek::NeuronAdapterApi* TheNeuronAdapter;
 char BuildId[256];
 
 }  // namespace
@@ -67,14 +67,14 @@ LiteRtStatus LiteRtInitialize(const LiteRtDispatchOption* options,
       shared_library_dir ? std::make_optional(std::string(shared_library_dir))
                          : std::nullopt;
 
-  if (auto neuron_adapter =
-          litert::mediatek::NeuronAdapter::Create(shared_library_dir_opt);
-      neuron_adapter) {
-    TheNeuronAdapter = neuron_adapter->release();
+  if (auto neuron_adapter_api =
+          litert::mediatek::NeuronAdapterApi::Create(shared_library_dir_opt);
+      neuron_adapter_api) {
+    TheNeuronAdapter = neuron_adapter_api->release();
   } else {
     LITERT_LOG(LITERT_INFO, "Initialization failure: %s",
-               neuron_adapter.Error().Message().data());
-    return neuron_adapter.Error().Status();
+               neuron_adapter_api.Error().Message().c_str());
+    return neuron_adapter_api.Error().Status();
   }
 
   auto get_version = TheNeuronAdapter->api().get_version;
@@ -125,7 +125,7 @@ LiteRtStatus LiteRtDeviceContextCreate(
     return kLiteRtStatusOk;
   } else {
     LITERT_LOG(LITERT_ERROR, "Failed to create device context: %s",
-               context.Error().Message().data());
+               context.Error().Message().c_str());
     return context.Error().Status();
   }
 }
@@ -147,7 +147,7 @@ LiteRtStatus LiteRtGetInputRequirements(
     return kLiteRtStatusOk;
   } else {
     LITERT_LOG(LITERT_ERROR, "Failed to get tensor buffer requirements: %s",
-               requirements.Error().Message().data());
+               requirements.Error().Message().c_str());
     return requirements.Error().Status();
   }
 }
@@ -163,7 +163,7 @@ LiteRtStatus LiteRtGetOutputRequirements(
     return kLiteRtStatusOk;
   } else {
     LITERT_LOG(LITERT_ERROR, "Failed to get tensor buffer requirements: %s",
-               requirements.Error().Message().data());
+               requirements.Error().Message().c_str());
     return requirements.Error().Status();
   }
 }
@@ -172,14 +172,13 @@ LiteRtStatus LiteRtRegisterTensorBuffer(
     LiteRtDispatchDeviceContext device_context,
     LiteRtTensorBuffer tensor_buffer,
     LiteRtTensorBufferHandle* tensor_buffer_handle) {
-  litert::TensorBuffer tensor_buffer_(tensor_buffer, /*owned=*/false);
-  if (auto result = device_context->RegisterTensorBuffer(tensor_buffer_);
+  if (auto result = device_context->RegisterTensorBuffer(tensor_buffer);
       result) {
     *tensor_buffer_handle = *result;
     return kLiteRtStatusOk;
   } else {
     LITERT_LOG(LITERT_ERROR, "Failed to register tensor buffer: %s",
-               result.Error().Message().data());
+               result.Error().Message().c_str());
     return result.Error().Status();
   }
 }
@@ -191,7 +190,7 @@ LiteRtStatus LiteRtUnregisterTensorBuffer(
           device_context->UnregisterTensorBuffer(tensor_buffer_handle);
       !status) {
     LITERT_LOG(LITERT_ERROR, "Failed to unregister tensor buffer: %s",
-               status.Error().Message().data());
+               status.Error().Message().c_str());
     return status.Error().Status();
   }
   return kLiteRtStatusOk;
@@ -199,15 +198,16 @@ LiteRtStatus LiteRtUnregisterTensorBuffer(
 
 LiteRtStatus LiteRtInvocationContextCreate(
     LiteRtDispatchDeviceContext device_context,
-    LiteRtDispatchExecutableType exec_type, const void* exec_bytecode_ptr,
-    size_t exec_bytecode_size, const char* function_name, int num_inputs,
-    int num_outputs, LiteRtDispatchInvocationContext* invocation_context) {
+    LiteRtDispatchExecutableType exec_type,
+    const LiteRtMemBuffer* exec_bytecode_buffer, const char* function_name,
+    int num_inputs, int num_outputs,
+    LiteRtDispatchInvocationContext* invocation_context) {
   auto context = LiteRtDispatchInvocationContextT::Create(
-      *TheNeuronAdapter, device_context, exec_type, exec_bytecode_ptr,
-      exec_bytecode_size, function_name, num_inputs, num_outputs);
+      *TheNeuronAdapter, device_context, exec_type, exec_bytecode_buffer,
+      function_name, num_inputs, num_outputs);
   if (!context) {
     LITERT_LOG(LITERT_ERROR, "Failed to create context from context binary: %s",
-               context.Error().Message().data());
+               context.Error().Message().c_str());
     return context.Error().Status();
   }
   *invocation_context = context->release();
@@ -227,7 +227,7 @@ LiteRtStatus LiteRtAttachInput(
                                                     tensor_buffer_handle);
       !status) {
     LITERT_LOG(LITERT_ERROR, "Failed to attach input: %s",
-               status.Error().Message().data());
+               status.Error().Message().c_str());
     return status.Error().Status();
   }
   return kLiteRtStatusOk;
@@ -240,7 +240,7 @@ LiteRtStatus LiteRtAttachOutput(
                                                      tensor_buffer_handle);
       !status) {
     LITERT_LOG(LITERT_ERROR, "Failed to attach output: %s",
-               status.Error().Message().data());
+               status.Error().Message().c_str());
     return status.Error().Status();
   }
   return kLiteRtStatusOk;
@@ -253,7 +253,7 @@ LiteRtStatus LiteRtDetachInput(
                                                     tensor_buffer_handle);
       !status) {
     LITERT_LOG(LITERT_ERROR, "Failed to detach input: %s",
-               status.Error().Message().data());
+               status.Error().Message().c_str());
     return status.Error().Status();
   }
   return kLiteRtStatusOk;
@@ -266,7 +266,7 @@ LiteRtStatus LiteRtDetachOutput(
                                                      tensor_buffer_handle);
       !status) {
     LITERT_LOG(LITERT_ERROR, "Failed to detach output: %s",
-               status.Error().Message().data());
+               status.Error().Message().c_str());
     return status.Error().Status();
   }
   return kLiteRtStatusOk;
@@ -275,7 +275,7 @@ LiteRtStatus LiteRtDetachOutput(
 LiteRtStatus LiteRtInvoke(LiteRtDispatchInvocationContext invocation_context) {
   if (auto status = invocation_context->Invoke(); !status) {
     LITERT_LOG(LITERT_ERROR, "Failed to invoke context: %s",
-               status.Error().Message().data());
+               status.Error().Message().c_str());
     return status.Error().Status();
   }
   return kLiteRtStatusOk;

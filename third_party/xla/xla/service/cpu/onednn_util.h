@@ -16,7 +16,7 @@ limitations under the License.
 #ifndef XLA_SERVICE_CPU_ONEDNN_UTIL_H_
 #define XLA_SERVICE_CPU_ONEDNN_UTIL_H_
 
-#if defined(INTEL_MKL) && defined(ENABLE_ONEDNN_V3)
+#if defined(INTEL_MKL)
 
 #define EIGEN_USE_THREADS
 
@@ -72,7 +72,7 @@ typedef BackendConfig::BackendConfigOneofCase BackendConfigOneofCase;
 template <typename PrimDesc>
 std::unique_ptr<PrimDesc> CreateOneDnnPrimDesc(HloInstruction*);
 
-template <BackendConfigOneofCase config>
+template <BackendConfigOneofCase config, typename TransformationType = void>
 struct PrimitiveTrait;
 
 template <BackendConfigOneofCase config>
@@ -89,5 +89,5 @@ dnnl::post_ops PopulateOneDnnPostOps(
 }  // namespace cpu
 }  // namespace xla
 
-#endif  // INTEL_MKL && ENABLE_ONEDNN_V3
+#endif  // INTEL_MKL
 #endif  // XLA_SERVICE_CPU_ONEDNN_UTIL_H_

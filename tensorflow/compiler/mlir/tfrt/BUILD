@@ -113,6 +113,8 @@ cc_library(
         "//tensorflow/core/runtime_fallback/runtime:kernel_utils",
         "//tensorflow/core/runtime_fallback/runtime:runtime_fallback_alwayslink",
         "//tensorflow/core/tfrt/utils:fallback_tensor",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Pass",
@@ -283,6 +285,7 @@ cc_library(
     deps = [
         "//tensorflow/core/platform:logging",
         "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/log",
         "@tf_runtime//:hostcontext",
     ],
 )

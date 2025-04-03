@@ -19,6 +19,7 @@ limitations under the License.
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -64,6 +65,43 @@ limitations under the License.
 namespace xla {
 namespace spmd {
 
+void EnumerateHelper(std::function<void(const DimMap&)> split_func,
+                     int tensor_rank, int current_mesh_dim_idx,
+                     const std::vector<int>& unassigned_mesh_dims,
+                     const DimMap& current_dim_map,
+                     bool allow_mixed_mesh_shape) {
+  if (current_mesh_dim_idx == unassigned_mesh_dims.size()) {
+    split_func(current_dim_map);
+    return;
+  }
+  // Current mesh dim is not assigned to any tensor dim
+  EnumerateHelper(split_func, tensor_rank, current_mesh_dim_idx + 1,
+                  unassigned_mesh_dims, current_dim_map,
+                  allow_mixed_mesh_shape);
+
+  for (int i = 0; i < tensor_rank; ++i) {
+    DimMap updated_dim_map = current_dim_map;
+    if (!updated_dim_map[i].empty() && !allow_mixed_mesh_shape) {
+      continue;
+    }
+    updated_dim_map[i].insert(unassigned_mesh_dims[current_mesh_dim_idx]);
+    EnumerateHelper(split_func, tensor_rank, current_mesh_dim_idx + 1,
+                    unassigned_mesh_dims, updated_dim_map,
+                    allow_mixed_mesh_shape);
+  }
+}
+
+// Map tensor dims from [0, tensor_shape.dimensions_size() - 1] to (atmost one
+// or more, depending on the value of allow_mixed_mesh_shape) mesh dims.
+void Enumerate(std::function<void(const DimMap&)> split_func,
+               int64_t tensor_rank,
+               const std::vector<int>& unassigned_mesh_dims,
+               bool allow_mixed_mesh_shape) {
+  EnumerateHelper(split_func, tensor_rank, /*current_mesh_dim_idx=*/0,
+                  unassigned_mesh_dims,
+                  /*current_dim_map=*/{}, allow_mixed_mesh_shape);
+}
+
 bool LeafVectorsAreConsistent(const std::vector<ShardingStrategy>& one,
                               const std::vector<ShardingStrategy>& two) {
   if (one.size() != two.size()) return false;
@@ -95,14 +133,14 @@ ComputeSliceShardingAndCommunicationCostFromOperand(
 
   CHECK(old_shape.IsArray());
 
-  std::vector<int64_t> tensor_to_mesh_dim =
-      GetTensorDimToMeshDim(new_shape.rank(), input_spec, device_mesh,
-                            /* consider_reverse_device_meshes */ true);
+  std::vector<int64_t> tensor_to_mesh_dim = GetTensorDimToMeshDim(
+      new_shape.dimensions_size(), input_spec, device_mesh,
+      /* consider_reverse_device_meshes */ true);
 
   std::vector<int64_t> mesh_dims_for_communication;
   std::vector<int64_t> tensor_dims;
   std::vector<int64_t> mesh_dims;
-  for (size_t i = 0; i < new_shape.rank(); ++i) {
+  for (size_t i = 0; i < new_shape.dimensions_size(); ++i) {
     if (tensor_to_mesh_dim[i] == -1) {
       continue;
     }
@@ -174,28 +212,27 @@ void GenerateScatterShardingFromOperands(
     return;
   }
 
-  absl::InlinedVector<int64_t, 1> output_parallel_dims =
-      scatter_parallel_dims->operand_dims;
   // Infer output sharding from scatter operand sharding.
   const Shape& shape = scatter->shape();
   scatter_shardings_insert(
       hlo_sharding_util::InferGatherScatterParallelShardingFromOperandSharding(
-          data_sharding, shape, absl::MakeConstSpan(output_parallel_dims),
-          absl::MakeConstSpan(output_parallel_dims)));
+          data_sharding, shape,
+          absl::MakeConstSpan(scatter_parallel_dims->operand_dims),
+          absl::MakeConstSpan(scatter_parallel_dims->operand_dims)));
 
   // Infer output sharding from scatter indices sharding.
   scatter_shardings_insert(
       hlo_sharding_util::InferGatherScatterParallelShardingFromOperandSharding(
           indices_sharding, shape,
           absl::MakeConstSpan(scatter_parallel_dims->indices_dims),
-          absl::MakeConstSpan(output_parallel_dims)));
+          absl::MakeConstSpan(scatter_parallel_dims->operand_dims)));
 
   // Infer output sharding from scatter update sharding.
   scatter_shardings_insert(
       hlo_sharding_util::InferGatherScatterParallelShardingFromOperandSharding(
           update_sharding, shape,
           absl::MakeConstSpan(scatter_parallel_dims->output_dims),
-          absl::MakeConstSpan(output_parallel_dims)));
+          absl::MakeConstSpan(scatter_parallel_dims->operand_dims)));
 
   for (const HloSharding& scatter_sharding : scatter_shardings) {
     yield_sharding(data_sharding, indices_sharding, update_sharding,
@@ -265,7 +302,7 @@ BuildStrategyAndCost(
       // usually "follows" other instruction's sharding. If the instruction it
       // follows is an intermediate instruction, it may be able to choose
       // unevenly sharded strategiyes. Usually if we constraint input's sharding
-      // strategies, outputs would be constrained as welll, but if outputs are
+      // strategies, outputs would be constrained as well, but if outputs are
       // still unevely sharded in some cases, we need to fix the implementation
       // in auto sharding.
       only_allow_divisible = option.only_allow_divisible_input_output;
@@ -287,7 +324,7 @@ BuildStrategyAndCost(
           // We use this following relationship to ensure that the input tuple
           // of the while loop, and the parameter of the body of that while
           // loop. Therefore, this followinf relationship is necessary for
-          // correctness, and is not merely an optmization.
+          // correctness, and is not merely an optimization.
           is_follow_necessary_for_correctness = true;
           for (size_t i = 0; i < ins->shape().tuple_shapes_size(); ++i) {
             std::unique_ptr<StrategyGroup> child_strategies =

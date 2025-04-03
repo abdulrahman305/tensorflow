@@ -54,6 +54,8 @@ cc_library(
         # copybara:uncomment "//third_party/qairt/latest:qnn_lib_headers",
         "//tensorflow/lite/experimental/litert/c:litert_common",
         "//tensorflow/lite/experimental/litert/cc:litert_expected",
+        "//tensorflow/lite/experimental/litert/cc:litert_macros",
+        "//tensorflow/lite/experimental/litert/cc:litert_shared_library",
     ],
 )
 
@@ -72,6 +74,7 @@ litert_cc_lib_with_qnn(
     deps = [
         ":common",
         ":qnn_log",
+        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/types:span",
@@ -79,6 +82,8 @@ litert_cc_lib_with_qnn(
         "//tensorflow/lite/experimental/litert/c:litert_common",
         "//tensorflow/lite/experimental/litert/c:litert_logging",
         "//tensorflow/lite/experimental/litert/cc:litert_expected",
+        "//tensorflow/lite/experimental/litert/cc:litert_macros",
+        "//tensorflow/lite/experimental/litert/cc:litert_shared_library",
         "//tensorflow/lite/experimental/litert/core:dynamic_loading",
     ],
 )
@@ -97,9 +102,16 @@ litert_test(
         # Sanitizer runtime doesn't work with anything that loads libQnnHtp.so.
         "nosan",
     ],
+    # This test can be run only on Android and Linux.
+    target_compatible_with = select({
+        "@platforms//os:android": [],
+        "@platforms//os:linux": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
     deps = [
         ":qnn_manager",
         "//tensorflow/lite/experimental/litert/test:common",
+        "//tensorflow/lite/experimental/litert/test:matchers_oss",
         "//tensorflow/lite/experimental/litert/vendors/qualcomm/tools:dump",
     ],
 )
@@ -111,7 +123,6 @@ cc_library(
     deps = [
         ":qnn_manager",
         ":qnn_tensor",
-        "@com_google_absl//absl/log",
         "@com_google_absl//absl/strings:string_view",
         # copybara:uncomment "//third_party/qairt/latest:qnn_lib_headers",
         "//tensorflow/lite/experimental/litert/c:litert_common",
@@ -125,9 +136,7 @@ cc_library(
     srcs = ["qnn_tensor.cc"],
     hdrs = ["qnn_tensor.h"],
     deps = [
-        "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:absl_check",
-        "@com_google_absl//absl/log:absl_log",
         "@com_google_absl//absl/strings:string_view",
         # copybara:uncomment "//third_party/qairt/latest:qnn_lib_headers",
         "//tensorflow/lite/experimental/litert/c:litert_common",

@@ -68,6 +68,8 @@ load(
     "@local_xla//xla/tsl/mkl:build_defs.bzl",
     "if_mkl",
 )
+
+# Placeholder: load java_proto_library
 load(
     "//tensorflow:tensorflow.bzl",
     "if_android",
@@ -158,6 +160,7 @@ package_group(
     name = "friends",
     packages = if_google([
         "//learning/brain/...",
+        "//third_party/car/...",
         "//tensorflow/...",
         "@tf_runtime//...",
         "//third_party/tf_runtime_google/...",
@@ -246,6 +249,7 @@ cc_library(
         "@local_tsl//tsl/platform:lib_proto_parsing_hdrs",
     ],
     copts = tf_copts(),
+    visibility = ["//visibility:public"],
     deps = tf_lib_proto_parsing_deps() + [
         ":platform_base",
         "//tensorflow/core/lib/core:errors",
@@ -263,7 +267,6 @@ cc_library(
         "//tensorflow/core/platform:tstring",
         "//tensorflow/core/platform:types",
         "@com_google_absl//absl/strings",
-        "@double_conversion//:double-conversion",
     ],
 )
 
@@ -495,21 +498,15 @@ cc_library(
         "@local_xla//xla/tsl/platform/default:logging.h",
     ],
     visibility = ["//visibility:public"],
-    deps =
-        # copybara:uncomment_begin
-        # if_mobile(["@nsync//:nsync_cpp"]) +
-        # copybara:uncomment_end_uncomment_begin
-        # ["@nsync//:nsync_cpp"] +
-        # copybara:comment_end
-        [
-            "@eigen_archive//:eigen3",
-            "//tensorflow/core/platform:dynamic_annotations",
-            "//tensorflow/core/platform:platform_port",
-            "//tensorflow/core/platform:thread_annotations",
-            "//tensorflow/core/platform:mutex",
-            "@local_xla//xla/tsl/framework:fixedpoint_types",
-            "//tensorflow/core/platform:types",
-        ],
+    deps = [
+        "//tensorflow/core/platform:dynamic_annotations",
+        "//tensorflow/core/platform:mutex",
+        "//tensorflow/core/platform:platform_port",
+        "//tensorflow/core/platform:thread_annotations",
+        "//tensorflow/core/platform:types",
+        "@eigen_archive//:eigen3",
+        "@local_xla//xla/tsl/framework:fixedpoint_types",
+    ],
 )
 
 # One target for all user ops.
@@ -532,6 +529,9 @@ cc_library(
         "//tensorflow/dtensor/cc:dtensor_ops",
     ] + select({
         # Non-tpu platforms don't need tpu dependency.
+        # copybara:uncomment_begin(google-only)
+        # "//buildenv/platforms/settings:chrome_linux": [],
+        # copybara:uncomment_end
         "//tensorflow:chromiumos": [],
         "//tensorflow:fuchsia": [],
         "//conditions:default": [
@@ -1017,6 +1017,9 @@ cc_library(
     hdrs = if_mobile(["//tensorflow/core/config:flags_headers_filegroup"]),
     copts = tf_copts(android_optimization_level_override = None) + tf_opts_nortti_if_lite_protos() + if_ios(["-Os"]),
     defines = ["SUPPORT_SELECTIVE_REGISTRATION"] + select({
+                  # copybara:uncomment_begin(google-only)
+                  # "//buildenv/platforms/settings:chrome_linux": ["IS_MOBILE_PLATFORM"],
+                  # copybara:uncomment_end
                   "//tensorflow:chromiumos": ["IS_MOBILE_PLATFORM"],
                   "//tensorflow:fuchsia": ["IS_MOBILE_PLATFORM"],
                   "//conditions:default": [],
@@ -1033,6 +1036,7 @@ cc_library(
     deps = [
         "//tensorflow/core:mobile_additional_lib_deps",
         "//tensorflow/core/platform:resource",
+        "//tensorflow/core/public:release_version",
         "//tensorflow/core/util:stats_calculator_portable",
     ] + tf_portable_proto_lib() + tf_portable_deps_no_runtime(),
     alwayslink = 1,
@@ -1048,6 +1052,7 @@ cc_library(
 #         "EIGEN_NEON_GEBP_NR=4",
 #     ] + select({
 #         "//tensorflow:chromiumos": ["IS_MOBILE_PLATFORM"],
+#         "//buildenv/platforms/settings:chrome_linux": ["IS_MOBILE_PLATFORM"],
 #         "//tensorflow:fuchsia": ["IS_MOBILE_PLATFORM"],
 #         "//conditions:default": [],
 #     }) + tf_defines_nortti_if_lite_protos() + select({
@@ -1086,6 +1091,7 @@ cc_library(
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/functional:any_invocable",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -1138,7 +1144,7 @@ cc_library(
         "//tensorflow/core/util:android_test_hdrs",
     ],
     copts = tf_copts(android_optimization_level_override = None) + if_ios(["-Os"]),
-    features = tf_features_nomodules_if_mobile() + tf_opts_nortti_if_lite_protos(),
+    features = tf_features_nomodules_if_mobile() + tf_opts_nortti_if_lite_protos() + if_android(["-layering_check"]),
     tags = [
         "manual",
         "notap",
@@ -1267,6 +1273,7 @@ cc_library(
             "-lpthread",
         ],
     }),
+    visibility = ["//visibility:public"],
     deps = tf_additional_lib_deps() + [
         "//tensorflow/core/platform/default/build_config:platformlib",
         "@com_google_absl//absl/base:core_headers",
@@ -1275,8 +1282,9 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@eigen_archive//:eigen3",
-        "@ml_dtypes//:float8",
-        "@ml_dtypes//:intn",
+        "@ml_dtypes_py//ml_dtypes:float8",
+        "@ml_dtypes_py//ml_dtypes:intn",
+        "@ml_dtypes_py//ml_dtypes:mxfloat",
     ] + if_static([":lib_internal_impl"]),
 )
 
@@ -1303,8 +1311,9 @@ cc_library(
         "@com_google_absl//absl/meta:type_traits",
         "@com_google_absl//absl/strings",
         "@eigen_archive//:eigen3",
-        "@ml_dtypes//:float8",
-        "@ml_dtypes//:intn",
+        "@ml_dtypes_py//ml_dtypes:float8",
+        "@ml_dtypes_py//ml_dtypes:intn",
+        "@ml_dtypes_py//ml_dtypes:mxfloat",
     ],
 )
 
@@ -1449,11 +1458,11 @@ cc_library(
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
         "@com_google_protobuf//:protobuf",
-        "@double_conversion//:double-conversion",
         "@eigen_archive//:eigen3",
         "@local_xla//xla/tsl/lib/math:math_util",
-        "@ml_dtypes//:float8",
-        "@ml_dtypes//:intn",
+        "@ml_dtypes_py//ml_dtypes:float8",
+        "@ml_dtypes_py//ml_dtypes:intn",
+        "@ml_dtypes_py//ml_dtypes:mxfloat",
         "@snappy",
         "@zlib",
     ] + select({
@@ -1488,6 +1497,7 @@ cc_library(
         "@local_xla//xla/service/gpu:backend_configs_cc_impl",
         "@local_xla//xla/service/gpu/model:hlo_op_profile_proto_cc_impl",
         "@local_xla//xla/stream_executor:device_description_proto_cc_impl",
+        "@local_xla//xla/stream_executor/cuda:cuda_compute_capability_proto_cc_impl",
         "//tensorflow/lite/toco:toco_flags_proto_cc_impl",
         "//tensorflow/lite/toco:model_flags_proto_cc_impl",
         "//tensorflow/lite/toco:types_proto_cc_impl",
@@ -1513,6 +1523,7 @@ alias(
 alias(
     name = "jpeg_internal",
     actual = "//tensorflow/core/lib/jpeg:jpeg_internal",
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
@@ -1597,6 +1608,7 @@ filegroup(
         "//tensorflow/core/framework:op_segment.h",
         "//tensorflow/core/framework:ref_var.h",
         "//tensorflow/core/framework:rendezvous.h",  # only needed for tests
+        "//tensorflow/core/framework:resource_base.h",  # only needed for tests
         "//tensorflow/core/framework:resource_var.h",
         "//tensorflow/core/framework:run_handler.h",
         "//tensorflow/core/framework:run_handler_util.h",
@@ -1614,6 +1626,7 @@ tf_cuda_library(
     name = "framework_internal",
     srcs = [":framework_internal_private_headers"],
     hdrs = [":framework_internal_public_headers"],
+    visibility = ["//visibility:public"],
     deps = [
         ":framework_internal_headers_lib",
         ":lib",
@@ -1638,6 +1651,8 @@ cc_header_only_library(
     extra_deps = [
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
     ],
     deps = [
         ":lib",
@@ -1702,6 +1717,7 @@ tf_cuda_library(
         "//tensorflow/core/profiler/lib:annotated_traceme",
         "//tensorflow/core/profiler/lib:scoped_memory_debug_annotation",
         "//tensorflow/core/profiler/lib:traceme",
+        "//tensorflow/core/public:release_version",
         "//tensorflow/core/util:determinism",
         "//tensorflow/core/util:einsum_op_util",
         "//tensorflow/core/util:managed_stack_trace",
@@ -1748,7 +1764,7 @@ custom_op_cc_header_only_library(
     ],
 )
 
-cc_header_only_library(
+custom_op_cc_header_only_library(
     name = "stream_executor_headers_lib",
     # Fully depend on external repositories, because identifying the headers
     # is fragile.
@@ -1782,6 +1798,7 @@ tf_cuda_library(
     name = "graph",
     srcs = ["//tensorflow/core/graph:graph_srcs"],
     hdrs = ["//tensorflow/core/graph:graph_headers"],
+    visibility = ["//visibility:public"],
     deps = [
         ":framework",
         ":framework_internal",
@@ -1813,6 +1830,12 @@ tf_cuda_library(
         "//tensorflow/core/public:session.h",
     ],
     copts = tf_copts(),
+    visibility = [
+        ":dependency_allowlist",
+        "//learning/gemini/gemax/core/models/gemini3/vision/vision_decoder:__pkg__",
+        "//tensorflow:internal",
+        "//tensorflow_models:__subpackages__",
+    ],
     deps = ["//tensorflow/core/common_runtime:core_cpu_base_no_ops"] + if_static([
         ":function_ops_op_lib",
         ":functional_grad",
@@ -1828,6 +1851,7 @@ alias(
     name = "core_cpu_lib",
     actual =
         "//tensorflow/core/common_runtime:core_cpu_lib",
+    visibility = ["//visibility:public"],
 )
 
 alias(
@@ -1874,7 +1898,7 @@ cc_library(
 # Main program for tests
 alias(
     name = "test_main",
-    actual = "@local_tsl//tsl/platform:test_main",
+    actual = "@local_xla//xla/tsl/platform:test_main",
     visibility = ["//tensorflow:internal"],
 )
 
@@ -2024,6 +2048,7 @@ filegroup(
         "//tensorflow/core/lib/gif/testdata:gif_testdata",
         # BMP data
         "//tensorflow/core/lib/bmp:bmp_testdata",
+        "//tensorflow/core/lib/webp:testdata",
     ],
     visibility = ["//visibility:public"],
 )

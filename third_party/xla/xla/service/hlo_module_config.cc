@@ -32,6 +32,7 @@ limitations under the License.
 #include "xla/service/computation_layout.h"
 #include "xla/service/computation_placer.h"
 #include "xla/service/hlo.pb.h"
+#include "xla/service/sharding_config.h"
 #include "xla/shape.h"
 #include "xla/shape_layout.h"
 #include "xla/xla.pb.h"
@@ -79,6 +80,8 @@ std::string HloModuleConfig::compilation_cache_key() const {
   StrAppend(&key, "::exec_time_optimization_effort=",
             exec_time_optimization_effort());
   StrAppend(&key, "::memory_fitting_effort=", memory_fitting_effort());
+  StrAppend(&key, "::optimization_level=", optimization_level());
+  StrAppend(&key, "::memory_fitting_level=", memory_fitting_level());
   if (replica_count() != 1) {
     StrAppend(&key, "::replica_count=", replica_count());
   }
@@ -288,6 +291,8 @@ HloModuleConfigProto HloModuleConfig::ToProto() const {
   }
   proto.set_exec_time_optimization_effort(exec_time_optimization_effort_);
   proto.set_memory_fitting_effort(memory_fitting_effort_);
+  proto.set_optimization_level(optimization_level_);
+  proto.set_memory_fitting_level(memory_fitting_level_);
   proto.set_deduplicate_hlo(deduplicate_hlo_);
   proto.set_intra_op_parallelism_threads(intra_op_parallelism_threads_);
   proto.set_device_type(device_type_);
@@ -331,6 +336,7 @@ HloModuleConfigProto HloModuleConfig::ToProto() const {
   proto.set_fdo_profile(fdo_profile_);
   proto.set_device_memory_size(device_memory_size_);
   proto.set_use_shardy_partitioner(use_shardy_partitioner_);
+  *proto.mutable_sharding_config() = ShardingConfig::ToProto(sharding_config_);
   return proto;
 }
 
@@ -362,6 +368,8 @@ HloModuleConfig::CreateFromProto(const HloModuleConfigProto& proto) {
   config->exec_time_optimization_effort_ =
       proto.exec_time_optimization_effort();
   config->memory_fitting_effort_ = proto.memory_fitting_effort();
+  config->optimization_level_ = proto.optimization_level();
+  config->memory_fitting_level_ = proto.memory_fitting_level();
   config->deduplicate_hlo_ = proto.deduplicate_hlo();
   config->intra_op_parallelism_threads_ = proto.intra_op_parallelism_threads();
   config->device_type_ = proto.device_type();
@@ -404,6 +412,7 @@ HloModuleConfig::CreateFromProto(const HloModuleConfigProto& proto) {
   config->fdo_profile_ = proto.fdo_profile();
   config->device_memory_size_ = proto.device_memory_size();
   config->use_shardy_partitioner_ = proto.use_shardy_partitioner();
+  config->sharding_config_ = ShardingConfig::FromProto(proto.sharding_config());
   return std::move(config);
 }
 

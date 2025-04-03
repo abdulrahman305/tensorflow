@@ -1,5 +1,8 @@
 ################################################################################
-FROM ubuntu:22.04@sha256:58b87898e82351c6cf9cf5b9f3c20257bb9e2dcf33af051e12ce532d7f94e3fe AS devel
+ARG BASE_IMAGE=ubuntu:22.04@sha256:58b87898e82351c6cf9cf5b9f3c20257bb9e2dcf33af051e12ce532d7f94e3fe
+FROM $BASE_IMAGE AS devel
+# See https://docs.docker.com/reference/dockerfile/#understand-how-arg-and-from-interact
+# on why we cannot reference BASE_IMAGE again unless we declare it again.
 ################################################################################
 
 # Install devtoolset build dependencies
@@ -20,15 +23,28 @@ RUN /build_devtoolset.sh devtoolset-9 /dt9
 # Setup Python
 COPY setup.python.sh /setup.python.sh
 COPY builder.requirements.txt /builder.requirements.txt
-RUN /setup.python.sh python3.9 builder.requirements.txt
-RUN /setup.python.sh python3.10 builder.requirements.txt
-RUN /setup.python.sh python3.11 builder.requirements.txt
-RUN /setup.python.sh python3.13 builder.requirements.txt
+RUN /setup.python.sh python3.9 /builder.requirements.txt
+RUN /setup.python.sh python3.10 /builder.requirements.txt
+RUN /setup.python.sh python3.11 /builder.requirements.txt
+RUN /setup.python.sh python3.13 /builder.requirements.txt
+RUN /setup.python.sh python3.13-nogil /builder.requirements.txt
 
 # Since we are using python3.12 as the default python version, we need to
 # install python3.12 last for now.
 # TODO(b/376338367): switch to pyenv.
-RUN /setup.python.sh python3.12 builder.requirements.txt
+RUN /setup.python.sh python3.12 /builder.requirements.txt
+
+COPY setup.sources.cudnn.sh /setup.sources.cudnn.sh
+ARG INSTALL_CUDNN=false
+ARG CUDA_PACKAGES_FILE=cuda12.1_cudnn9.1.packages.txt
+COPY ${CUDA_PACKAGES_FILE} /cudnn.packages.txt
+
+RUN if [ "${INSTALL_CUDNN}" = "true" ]; then \
+      echo "Installing cudnn"; \
+      /setup.sources.cudnn.sh && /setup.packages.sh /cudnn.packages.txt; \
+    else \
+      echo "cudnn is not installed"; \
+    fi
 
 # Setup links for TensorFlow to compile.
 # Referenced in devel.usertools/*.bazelrc.
@@ -40,6 +56,9 @@ RUN ln -sf /usr/lib/python3.12 /usr/lib/tf_python
 
 # Make sure clang is on the path
 RUN ln -s /usr/lib/llvm-18/bin/clang /usr/bin/clang
+
+# Link the compat driver to the location if available.
+RUN if [ -e "/usr/local/cuda/compat/libcuda.so.1" ]; then ln -s /usr/local/cuda/compat/libcuda.so.1 /usr/lib/x86_64-linux-gnu/libcuda.so.1; fi
 
 # Install various tools.
 # - bats: bash unit testing framework
@@ -57,7 +76,7 @@ RUN curl https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud
     tar zxf - google-cloud-sdk && \
     google-cloud-sdk/install.sh --quiet && \
     ln -s /google-cloud-sdk/bin/gcloud /usr/bin/gcloud
-ENV PATH="$PATH:/google-cloud-sdk/bin/"
+ENV PATH="$PATH:/google-cloud-sdk/bin/:/usr/local/cuda/bin/"
 
 # Download and install patchelf v0.18.0 from GitHub. The default Ubuntu focal
 # packages only provide the "0.10-2build1" version. We use patchelf to manipulate

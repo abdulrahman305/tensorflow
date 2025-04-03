@@ -15,6 +15,8 @@
 #ifndef TENSORFLOW_LITE_EXPERIMENTAL_LITERT_VENDORS_QUALCOMM_CONTEXT_BINARY_INFO_H_
 #define TENSORFLOW_LITE_EXPERIMENTAL_LITERT_VENDORS_QUALCOMM_CONTEXT_BINARY_INFO_H_
 
+#include <cstddef>
+#include <string>
 #include <vector>
 
 #include "absl/strings/string_view.h"
@@ -24,8 +26,7 @@
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/qnn_manager.h"
 #include "tensorflow/lite/experimental/litert/vendors/qualcomm/qnn_tensor.h"
 
-namespace litert {
-namespace qnn {
+namespace litert::qnn {
 
 class GraphInfo {
  public:
@@ -60,7 +61,6 @@ class ContextBinaryInfo {
   std::vector<GraphInfo> graphs_;
 };
 
-}  // namespace qnn
-}  // namespace litert
+}  // namespace litert::qnn
 
 #endif  // TENSORFLOW_LITE_EXPERIMENTAL_LITERT_VENDORS_QUALCOMM_CONTEXT_BINARY_INFO_H_

@@ -1,6 +1,6 @@
-load("@local_tsl//tsl/platform:rules_cc.bzl", "cc_library")
 load("//xla/tests:build_defs.bzl", "xla_test")
 load("//xla/tsl:tsl.bzl", "if_google")
+load("//xla/tsl/platform:rules_cc.bzl", "cc_library")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -15,8 +15,11 @@ cc_library(
     ],
     hdrs = ["xla_gpu_pjrt_client.h"],
     deps = [
+        ":xla_gpu_client_options",
         "//xla/pjrt:pjrt_client",
         "//xla/pjrt/gpu:se_gpu_pjrt_client",
+        "//xla/pjrt/gpu/tfrt:tfrt_gpu_client",
+        "//xla/tsl/util:env_var",
         "@com_google_absl//absl/status:statusor",
     ],
 )
@@ -48,9 +51,11 @@ xla_test(
         "no_oss",
     ] + if_google(["config-cuda-only"]),
     deps = [
+        ":xla_gpu_client_options",
         ":xla_gpu_pjrt_client",
         "//xla/pjrt/gpu:se_gpu_pjrt_client",
+        "//xla/pjrt/gpu/tfrt:tfrt_gpu_client",
         "//xla/tests:xla_internal_test_main",
-        "@local_tsl//tsl/platform:test",
+        "@com_google_googletest//:gtest",
     ],
 )

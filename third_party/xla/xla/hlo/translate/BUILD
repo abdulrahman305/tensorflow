@@ -1,5 +1,5 @@
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
-load("//xla:xla.bzl", "xla_cc_binary")
+load("//xla:xla.default.bzl", "xla_cc_binary")
 load("//xla/tsl:tsl.bzl", "internal_visibility")
 load("//xla/tsl:tsl.default.bzl", "get_compatible_with_portable")
 
@@ -95,18 +95,25 @@ cc_library(
         "//xla/hlo/translate/mhlo_to_hlo:mlir_hlo_to_hlo",
         "//xla/hlo/translate/mhlo_to_hlo:module_attributes_exporter",
         "//xla/mlir/utils:error_util",
+        "//xla/mlir_hlo:hlo_dialect_registration",
         "//xla/mlir_hlo:mhlo_passes",
-        "//xla/service:hlo_module_config",
+        "//xla/mlir_hlo:stablehlo_extension_passes",
         "//xla/service:hlo_proto_cc",
         "//xla/service/llvm_ir:llvm_util",
+        "//xla/tsl/platform:errors",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:FuncExtensions",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:ShapeDialect",
+        "@llvm-project//mlir:TensorDialect",
         "@llvm-project//mlir:Transforms",
-        "@local_tsl//tsl/platform:errors",
-        "@local_tsl//tsl/platform:statusor",
+        "@llvm-project//mlir:UBDialect",
+        "@stablehlo//:register",
+        "@stablehlo//:stablehlo_passes",
     ],
 )

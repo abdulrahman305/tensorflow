@@ -100,6 +100,11 @@ class RpcHelper {
 
   ResponseFuture<MakeArrayFromHostBufferResponse> MakeArrayFromHostBuffer(
       std::unique_ptr<MakeArrayFromHostBufferRequest> req);
+  ResponseFuture<MakeArraysFromHostBufferShardsResponse>
+  MakeArraysFromHostBufferShards(
+      std::unique_ptr<MakeArraysFromHostBufferShardsRequest> req);
+  ResponseFuture<MakeErrorArraysResponse> MakeErrorArrays(
+      std::unique_ptr<MakeErrorArraysRequest> req);
   ResponseFuture<AssembleArrayFromSingleDeviceArraysResponse>
   AssembleArrayFromSingleDeviceArrays(
       std::unique_ptr<AssembleArrayFromSingleDeviceArraysRequest> req);
@@ -112,7 +117,6 @@ class RpcHelper {
       std::unique_ptr<CopyToHostBufferRequest> req);
   ResponseFuture<CopyArraysResponse> CopyArrays(
       std::unique_ptr<CopyArraysRequest> req);
-  ResponseFuture<ReshardResponse> Reshard(std::unique_ptr<ReshardRequest> req);
   ResponseFuture<FullyReplicatedShardResponse> FullyReplicatedShard(
       std::unique_ptr<FullyReplicatedShardRequest> req);
   ResponseFuture<IsArrayDeletedResponse> IsArrayDeleted(

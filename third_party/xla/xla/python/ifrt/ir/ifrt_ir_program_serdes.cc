@@ -33,6 +33,7 @@ limitations under the License.
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
 #include "xla/mlir/utils/error_util.h"
+#include "xla/python/ifrt/ir/ifrt_ir_compile_options.pb.h"
 #include "xla/python/ifrt/ir/ifrt_ir_program.h"
 #include "xla/python/ifrt/ir/ifrt_ir_program.pb.h"
 #include "xla/python/ifrt/ir/transforms/passes.h"
@@ -40,7 +41,7 @@ limitations under the License.
 #include "xla/python/ifrt/serdes.h"
 #include "xla/python/ifrt/support/module_parsing.h"
 #include "xla/status_macros.h"
-#include "tsl/platform/statusor.h"
+#include "xla/tsl/platform/statusor.h"
 
 namespace xla {
 namespace ifrt {
@@ -52,7 +53,7 @@ class IfrtIRProgramSerDes
     : public llvm::RTTIExtends<IfrtIRProgramSerDes, SerDes> {
  public:
   absl::string_view type_name() const override {
-    return "xla::ifrt::IfrtIRProgram";
+    return IfrtIRProgram::type_name();
   }
 
   // Serializes the `IfrtIRProgram`.

@@ -13,14 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <algorithm>
 #include <memory>
-#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
-#include <vector>
 
+#include "absl/status/status.h"
 #include "pybind11/pybind11.h"  // from @pybind11
 #include "tensorflow/core/profiler/convert/repository.h"
 #include "tensorflow/core/profiler/convert/tool_options.h"
@@ -100,8 +98,7 @@ PYBIND11_MODULE(_pywrap_profiler, m) {
       });
 
   m.def("start_server", [](int port) {
-    auto profiler_server =
-        std::make_unique<tensorflow::profiler::ProfilerServer>();
+    auto profiler_server = std::make_unique<tsl::profiler::ProfilerServer>();
     profiler_server->StartProfilerServer(port);
     // Intentionally release profiler server. Should transfer ownership to
     // caller instead.

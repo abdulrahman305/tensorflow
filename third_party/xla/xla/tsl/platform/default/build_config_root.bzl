@@ -1,9 +1,14 @@
-# Lower-level functionality for build config.
-# The functions in this file might be referred by tensorflow.bzl. They have to
-# be separate to avoid cyclic references.
+"""Lower-level functionality for build config.
+
+The functions in this file might be referred by tensorflow.bzl. They have to
+be separate to avoid cyclic references.
+"""
 
 load("@local_config_remote_execution//:remote_execution.bzl", "gpu_test_tags")
-load("@local_tsl//third_party/py/rules_pywrap:pywrap.bzl", "use_pywrap_rules")
+load("@local_xla//third_party/py/rules_pywrap:pywrap.default.bzl", "use_pywrap_rules")
+load("//xla/tsl:package_groups.bzl", "DEFAULT_LOAD_VISIBILITY")
+
+visibility(DEFAULT_LOAD_VISIBILITY)
 
 # RBE settings for tests that require a GPU. This is used in exec_properties of rules
 # that need GPU access.
@@ -46,6 +51,7 @@ def tf_additional_tpu_ops_deps():
 # dependency list is used when using the framework_shared_object config
 # on MacOS platforms. If "macos" is not provided, the "otherwise" list is
 # used for all framework_shared_object platforms including MacOS.
+# buildifier: disable=function-docstring
 def if_static(extra_deps, otherwise = [], macos = []):
     if use_pywrap_rules():
         return extra_deps
@@ -93,6 +99,7 @@ def if_llvm_arm_available(then, otherwise = []):
     })
 
 def if_llvm_hexagon_available(then, otherwise = []):
+    _ = then  # @unused
     return otherwise
 
 def if_llvm_powerpc_available(then, otherwise = []):

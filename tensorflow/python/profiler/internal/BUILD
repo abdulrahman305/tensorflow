@@ -13,7 +13,6 @@ package(
 py_strict_library(
     name = "flops_registry",
     srcs = ["flops_registry.py"],
-    srcs_version = "PY3",
     deps = [
         "//tensorflow/python/framework:graph_util",
         "//tensorflow/python/framework:ops",
@@ -24,8 +23,6 @@ py_strict_library(
 py_strict_test(
     name = "flops_registry_test",
     srcs = ["flops_registry_test.py"],
-    python_version = "PY3",
-    srcs_version = "PY3",
     deps = [
         ":flops_registry",
         "//tensorflow/python/framework:ops",
@@ -40,7 +37,6 @@ py_strict_test(
 py_strict_library(
     name = "model_analyzer_testlib",
     srcs = ["model_analyzer_testlib.py"],
-    srcs_version = "PY3",
     visibility = ["//visibility:public"],
     deps = [
         "//tensorflow/python/framework:for_generated_wrappers",
@@ -63,8 +59,6 @@ py_strict_library(
 py_strict_test(
     name = "print_model_analysis_test",
     srcs = ["print_model_analysis_test.py"],
-    python_version = "PY3",
-    srcs_version = "PY3",
     deps = [
         "//tensorflow/python/framework:for_generated_wrappers",
         "//tensorflow/python/ops:array_ops",
@@ -78,7 +72,6 @@ py_strict_test(
 cuda_py_strict_test(
     name = "run_metadata_test",
     srcs = ["run_metadata_test.py"],
-    python_version = "PY3",
     tags = [
         "no_gpu",  # b/138442728
         "no_pip",
@@ -136,13 +129,12 @@ tf_python_pybind_extension(
     ],
     deps = [
         ":profiler_pywrap_impl",
-        "//tensorflow/core/platform:env",
         "//tensorflow/core/profiler/convert:repository",
         "//tensorflow/core/profiler/convert:tool_options",
         "//tensorflow/core/profiler/convert:xplane_to_tools_data",
         "//tensorflow/core/profiler/rpc:profiler_server_for_pybind",
         "//tensorflow/python/lib/core:pybind11_status",
-        "@com_google_absl//absl/types:variant",
+        "@com_google_absl//absl/status",
         "@pybind11",
     ],
 )
@@ -156,9 +148,9 @@ cc_library(
     visibility = ["//visibility:private"],
     deps = [
         "//tensorflow/core:lib",
-        "//tensorflow/core/profiler/protobuf:xplane_proto_cc",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/memory",
+        "@local_tsl//tsl/profiler/protobuf:xplane_proto_cc",
         "@local_xla//xla/python/profiler/internal:python_hooks",
         "@pybind11",
     ],
@@ -175,14 +167,13 @@ cc_library(
         "//tensorflow/core:lib_internal",
         "//tensorflow/core/profiler/convert:xplane_to_tools_data",
         "//tensorflow/core/profiler/lib:profiler_session_for_pybind",
-        "//tensorflow/core/profiler/protobuf:xplane_proto_cc",
         "//tensorflow/core/profiler/rpc:profiler_server_for_pybind",
         "//tensorflow/core/profiler/rpc/client:save_profile",
         "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:variant",
+        "@local_tsl//tsl/profiler/protobuf:xplane_proto_cc",
         "@local_xla//xla/tsl/profiler/convert:xplane_to_trace_events",
         "@local_xla//xla/tsl/profiler/rpc/client:capture_profile",
         "@local_xla//xla/tsl/profiler/utils:session_manager",
@@ -210,8 +201,11 @@ tsl_pybind_extension(
         "//tensorflow/core/profiler/convert:xplane_to_tools_data",
         "//tensorflow/python/lib/core:py_exception_registry",
         "//tensorflow/python/lib/core:pybind11_status",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_protobuf//:protobuf",
-        "@local_tsl//tsl/platform:env_impl",
         "@local_tsl//tsl/profiler/protobuf:profiler_analysis_proto_cc_impl",
         "@local_tsl//tsl/profiler/protobuf:profiler_options_proto_cc_impl",
         "@local_tsl//tsl/profiler/protobuf:profiler_service_monitor_result_proto_cc_impl",
@@ -226,8 +220,12 @@ tsl_pybind_extension(
         "@local_xla//xla/service/gpu:backend_configs_cc_impl",
         "@local_xla//xla/service/gpu/model:hlo_op_profile_proto_cc_impl",
         "@local_xla//xla/stream_executor:device_description_proto_cc_impl",
+        "@local_xla//xla/stream_executor/cuda:cuda_compute_capability_proto_cc_impl",
         "@local_xla//xla/tsl/framework:allocator_registry_impl",
         "@local_xla//xla/tsl/lib/io:table",
+        "@local_xla//xla/tsl/platform:env_impl",
+        "@local_xla//xla/tsl/platform:types",
+        "@local_xla//xla/tsl/platform/cloud:gcs_file_system",
         "@local_xla//xla/tsl/profiler/backends/cpu:traceme_recorder_impl",
         "@local_xla//xla/tsl/profiler/rpc:profiler_server_impl",
         "@local_xla//xla/tsl/profiler/rpc:profiler_service_impl",
@@ -241,6 +239,7 @@ tsl_pybind_extension(
         "@local_xla//xla/tsl/protobuf:histogram_proto_cc_impl",
         "@local_xla//xla/tsl/protobuf:rpc_options_proto_cc_impl",
         "@local_xla//xla/tsl/protobuf:test_log_proto_cc_impl",
+        "@org_xprof//xprof/pywrap:profiler_plugin_impl",
         "@pybind11",
     ] + if_macos([
         "@local_xla//xla/tsl/lib/histogram",
@@ -253,7 +252,7 @@ tsl_pybind_extension(
         "//tensorflow/core/lib/strings:ordered_code",
         "//tensorflow/core/platform:platform_strings",
         "@local_tsl//tsl/platform:random",
-        "@local_tsl//tsl/platform:resource",
+        "@local_xla//xla/tsl/platform:resource",
         "@local_tsl//tsl/profiler/lib:profiler_factory_impl",
         "@local_tsl//tsl/profiler/lib:profiler_session_impl",
     ]),

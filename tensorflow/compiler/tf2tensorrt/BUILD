@@ -472,7 +472,6 @@ tf_gen_op_wrapper_py(
 
 tf_custom_op_py_strict_library(
     name = "trt_ops_loader",
-    srcs_version = "PY3",
     deps = [
         ":_pywrap_py_utils",
         ":trt_ops",
@@ -780,6 +779,7 @@ tf_cuda_library(
         "//tensorflow/core/grappler/utils:functions",
         "//tensorflow/core/profiler/lib:annotated_traceme",
         "//tensorflow/core/profiler/lib:traceme",
+        "//tensorflow/core/public:release_version",
         "//tensorflow/tools/graph_transforms:transform_utils",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
@@ -1068,7 +1068,6 @@ pybind_extension(
         "@com_google_protobuf//:__subpackages__",
         "@com_googlesource_code_re2//:__subpackages__",
         "@curl//:__subpackages__",
-        "@double_conversion//:__subpackages__",
         "@eigen_archive//:__subpackages__",
         "@farmhash_archive//:__subpackages__",
         "@fft2d//:__subpackages__",
@@ -1086,8 +1085,7 @@ pybind_extension(
         "@local_config_rocm//:__subpackages__",
         "@local_config_tensorrt//:__subpackages__",
         "@local_execution_config_platform//:__subpackages__",
-        "@ml_dtypes//:__subpackages__",
-        "@nsync//:__subpackages__",
+        "@ml_dtypes_py//ml_dtypes:__subpackages__",
         "@platforms//:__subpackages__",
         "@pybind11//:__subpackages__",
         "@snappy//:__subpackages__",

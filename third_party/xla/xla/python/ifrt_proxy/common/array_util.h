@@ -17,6 +17,7 @@
 #ifndef XLA_PYTHON_IFRT_PROXY_COMMON_ARRAY_UTIL_H_
 #define XLA_PYTHON_IFRT_PROXY_COMMON_ARRAY_UTIL_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -68,6 +69,10 @@ class ArrayMemRegion {
   // Returns a pointer to the zeroth-element of the (in-host representation of
   // the) Array.
   void* zeroth_element() const;
+
+  // Returns the number of bytes necessary for the (in-host representation of
+  // the) Array.
+  size_t nbytes() const;
 
  private:
   ArrayMemRegion(void* mem_region_start, size_t nbytes)

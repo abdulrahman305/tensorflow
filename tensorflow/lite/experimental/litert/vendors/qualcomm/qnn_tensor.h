@@ -15,6 +15,8 @@
 #ifndef TENSORFLOW_LITE_EXPERIMENTAL_LITERT_VENDORS_QUALCOMM_QNN_TENSOR_H_
 #define TENSORFLOW_LITE_EXPERIMENTAL_LITERT_VENDORS_QUALCOMM_QNN_TENSOR_H_
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -23,8 +25,7 @@
 #include "third_party/qairt/latest/include/QNN/QnnTypes.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_expected.h"
 
-namespace litert {
-namespace qnn {
+namespace litert::qnn {
 
 class QnnTensor {
  public:
@@ -52,7 +53,6 @@ class QnnTensor {
   std::vector<uint8_t> is_dynamic_dimensions_;
 };
 
-}  // namespace qnn
-}  // namespace litert
+}  // namespace litert::qnn
 
 #endif  // TENSORFLOW_LITE_EXPERIMENTAL_LITERT_VENDORS_QUALCOMM_QNN_TENSOR_H_

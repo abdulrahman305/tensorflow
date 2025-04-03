@@ -16,33 +16,122 @@
 #define TENSORFLOW_LITE_EXPERIMENTAL_LITERT_CORE_UTIL_FLATBUFFER_TOOLS_H_
 
 #include <cstdint>
+#include <initializer_list>
 #include <memory>
+#include <tuple>
+#include <utility>
+#include <vector>
 
+#include "absl/container/inlined_vector.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "tensorflow/compiler/mlir/lite/allocation.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_buffer_ref.h"
+#include "tensorflow/lite/experimental/litert/cc/litert_consts.h"
 #include "tensorflow/lite/experimental/litert/cc/litert_expected.h"
 #include "tensorflow/lite/model_builder.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
 namespace litert::internal {
 
+// Flatbuffer IR
+
 using TflTensor = ::tflite::TensorT;
 using TflOp = ::tflite::OperatorT;
 using TflBuffer = ::tflite::BufferT;
+using TflSubgraph = ::tflite::SubGraphT;
 using TflModel = ::tflite::ModelT;
-using TflOpCode = ::tflite::BuiltinOperator;
+using TflOpCodeEnum = ::tflite::BuiltinOperator;
+using TflOpCode = ::tflite::OperatorCodeT;
 using TflQuantization = ::tflite::QuantizationParametersT;
 using TflElementType = ::tflite::TensorType;
+using TflOptions = ::tflite::BuiltinOptionsUnion;
+using TflOptions2 = ::tflite::BuiltinOptions2Union;
+using TflSignature = ::tflite::SignatureDefT;
+using TflMetadata = ::tflite::MetadataT;
+
+using TflPackedModel = ::tflite::Model;
+using TflPackedSubgraph = ::tflite::SubGraph;
+using TflPackedOp = ::tflite::Operator;
+using TflPackedTensor = ::tflite::Tensor;
+using TflPackedBuffer = ::tflite::Buffer;
 
 using TflBufferPtr = std::unique_ptr<TflBuffer>;
 using TflModelPtr = std::unique_ptr<TflModel>;
 using TflQuantizationPtr = std::unique_ptr<TflQuantization>;
+using TflOpCodePtr = std::unique_ptr<TflOpCode>;
+using TflSubgraphPtr = std::unique_ptr<TflSubgraph>;
+using TflTensorPtr = std::unique_ptr<TflTensor>;
+using TflOpPtr = std::unique_ptr<TflOp>;
+using TflSignaturePtr = std::unique_ptr<TflSignature>;
+using TflMetadataPtr = std::unique_ptr<TflMetadata>;
 
+// Code and verion.
+using TflOpCodeDetail = std::pair<TflOpCodeEnum, int32_t>;
+
+// Zero-point, scale.
 using TflPerTensorQParams = std::pair<int64_t, float>;
-using TflStaticShapeInfo = absl::Span<const int32_t>;
-using TflStaticTensorTypeInfo = std::pair<TflElementType, TflStaticShapeInfo>;
+
+// Quantized dim, num channels, zero-points, scales.
+using TflPerChannelQParams =
+    std::tuple<int32_t, size_t, std::vector<int64_t>, std::vector<float>>;
+
+// Mirror of all the tensor type related fields in flatbuffer tensor definition.
+struct TflShapeInfo {
+  // Fixed or dynamic rank.
+  bool has_rank;
+
+  // Basic shape, all elements are non-negative (even if this is a dynamic
+  // shape).
+  absl::InlinedVector<int32_t, kExpectedMaxTensorRank> shape;
+
+  // Dynamic dyn info. If this is not empty, then its length is equal to shape.
+  // If i is a dyn dim, then shape[i] == 1 and shape_signature[i] < 0. Otherwise
+  // shape_signature[i] == shape[i].
+  absl::InlinedVector<int32_t, kExpectedMaxTensorRank> shape_signature;
+
+  // Convert from a single dims array. Will detect if array is static/dynamic
+  // and populate fields accordingly.
+  explicit TflShapeInfo(absl::Span<const int32_t> shape_data) : has_rank(true) {
+    bool is_dyn = false;
+    shape.reserve(shape_data.size());
+    shape_signature.reserve(shape_data.size());
+    for (auto d : shape_data) {
+      if (d >= 0) {
+        shape.push_back(d);
+        shape_signature.push_back(d);
+      } else {
+        is_dyn = true;
+        shape.push_back(1);
+        shape_signature.push_back(-1);
+      }
+    }
+    if (!is_dyn) {
+      shape_signature.clear();
+    }
+  }
+
+  // Convert from tensor.
+  explicit TflShapeInfo(const TflTensor& tfl_tensor)
+      : has_rank(tfl_tensor.has_rank),
+        shape(tfl_tensor.shape.begin(), tfl_tensor.shape.end()),
+        shape_signature(tfl_tensor.shape_signature.begin(),
+                        tfl_tensor.shape_signature.end()) {}
+
+  explicit TflShapeInfo(const TflPackedTensor& tfl_tensor)
+      : has_rank(tfl_tensor.has_rank()) {
+    if (tfl_tensor.shape()) {
+      shape.assign(tfl_tensor.shape()->begin(), tfl_tensor.shape()->end());
+    }
+
+    if (tfl_tensor.shape_signature()) {
+      shape_signature.assign(tfl_tensor.shape_signature()->begin(),
+                             tfl_tensor.shape_signature()->end());
+    }
+  }
+};
+
+using TflTensorType = std::pair<TflElementType, TflShapeInfo>;
 
 // Flatbuffer bytes util.
 
@@ -89,6 +178,10 @@ Expected<BufferRef<uint8_t>> GetTflBuffer(const TflModel& tfl_model,
 Expected<MutableBufferRef<uint8_t>> GetMutableTflBuffer(TflModel& tfl_model,
                                                         uint32_t buffer_ind);
 
+// Get a non-owning view of tfl buffer if it exists.
+Expected<const TflBuffer*> GetBuffer(const TflModel& tfl_model,
+                                     uint32_t buffer_ind);
+
 // Move and take ownership of the buffer object at given index if it exists.
 Expected<TflBufferPtr> TakeBuffer(TflModel& tfl_model, uint32_t buffer_ind);
 
@@ -96,19 +189,40 @@ Expected<TflBufferPtr> TakeBuffer(TflModel& tfl_model, uint32_t buffer_ind);
 Expected<uint32_t> PushTflBuffer(TflModel& tfl_model,
                                  BufferRef<uint8_t> buffer);
 
+// Make a tflite buffer from data.
+template <class T>
+TflBufferPtr MakeTflBuffer(std::initializer_list<T> data) {
+  auto res = std::make_unique<TflBuffer>();
+  const auto byte_size = data.size() * sizeof(T);
+  res->data.resize(byte_size);
+  for (auto it = data.begin(); it != data.end(); ++it) {
+    auto* write_to =
+        reinterpret_cast<T*>(res->data.data()) + (it - data.begin());
+    *write_to = *it;
+  }
+  res->size = res->data.size();
+  res->offset = 0;
+  return res;
+}
+
 // Get the op code from the model at the given index if it exists.
-Expected<TflOpCode> GetTflOpCode(const TflModel& tfl_model,
-                                 uint32_t op_code_ind);
+Expected<TflOpCodeEnum> GetTflOpCode(const TflModel& tfl_model,
+                                     uint32_t op_code_ind);
 
-// Is tensor fixed rank.
-bool HasRankedTensorType(const TflTensor& tensor);
+// Is tensor fixed rank, with possible dynamic dims.
+bool IsRankedTensorType(const TflShapeInfo& tfl_shape);
 
-// Is tensor shape and rank fully defined.
-bool HasStaticShape(const TflTensor& tensor);
+// Is ranked tensor type with static shape.
+bool IsStaticTensorType(const TflShapeInfo& tfl_shape);
 
-// Get static shape and element type info if the tensor is of static shape.
-Expected<TflStaticTensorTypeInfo> GetStaticTensorTypeInfo(
-    const TflTensor& tensor);
+// Get static shape info if given is indeed a static shape.
+Expected<absl::Span<const int32_t>> AsStaticShape(
+    const TflShapeInfo& tfl_shape);
+
+// Get ranked dynamic shape info if given is indeed a ranked. Still works with
+// static shapes.
+Expected<absl::Span<const int32_t>> AsDynamicShape(
+    const TflShapeInfo& tfl_shape);
 
 // Is the tensor quantized.
 bool IsQuantized(const TflQuantization* tfl_quantization);
@@ -125,8 +239,12 @@ bool IsBlockWiseQuantized(const TflQuantization* tfl_quantization);
 // Does tensor have custom quantization.
 bool IsCustomQuantized(const TflQuantization* tfl_quantization);
 
-// Get the per-tensor q-params if given tensor has them.
-Expected<TflPerTensorQParams> GetPerTensorQparams(
+// Get the per-tensor tensor q-params if given tensor has them.
+Expected<TflPerTensorQParams> AsPerTensorQparams(
+    const TflQuantization* tfl_quantization);
+
+// Get the per-channel tensor q-params if given tensor has them.
+Expected<TflPerChannelQParams> AsPerChannelQparams(
     const TflQuantization* tfl_quantization);
 
 // Flatbuffer management helpers.
@@ -139,7 +257,8 @@ class FlatbufferWrapper {
  public:
   using Ptr = std::unique_ptr<FlatbufferWrapper>;
 
-  // Load flatbuffer from file.
+  // TODO Don't return a unique_ptr, this can just be a move only type, all the
+  // fields are unique_ptrs. Load flatbuffer from file.
   static Expected<Ptr> CreateFromTflFile(absl::string_view path);
 
   // Load flatbuffer from allocated buffer that will be copied.
@@ -158,9 +277,19 @@ class FlatbufferWrapper {
     return *fb_model_;
   }
 
-  // Unpacked version of underlying model object.
-  const TflModel& UnpackedModel() const { return *unpacked_; }
-  TflModel& UnpackedModel() { return *unpacked_; }
+  // Packed schema object.
+  const TflPackedModel* PackedModel() const { return fb_model_->GetModel(); }
+
+  // Unpack the contained flatbuffer.
+  TflModelPtr Unpack() const {
+    return TflModelPtr(fb_model_->GetModel()->UnPack());
+  }
+
+  // Address of first byte of the raw model buffer.
+  const uint8_t* AllocBase() const { return Buf().Data(); }
+
+  // Default construct for compatibility.
+  FlatbufferWrapper() = default;
 
  private:
   FlatbufferWrapper(::tflite::FlatBufferModel::Ptr fb_model,
@@ -168,14 +297,17 @@ class FlatbufferWrapper {
                     OwningBufferRef<uint8_t>&& model_buf)
       : fb_model_(std::move(fb_model)),
         alloc_(std::move(alloc)),
-        model_buf_(std::forward<OwningBufferRef<uint8_t>>(model_buf)),
-        unpacked_(TflModelPtr(fb_model_->GetModel()->UnPack())) {}
+        model_buf_(std::forward<OwningBufferRef<uint8_t>>(model_buf)) {}
 
   ::tflite::FlatBufferModel::Ptr fb_model_;
   ::tflite::Allocation::Ptr alloc_;
   OwningBufferRef<uint8_t> model_buf_;
-  TflModelPtr unpacked_;
 };
+
+// Re-serialize the unpacked model from flatbuffer wrapper.
+OwningBufferRef<uint8_t> SerializeFlatbuffer(
+    const FlatbufferWrapper& flatbuffer);
+OwningBufferRef<uint8_t> SerializeFlatbuffer(const TflModel& tfl_model);
 
 }  // namespace litert::internal
 

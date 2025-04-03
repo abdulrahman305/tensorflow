@@ -17,11 +17,13 @@ limitations under the License.
 #define XLA_SERVICE_MEMORY_SPACE_ASSIGNMENT_ALGORITHM_H_
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <list>
 #include <map>
 #include <memory>
 #include <optional>
+#include <ostream>
 #include <set>
 #include <string>
 #include <tuple>
@@ -35,6 +37,8 @@ limitations under the License.
 #endif
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/container/inlined_vector.h"
+#include "absl/memory/memory.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
@@ -54,6 +58,7 @@ limitations under the License.
 #include "xla/service/memory_space_assignment/options.h"
 #include "xla/service/memory_space_assignment/slice.h"
 #include "xla/shape.h"
+#include "xla/shape_tree.h"
 #include "xla/shape_util.h"
 #include "xla/util.h"
 
@@ -217,12 +222,13 @@ class AsynchronousCopyResource {
 
  private:
   // Internal helper method to implement adding/removing/checking resources.
-  // ConsumeResource() may modify delay_. If delay_change_map is not null,
+  // ConsumeResource() may modify delay_. If delay_changes is not null,
   // for any change to delay_[i], {i, delay_[i]} will be added to
-  // delay_change_map, allowing callers to undo any modifications.
+  // delay_changes, allowing callers to undo any modifications by iterating over
+  // the vector in reverse order.
   bool ConsumeResource(
       int64_t exclusive_start_time, int64_t end_time, float resource,
-      absl::flat_hash_map<int64_t, float>* delay_change_map = nullptr,
+      std::vector<std::pair<int64_t, float>>* delay_changes = nullptr,
       float resource_to_free = 0.0);
 
   // Same as the public RemoveCopy except it works on the async_copies_
@@ -335,7 +341,7 @@ class MsaAlgorithm : public GlobalDecreasingSizeBestFitHeap<HloValue> {
   struct RequiredMemoryAssignment {
     MemorySpace memory_space;
     int64_t time;
-    AliasedOffset* offset;
+    AliasedOffset* offset = nullptr;
 
     bool equals_ignoring_time(const RequiredMemoryAssignment& other) const {
       return memory_space == other.memory_space && offset == other.offset;
@@ -349,6 +355,8 @@ class MsaAlgorithm : public GlobalDecreasingSizeBestFitHeap<HloValue> {
     bool operator!=(const RequiredMemoryAssignment& other) const {
       return !(*this == other);
     }
+
+    std::string ToString() const;
   };
 
   // A struct that contains a pointer to loop-optimized allocation along with
@@ -523,6 +531,11 @@ class MsaAlgorithm : public GlobalDecreasingSizeBestFitHeap<HloValue> {
            result_is(result, AllocationResult::kFailViolatesAsyncCopyResource);
   }
 
+  // Converts an std::optional<RequiredMemoryAssignment> to a string for
+  // logging.
+  static std::string OptionalRequiredMemoryAssignmentToString(
+      const std::optional<RequiredMemoryAssignment>& assignment);
+
   // For the given loop with the start and end index and loop size, run the
   // MemoryBoundLoopOptimizer and record its outputs into
   // optimized_allocations_map_.
@@ -617,6 +630,9 @@ class MsaAlgorithm : public GlobalDecreasingSizeBestFitHeap<HloValue> {
   // only_extend_existing_allocation is true, no new Allocations will be created
   // while processing the resulting AllocationRequest, and we only need to
   // extend an existing Allocation's end_time.
+  //
+  // * processed_allocation_values: The AllocationValues that have already been
+  //   processed for the same parent HloValue as is used in the request.
   AllocationRequest CreateAllocationRequest(
       AllocationValue& allocation_value,
       AllocationValue& allocation_value_to_update,
@@ -624,7 +640,8 @@ class MsaAlgorithm : public GlobalDecreasingSizeBestFitHeap<HloValue> {
       AliasedOffset* preferred_offset, int64_t definition_time,
       bool require_no_copy_alternate_mem_allocation,
       const std::vector<int64_t>& all_use_times,
-      bool only_extend_existing_allocation);
+      bool only_extend_existing_allocation,
+      absl::Span<AllocationValue> processed_allocation_values);
 
   // Returns true, if the allocation value requires a pinned allocation in the
   // alternate memory space.
@@ -652,6 +669,18 @@ class MsaAlgorithm : public GlobalDecreasingSizeBestFitHeap<HloValue> {
   // alternate memory or a bitwise OR of failure reasons why they couldn't
   absl::StatusOr<AllocationResult> AllocateAllocationValues(
       absl::Span<AllocationValue> allocation_values);
+
+  // Checks for a situation in which an HloValue has more than one live
+  // AllocationValue at the same time, and the already processed AllocationValue
+  // has been given alternate memory at the start of the second AllocationValue.
+  // If such a case is detected, we set
+  // request.no_copy_chunk_inclusive_start_time with the time where the first
+  // AllocationValue left off. AllocateInAlternateMemoryNoCopy() takes advantage
+  // of that information.
+  void CheckAndUpdateForDualLiveAllocationValues(
+      const std::optional<RequiredMemoryAssignment>&
+          required_memory_assignment_at_start,
+      AllocationRequest& request);
 
   // Finds an allocation for an allocation request for a segment (see the
   // documentation for AllocationRequest above how a segment is defined).
@@ -999,6 +1028,11 @@ class MsaAlgorithm : public GlobalDecreasingSizeBestFitHeap<HloValue> {
                               ShapeIndex producer_shape_index,
                               absl::string_view consumer_name) const;
 
+  // Takes a group of allocation values and splits them if they can be split on
+  // the same dimension.
+  void MaybeSplitAllocationValues(
+      absl::Span<AllocationValue> allocation_values);
+
   AllocationSequence* allocations_;
   const Options& options_;
   const HloAliasAnalysis& alias_analysis_;
@@ -1079,6 +1113,9 @@ class MsaAlgorithm : public GlobalDecreasingSizeBestFitHeap<HloValue> {
       failed_async_conversions_;
   absl::flat_hash_set<const HloInstruction*> successful_async_conversion_set_;
   std::vector<const HloInstruction*> not_finalized_async_conversions_;
+  // Maps from an HloValue to the dimension it is split on.
+  absl::flat_hash_map<const HloInstruction*, ShapeTree<int64_t>>
+      instruction_to_split_dims_;
   // Debug strings.
   std::string buffer_info_str_;
   std::string allocation_info_str_;

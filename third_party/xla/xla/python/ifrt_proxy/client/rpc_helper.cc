@@ -19,7 +19,6 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <string>
 #include <utility>
 #include <vector>
 
@@ -40,9 +39,9 @@
 #include "xla/python/ifrt_proxy/common/prof_util.h"
 #include "xla/python/ifrt_proxy/common/test_utils.h"
 #include "xla/python/ifrt_proxy/common/types.h"
-#include "tsl/platform/env.h"
-#include "tsl/platform/status_to_from_proto.h"
-#include "tsl/platform/threadpool.h"
+#include "xla/tsl/platform/env.h"
+#include "xla/tsl/platform/status_to_from_proto.h"
+#include "xla/tsl/platform/threadpool.h"
 #include "tsl/profiler/lib/traceme.h"
 
 namespace xla {
@@ -177,6 +176,7 @@ class RpcHelper::Batcher {
     if (reqs.delete_req != nullptr) {
       XFlowHelper x_flow_helper("batch_delete");
       auto traceme = x_flow_helper.Span<XFlowHelper::kSend>();
+      VLOG(3) << "Sending req: " << reqs.delete_req->ShortDebugString();
       session_->Enqueue(std::move(reqs.delete_req))
           .OnReady(
               absl::bind_front(HandleBatchResponse, session_, x_flow_helper));
@@ -184,6 +184,7 @@ class RpcHelper::Batcher {
     if (reqs.destruct_req != nullptr) {
       XFlowHelper x_flow_helper("batch_destruct");
       auto traceme = x_flow_helper.Span<XFlowHelper::kSend>();
+      VLOG(3) << "Sending req: " << reqs.destruct_req->ShortDebugString();
       session_->Enqueue(std::move(reqs.destruct_req))
           .OnReady(
               absl::bind_front(HandleBatchResponse, session_, x_flow_helper));
@@ -201,11 +202,13 @@ class RpcHelper::Batcher {
       LOG(WARNING) << "Batched response from ifrt proxy server: " << r.status();
       return;
     }
+    VLOG(3) << "Got response: " << r.value()->ShortDebugString();
     if (r.value()->has_delete_array_response()) {
       auto traceme = x_flow_helper.Span<XFlowHelper::kRecvSend>();
       auto ifrt_req = std::make_unique<IfrtRequest>();
       ifrt_req->mutable_check_future_request()->set_future_handle(
           r.value()->delete_array_response().deletion_future_handle());
+      VLOG(3) << "Sending req: " << ifrt_req->ShortDebugString();
       session->Enqueue(std::move(ifrt_req))
           .OnReady(
               absl::bind_front(HandleBatchResponse, session, x_flow_helper));
@@ -248,6 +251,7 @@ Future<std::shared_ptr<Resp>> DoRpc(RpcHelper::Batcher* batcher,
   auto on_ready = [promise, has_resp, get_resp, profiling_name, x_flow_helper](
                       absl::StatusOr<std::shared_ptr<IfrtResponse>> r) mutable {
     if (!r.ok()) {
+      VLOG(3) << profiling_name << " response: " << r.status();
       LOG_EVERY_N_SEC(ERROR, 10)
           << "Connection to IFRT proxy server was terminated: " << r.status();
       promise.Set(absl::UnavailableError(
@@ -255,7 +259,7 @@ Future<std::shared_ptr<Resp>> DoRpc(RpcHelper::Batcher* batcher,
                        r.status().ToString())));
       return;
     }
-
+    VLOG(3) << "Got response: " << r.value()->ShortDebugString();
     auto result = [&](std::shared_ptr<IfrtResponse> r)
         -> absl::StatusOr<std::shared_ptr<Resp>> {
       auto traceme = x_flow_helper.Span<XFlowHelper::kRecv>();
@@ -298,6 +302,7 @@ Future<std::shared_ptr<Resp>> DoRpc(RpcHelper::Batcher* batcher,
     }
     promise.Set(std::move(result));
   };
+  VLOG(3) << ifrt_req->ShortDebugString();
   batcher->Immediate(std::move(ifrt_req)).OnReady(on_ready);
 
   return Future<std::shared_ptr<Resp>>(promise);
@@ -317,6 +322,8 @@ RPC(GetDefaultDeviceAssignment, get_default_device_assignment);
 RPC(CheckFuture, check_future);
 RPC(CheckValueReady, check_value_ready);
 RPC(MakeArrayFromHostBuffer, make_array_from_host_buffer);
+RPC(MakeArraysFromHostBufferShards, make_arrays_from_host_buffer_shards);
+RPC(MakeErrorArrays, make_error_arrays);
 RPC(AssembleArrayFromSingleDeviceArrays,
     assemble_array_from_single_device_arrays);
 RPC(RemapArrays, remap_arrays);
@@ -325,7 +332,6 @@ RPC(CopyToHostBuffer, copy_to_host_buffer);
 RPC(IsArrayDeleted, is_array_deleted);
 RPC(DestructArray, destruct_array)
 RPC(CopyArrays, copy_arrays);
-RPC(Reshard, reshard);
 RPC(FullyReplicatedShard, fully_replicated_shard);
 RPC(DeleteArray, delete_array);
 RPC(Compile, compile);

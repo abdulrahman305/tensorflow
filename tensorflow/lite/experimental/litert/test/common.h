@@ -25,40 +25,37 @@
 #include "tensorflow/lite/experimental/litert/core/util/flatbuffer_tools.h"
 #include "tensorflow/lite/interpreter.h"
 
-#define _LITERT_ASSERT_RESULT_OK_ASSIGN(decl, expr, result) \
-  auto result = (expr);                                     \
-  ASSERT_TRUE(result.HasValue());                           \
-  decl = result.Value();
+namespace litert::testing {
 
-#define LITERT_ASSERT_RESULT_OK_ASSIGN(decl, expr) \
-  _LITERT_ASSERT_RESULT_OK_ASSIGN(decl, expr,      \
-                                  _CONCAT_NAME(_result, __COUNTER__))
+// A x-platform compatible replacement for testing::UniqueTestDirectory.
+class UniqueTestDirectory {
+ public:
+  static Expected<UniqueTestDirectory> Create();
+  ~UniqueTestDirectory();
 
-#define _LITERT_ASSERT_RESULT_OK_MOVE(decl, expr, result) \
-  auto result = (expr);                                   \
-  ASSERT_TRUE(result.HasValue());                         \
-  decl = std::move(result.Value());
+  UniqueTestDirectory(const UniqueTestDirectory&) = delete;
+  UniqueTestDirectory(UniqueTestDirectory&&) = default;
+  UniqueTestDirectory& operator=(const UniqueTestDirectory&) = delete;
+  UniqueTestDirectory& operator=(UniqueTestDirectory&&) = default;
 
-#define LITERT_ASSERT_RESULT_OK_MOVE(decl, expr) \
-  _LITERT_ASSERT_RESULT_OK_MOVE(decl, expr, _CONCAT_NAME(_result, __COUNTER__))
+  absl::string_view Str() const { return tmpdir_; }
 
-#define LITERT_ASSERT_STATUS_HAS_CODE(expr, code) \
-  {                                               \
-    LiteRtStatus status = (expr);                 \
-    ASSERT_EQ(status, code);                      \
-  }
+ private:
+  explicit UniqueTestDirectory(std::string&& tmpdir)
+      : tmpdir_(std::move(tmpdir)) {}
+  std::string tmpdir_;
+};
 
-#define LITERT_ASSERT_STATUS_OK(expr) \
-  LITERT_ASSERT_STATUS_HAS_CODE(expr, kLiteRtStatusOk);
-
-namespace litert {
-namespace testing {
-
+// Gets the path to the given filename in the testdata directory.
 std::string GetTestFilePath(absl::string_view filename);
 
-Model LoadTestFileModel(absl::string_view filename);
+// Gets a path to the given filename in the tflite directory.
+std::string GetTfliteFilePath(absl::string_view filename);
 
-bool ValidateTopology(const std::vector<Op>& ops);
+// Gets a full path given a path relative to the litert directory.
+std::string GetLiteRtPath(absl::string_view rel_path);
+
+Model LoadTestFileModel(absl::string_view filename);
 
 class TflRuntime {
  public:
@@ -106,7 +103,6 @@ inline Expected<TflRuntime::Ptr> MakeRuntimeFromTestFileWithNpuModel(
   return TflRuntime::CreateFromFlatBuffer(std::move(*flatbuffer));
 }
 
-}  // namespace testing
-}  // namespace litert
+}  // namespace litert::testing
 
 #endif  // TENSORFLOW_LITE_EXPERIMENTAL_LITERT_TEST_COMMON_H_

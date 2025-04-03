@@ -15,7 +15,8 @@ limitations under the License.
 
 #include "xla/tsl/profiler/convert/xla_op_utils.h"
 
-#include "tsl/platform/test.h"
+#include <gtest/gtest.h>
+#include "xla/tsl/platform/test.h"
 
 namespace tsl {
 namespace profiler {
@@ -50,6 +51,27 @@ TEST(XlaOpUtilsTest, IsRematerialization) {
                                   "test_function_name/reshape/dot_general"));
   EXPECT_FALSE(IsRematerialization("%convolution.5",
                                    "test_function_name/reshape/dot_general"));
+}
+
+TEST(XlaOpUtilsTest, IsHostOrSparseCoreV0Infeed) {
+  EXPECT_TRUE(IsHostOrSparseCoreV0Infeed(kHloInfeed));
+  EXPECT_TRUE(IsHostOrSparseCoreV0Infeed(kHloSparseCoreV0Infeed));
+  EXPECT_FALSE(IsHostOrSparseCoreV0Infeed(kHloSparseCoreV0InfeedWait));
+  EXPECT_FALSE(IsHostOrSparseCoreV0Infeed(kHloSparseCoreV0InfeedTransform));
+}
+
+TEST(XlaOpUtilsTest, TfOpFullname) {
+  EXPECT_EQ("", TfOpFullname("", ""));
+  EXPECT_EQ("XLA_Args:XLA_Args", TfOpFullname("", "XLA_Args"));
+  EXPECT_EQ("XLA_Retvals:op_type", TfOpFullname("op_type", "XLA_Retvals"));
+  EXPECT_EQ("op_name:op_type", TfOpFullname("op_type", "op_name"));
+}
+
+TEST(XlaOpUtilsTest, IsXlaArgsOrRetvals) {
+  EXPECT_TRUE(IsXlaArgsOrRetvals("XLA_Args"));
+  EXPECT_TRUE(IsXlaArgsOrRetvals("XLA_Retvals"));
+  EXPECT_FALSE(IsXlaArgsOrRetvals("op_type"));
+  EXPECT_FALSE(IsXlaArgsOrRetvals("op_name"));
 }
 
 }  // namespace

@@ -1,995 +1,577 @@
-diff --ruN a/stablehlo/stablehlo/tests/transforms/stablehlo_refine_shapes.mlir b/stablehlo/stablehlo/tests/transforms/stablehlo_refine_shapes.mlir
---- stablehlo/stablehlo/tests/transforms/stablehlo_refine_shapes.mlir
-+++ stablehlo/stablehlo/tests/transforms/stablehlo_refine_shapes.mlir
-@@ -3,14 +3,14 @@
- func.func @error_illformed(%arg0: tensor<3xf32>, %arg1: tensor<4xf32>) -> tensor<?xf32> {
-   %0 = stablehlo.abs %arg0 : (tensor<3xf32>) -> tensor<?xf32>
-   %1 = stablehlo.abs %arg1 : (tensor<4xf32>) -> tensor<?xf32>
--  // expected-error@+1{{requires the same shape for all operands and results}}
-+  // expected-error@+1{{'stablehlo.add' op requires the same shape for all operands and results}}
-   %2 = stablehlo.add %0, %1 : (tensor<?xf32>, tensor<?xf32>) -> tensor<?xf32>
-   func.return %2 : tensor<?xf32>
- }
- 
- // -----
- 
--// expected-error@+1{{must have exactly one block}}
-+// expected-error@+1{{'func.func' op must have exactly one block}}
- func.func @error_too_many_blocks(%arg0: tensor<f32>) -> tensor<f32> {
-   cf.br ^bb1(%arg0 : tensor<f32>)
- ^bb1(%arg1 : tensor<f32>):
-@@ -49,6 +49,7 @@
- 
- // -----
- 
-+// CHECK-LABEL: func @error_unsupported_operation
- func.func @error_unsupported_operation(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>) -> index {
-   // CHECK: stablehlo.add{{.*}} -> tensor<?xf32>
-   %0 = stablehlo.add %arg0, %arg1 : (tensor<4xf32>, tensor<4xf32>) -> tensor<?xf32>
-@@ -596,10 +597,288 @@
- // -----
- 
- // CHECK-LABEL: func @refine_bitcast_convert_same_bitwidth
--func.func @refine_bitcast_convert_same_bitwidth(%arg0 : tensor<4xf32>) -> tensor<?xi32> {
--  // CHECK: stablehlo.bitcast_convert{{.*}} -> tensor<4xi32>
--  %0 = stablehlo.bitcast_convert %arg0 : (tensor<4xf32>) -> tensor<?xi32>
--  func.return %0 : tensor<?xi32>
-+func.func @refine_bitcast_convert_same_bitwidth() -> tensor<?x?x0xf32> {
-+  %0 = stablehlo.constant dense<[3, 5, 0]> : tensor<3xi32>
-+  %21 = stablehlo.dynamic_iota %0, dim = 0 : (tensor<3xi32>) -> tensor<?x?x0xui32>
-+  // CHECK: stablehlo.bitcast_convert{{.*}} -> tensor<3x5x0xf32>
-+  %48 = stablehlo.bitcast_convert %21 : (tensor<?x?x0xui32>) -> tensor<?x?x0xf32>
-+  return %48 : tensor<?x?x0xf32>
-+}
-+
-+// -----
-+
-+// CHECK-LABEL: module @refine_call
-+module @refine_call {
-+  func.func @main(%arg1: tensor<4xf32>) -> tensor<?xf32> {
-+    %0 = stablehlo.bitcast_convert %arg1 : (tensor<4xf32>) -> tensor<?xf32>
-+    %1 = stablehlo.constant dense<4> : tensor<i32>
-+    // CHECK: refine_call_callee{{.*}}-> tensor<4xf32>
-+    %2 = call @refine_call_callee(%1, %0) : (tensor<i32>, tensor<?xf32>) -> tensor<?xf32>
-+    return %2 : tensor<?xf32>
-+  }
-+  // CHECK: refine_call_callee(%arg0: tensor<4xf32>) -> tensor<4xf32>
-+  func.func @refine_call_callee(%arg0: tensor<i32>, %arg1: tensor<?xf32>) -> tensor<?xf32> {
-+    // CHECK: stablehlo.constant dense<4>
-+    %0 = stablehlo.reshape %arg0 : (tensor<i32>) -> tensor<1xi32>
-+    %1 = stablehlo.dynamic_iota %0, dim = 0 : (tensor<1xi32>) -> tensor<?xf32>
-+    return %1 : tensor<?xf32>
-+  }
-+}
-+
-+// -----
-+
-+// CHECK-LABEL: module @refine_call_dimension_arguments
-+module @refine_call_dimension_arguments {
-+  func.func public @main(%arg0: tensor<i32>) -> tensor<i32> {
-+    // CHECK: [[RESULT:%.*]] = call @callee
-+    // CHECK: return [[RESULT]]
-+    %0 = stablehlo.constant dense<3> : tensor<i32>
-+    %1 = call @callee(%0, %0, %arg0) : (tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<i32>
-+    return %1 : tensor<i32>
-+  }
-+  // %arg0 and %arg1 are dimension arguments
-+  // CHECK: @callee([[ARG0:%.*]]: tensor<i32>) -> tensor<i32>
-+  func.func private @callee(%arg0: tensor<i32>, %arg1: tensor<i32>, %arg2: tensor<i32>) -> tensor<i32> {
-+    // CHECK: [[RESULT0:%.*]] = stablehlo.constant dense<6>
-+    // CHECK: [[RESULT1:%.*]] = stablehlo.add [[RESULT0]], [[ARG0]]
-+    // CHECK: return [[RESULT1]]
-+    %0 = stablehlo.add %arg0, %arg1: tensor<i32>
-+    %1 = stablehlo.add %0, %arg2: tensor<i32>
-+    return %1 : tensor<i32>
-+  }
-+}
-+
-+// -----
-+
-+// CHECK-LABEL: module @refine_call_prefix_token_and_dimension_arguments
-+module @refine_call_prefix_token_and_dimension_arguments {
-+  func.func public @main(%arg0: tensor<i32>) -> tensor<i32> {
-+    // CHECK: [[RESULT:%.*]] = call @callee
-+    // CHECK: return [[RESULT]]
-+    %0 = stablehlo.constant dense<3> : tensor<i32>
-+    %token = stablehlo.create_token : !stablehlo.token
-+    %1 = call @callee(%token, %0, %0, %arg0) : (!stablehlo.token, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<i32>
-+    return %1 : tensor<i32>
-+  }
-+  // %arg0 and %arg1 are dimension arguments
-+  // CHECK: @callee([[ARG_TOKEN:%.*]]: !stablehlo.token, [[ARG0:%.*]]: tensor<i32>
-+  func.func private @callee(%arg_token: !stablehlo.token, %arg0: tensor<i32>, %arg1: tensor<i32>, %arg2: tensor<i32>) -> tensor<i32> {
-+    // CHECK: [[RESULT0:%.*]] = stablehlo.constant dense<6>
-+    // CHECK: [[RESULT1:%.*]] = stablehlo.add [[RESULT0]], [[ARG0]]
-+    // CHECK: return [[RESULT1]]
-+    %0 = stablehlo.add %arg0, %arg1: tensor<i32>
-+    %1 = stablehlo.add %0, %arg2: tensor<i32>
-+    return %1 : tensor<i32>
-+  }
-+}
-+
-+// -----
-+
-+// CHECK-LABEL: module @refine_call_dimension_arguments_followed_by_token
-+module @refine_call_dimension_arguments_followed_by_token {
-+  func.func public @main(%arg0: tensor<i32>) -> tensor<i32> {
-+    // CHECK: [[RESULT:%.*]] = call @callee
-+    // CHECK: return [[RESULT]]
-+    %0 = stablehlo.constant dense<3> : tensor<i32>
-+    %token = stablehlo.create_token : !stablehlo.token
-+    %1 = call @callee(%0, %0, %token, %arg0) : (tensor<i32>, tensor<i32>, !stablehlo.token, tensor<i32>) -> tensor<i32>
-+    return %1 : tensor<i32>
-+  }
-+  // %arg0 and %arg1 are dimension arguments
-+  // CHECK: @callee([[ARG_TOKEN:%.*]]: !stablehlo.token, [[ARG0:%.*]]: tensor<i32>
-+  func.func private @callee(%arg0: tensor<i32>, %arg1: tensor<i32>, %arg_token: !stablehlo.token, %arg2: tensor<i32>) -> tensor<i32> {
-+    // CHECK: [[RESULT0:%.*]] = stablehlo.constant dense<6>
-+    // CHECK: [[RESULT1:%.*]] = stablehlo.add [[RESULT0]], [[ARG0]]
-+    // CHECK: return [[RESULT1]]
-+    %0 = stablehlo.add %arg0, %arg1: tensor<i32>
-+    %1 = stablehlo.add %0, %arg2: tensor<i32>
-+    return %1 : tensor<i32>
-+  }
-+}
-+
-+// -----
-+
-+// CHECK-LABEL: module @refine_multiple_call_with_same_context
-+module @refine_multiple_call_with_same_context {
-+  func.func @main(%arg1: tensor<4xf32>) -> tensor<?xf32> {
-+    %0 = stablehlo.bitcast_convert %arg1 : (tensor<4xf32>) -> tensor<?xf32>
-+    %arg0_new = "stablehlo.get_dimension_size"(%0) {dimension = 0 : i64} : (tensor<?xf32>) -> tensor<i32>
-+    // CHECK: refine_call_callee{{.*}}-> tensor<4xf32>
-+    %1 = call @refine_call_callee(%arg0_new, %0) : (tensor<i32>, tensor<?xf32>) -> tensor<?xf32>
-+    // CHECK: refine_call_callee{{.*}}-> tensor<4xf32>
-+    %2 = call @refine_call_callee(%arg0_new, %1) : (tensor<i32>, tensor<?xf32>) -> tensor<?xf32>
-+    return %2 : tensor<?xf32>
-+  }
-+  // CHECK: refine_call_callee{{.*}}-> tensor<4xf32>
-+  func.func @refine_call_callee(%arg0: tensor<i32>, %arg1: tensor<?xf32>) -> tensor<?xf32> {
-+    return %arg1 : tensor<?xf32>
-+  }
-+}
-+
-+// -----
-+
-+// CHECK-LABEL: module @refine_multiple_call_constant_function
-+module @refine_multiple_call_constant_function {
-+  func.func @main(%arg0: tensor<5xf32>) -> tensor<i32> {
-+    // CHECK: [[RESULT0:%.*]] = stablehlo.constant dense<16>
-+    // CHECK: return [[RESULT0]]
-+    %0 = stablehlo.constant dense<4> : tensor<i32>
-+    %1 = call @refine_call_callee(%0, %arg0) : (tensor<i32>, tensor<5xf32>) -> tensor<i32>
-+    %2 = call @refine_call_callee(%0, %arg0) : (tensor<i32>, tensor<5xf32>) -> tensor<i32>
-+    %3 = stablehlo.add %1, %2: tensor<i32>
-+    return %3 : tensor<i32>
-+  }
-+  func.func @refine_call_callee(%arg0: tensor<i32>, %arg1: tensor<5xf32>) -> tensor<i32> {
-+    // CHECK: [[RESULT1:%.*]] = stablehlo.constant dense<8>
-+    // CHECK: return [[RESULT1]]
-+    %0 = stablehlo.add %arg0, %arg0: tensor<i32>
-+    return %0 : tensor<i32>
-+  }
-+}
-+
-+// -----
-+
-+module @refine_call_multiple_with_different_number_dimension_arguments {
-+  func.func @main(%arg1: tensor<4xf32>) -> tensor<?xf32> {
-+    %0 = stablehlo.bitcast_convert %arg1 : (tensor<4xf32>) -> tensor<?xf32>
-+    %arg0_new = "stablehlo.get_dimension_size"(%0) {dimension = 0 : i64} : (tensor<?xf32>) -> tensor<i32>
-+    %1 = call @refine_call_callee(%arg0_new, %0) : (tensor<i32>, tensor<?xf32>) -> tensor<?xf32>
-+    // Ensure that the first argument is not a constant at the second call site
-+    %arg0_different_f32 = stablehlo.bitcast_convert %arg0_new : (tensor<i32>) -> tensor<f32>
-+    %arg0_different_i32 = stablehlo.bitcast_convert %arg0_different_f32 : (tensor<f32>) -> tensor<i32>
-+    // expected-error@+1{{incorrect number of operands for callee}}
-+    %2 = call @refine_call_callee(%arg0_different_i32, %1) : (tensor<i32>, tensor<?xf32>) -> tensor<?xf32>
-+    return %2 : tensor<?xf32>
-+  }
-+  // expected-error@+1{{'func.func' op refined with invompatible refinement keys}}
-+  func.func @refine_call_callee(%arg0: tensor<i32>, %arg1: tensor<?xf32>) -> tensor<?xf32> {
-+    return %arg1 : tensor<?xf32>
-+  }
-+}
-+
-+// -----
-+
-+module @refine_call_multiple_different_dimension_arguments {
-+  func.func @main(%arg1: tensor<4xf32>) -> tensor<?xf32> {
-+    %0 = stablehlo.bitcast_convert %arg1 : (tensor<4xf32>) -> tensor<?xf32>
-+    %arg0_new = "stablehlo.get_dimension_size"(%0) {dimension = 0 : i64} : (tensor<?xf32>) -> tensor<i32>
-+    %1 = call @refine_call_callee(%arg0_new, %0) : (tensor<i32>, tensor<?xf32>) -> tensor<?xf32>
-+    %arg0_different = stablehlo.add %arg0_new, %arg0_new : tensor<i32>
-+    // expected-error@+1{{incorrect number of operands for callee}}
-+    %2 = call @refine_call_callee(%arg0_different, %1) : (tensor<i32>, tensor<?xf32>) -> tensor<?xf32>
-+    return %2 : tensor<?xf32>
-+  }
-+  // expected-error@+1{{'func.func' op refined with invompatible refinement keys}}
-+  func.func @refine_call_callee(%arg0: tensor<i32>, %arg1: tensor<?xf32>) -> tensor<?xf32> {
-+    return %arg1 : tensor<?xf32>
-+  }
-+}
-+
-+// -----
-+
-+module @refine_call_multiple_different_non_dimension_arguments {
-+  func.func @main(%arg1: tensor<4xf32>) -> tensor<?xf32> {
-+    %0 = stablehlo.bitcast_convert %arg1 : (tensor<4xf32>) -> tensor<?xf32>
-+    %arg0_new = "stablehlo.get_dimension_size"(%0) {dimension = 0 : i64} : (tensor<?xf32>) -> tensor<i32>
-+    %1 = call @refine_call_callee(%arg0_new, %0) : (tensor<i32>, tensor<?xf32>) -> tensor<?xf32>
-+    %2 = stablehlo.constant dense<[1., 2.]> : tensor<2xf32>
-+    %3 = stablehlo.concatenate %1, %2, dim = 0 : (tensor<?xf32>, tensor<2xf32>) -> tensor<?xf32>
-+    // expected-error@+1{{incorrect number of operands for callee}}
-+    %4 = call @refine_call_callee(%arg0_new, %3) : (tensor<i32>, tensor<?xf32>) -> tensor<?xf32>
-+    return %4 : tensor<?xf32>
-+  }
-+  // expected-error@+1{{'func.func' op refined with invompatible refinement keys}}
-+  func.func @refine_call_callee(%arg0: tensor<i32>, %arg1: tensor<?xf32>) -> tensor<?xf32> {
-+    return %arg1 : tensor<?xf32>
-+  }
-+}
-+
-+// -----
-+
-+module @refine_call_recursive {
-+  func.func @main() -> tensor<i32> {
-+    %0 = stablehlo.constant dense<3> : tensor<i32>
-+    %1 = call @refine_call_callee(%0) : (tensor<i32>) -> tensor<i32>
-+    return %1 : tensor<i32>
-+  }
-+  // expected-error@+1{{Function refine_call_callee is being refined recursively}}
-+  func.func @refine_call_callee(%arg0: tensor<i32>) -> tensor<i32> {
-+    // expected-error@+1{{incorrect number of operands}}
-+    %0 = call @refine_call_callee(%arg0) : (tensor<i32>) -> tensor<i32>
-+    return %0 : tensor<i32>
-+  }
-+}
-+
-+// -----
-+
-+module @refine_call_main_argument_unranked {
-+  // CHECK-LABEL: func.func public @main(%arg0: tensor<*xi32>) -> tensor<*xi32>
-+  func.func public @main(%arg0: tensor<*xi32>) -> tensor<*xi32> {
-+    %2 = call @callee(%arg0) : (tensor<*xi32>) -> tensor<*xi32>
-+    return %2 : tensor<*xi32>
-+  }
-+  func.func private @callee(%arg0: tensor<*xi32>) -> tensor<*xi32> {
-+    return %arg0 : tensor<*xi32>
-+  }
-+}
-+
-+// -----
-+
-+module @refine_call_main_argument_dynamic_shape {
-+  // CHECK: func.func public @main(%arg0: tensor<?xi32>) -> tensor<?xi32>
-+  func.func public @main(%arg0: tensor<?xi32>) -> tensor<?xi32> {
-+    %2 = call @callee(%arg0) : (tensor<?xi32>) -> tensor<?xi32>
-+    return %2 : tensor<?xi32>
-+  }
-+  func.func private @callee(%arg0: tensor<?xi32>) -> tensor<?xi32> {
-+    return %arg0 : tensor<?xi32>
-+  }
-+}
-+
-+// -----
-+
-+module @refine_call_callee_argument_dynamic_shape {
-+  // CHECK: func.func public @main(%arg0: tensor<1xi64>) -> tensor<?xi32>
-+  func.func public @main(%arg0: tensor<1xi64>) -> tensor<?xi32> {
-+    %1 = stablehlo.dynamic_iota %arg0, dim = 0 : (tensor<1xi64>) -> tensor<?xi32>
-+    %2 = call @callee(%1) : (tensor<?xi32>) -> tensor<?xi32>
-+    return %2 : tensor<?xi32>
-+  }
-+  func.func private @callee(%arg0: tensor<?xi32>) -> tensor<?xi32> {
-+    return %arg0 : tensor<?xi32>
-+  }
-+}
-+
-+// -----
-+
-+// CHECK-LABEL: module @refine_call_dimension_argument_non_scalar
-+// The non-scalar constant is not folded into the callee
-+module @refine_call_dimension_argument_non_scalar {
-+  func.func public @main() -> tensor<4xi32> {
-+    // CHECK: dense<[1, 2, 3, 4]> : tensor<4xi32>
-+    %0 = stablehlo.constant dense<[1, 2, 3, 4]> : tensor<4xi32>
-+    %1 = call @callee(%0) : (tensor<4xi32>) -> tensor<4xi32>
-+    return %1 : tensor<4xi32>
-+  }
-+  func.func private @callee(%arg0: tensor<4xi32>) -> tensor<4xi32> {
-+    // CHECK: return %arg0 : tensor<4xi32>
-+    return %arg0 : tensor<4xi32>
-+  }
-+}
-+
-+// -----
-+
-+// CHECK-LABEL: module @refine_call_dimension_argument_not_integer
-+module @refine_call_dimension_argument_not_integer {
-+  func.func public @main() -> tensor<f32> {
-+    %0 = stablehlo.constant dense<3.> : tensor<f32>
-+    // CHECK: call @callee({{.*}}) : (tensor<f32>) -> tensor<f32>
-+    %2 = call @callee(%0) : (tensor<f32>) -> tensor<f32>
-+    return %2 : tensor<f32>
-+  }
-+  func.func private @callee(%arg0: tensor<f32>) -> tensor<f32> {
-+    return %arg0 : tensor<f32>
-+  }
- }
- 
- // -----
-@@ -656,6 +935,17 @@
- 
- // -----
- 
-+// CHECK-LABEL: @refine_custom_call_operand_wrapper_unranked
-+func.func @refine_custom_call_operand_wrapper_unranked(%arg0: tensor<4xi32>) -> tensor<*xi32> {
-+  // CHECK-NOT: stablehlo.shape_refinement_operand_wrapper
-+  %0 = stablehlo.constant dense<[4]> : tensor<1xi64>
-+  %1 = stablehlo.custom_call @stablehlo.shape_refinement_operand_wrapper(%arg0, %0) {indices_of_shape_operands = dense<1> : tensor<1xi64>} : (tensor<4xi32>, tensor<1xi64>) -> tensor<*xi32>
-+  // CHECK: return %arg0 : tensor<4xi32>
-+  func.return %1 : tensor<*xi32>
-+}
-+
-+// -----
-+
- // CHECK-LABEL: @refine_dot_general
- func.func @refine_dot_general(%arg0: tensor<2x3x4xf32>, %arg1: tensor<2x3x5xf32>) -> tensor<?x?x?xf32> {
-   // CHECK: stablehlo.dot_general{{.*}} -> tensor<2x4x5xf32>
-@@ -755,6 +1045,8 @@
-   %1 = stablehlo.dynamic_reshape %arg0, %0 : (tensor<4xf32>, tensor<2xi64>) -> tensor<?x?xf32>
-   func.return %1 : tensor<?x?xf32>
- }
-+
-+
- 
- // -----
- 
-@@ -908,6 +1200,7 @@
- // -----
- 
- // TODO: Implement support for these ops.
-+// * dynamic_conv (#867).
- // * dynamic_fft (#1366).
- // * dynamic_reduce_window (#1258).
- // * dynamic_rng_bit_generator (#1344).
-diff --ruN a/stablehlo/stablehlo/transforms/Passes.td b/stablehlo/stablehlo/transforms/Passes.td
---- stablehlo/stablehlo/transforms/Passes.td
-+++ stablehlo/stablehlo/transforms/Passes.td
-@@ -356,6 +356,25 @@
- 
-     %1 = stablehlo.add %arg0, %arg0 : tensor<16xf32>
-     ```
-+
-+  Modules valid for shape refinement must have the following properties:
-+
-+    * All the dynamic shapes depend only on the input shapes (no shape
-+      dependency on the input array contents). We refer to the operations that
-+      depend transitively only on the input shapes (e.g., as given by
-+      `stablehlo.get_dimension_size`) or global constants like the resolved
-+      values of symbolic integers (i.e. tensor<Axf32> : A = 5), as `dimension`
-+      operations. All dimension values can be resolved to constants through
-+      inter-procedural constant folding.
-+    * Intermediate functions may take a number of token arguments (of type
-+      !stablehlo.token) at the start of the argument list, followed by some
-+      global constant arguments which are constant integer scalars, such as the
-+      resolved values of symbolic integers (i.e. tensor<Axf32> : A = 5).
-+    * Some intermediate functions may return computations on global constants,
-+      i.e. `floordiv` on symint values. These functions are indicated by only
-+      returning constant values after refinement. These functions are inlined.
-+    * All calls to a single function resolve to the same argument shapes, and no
-+      recursive / co-recursive function calls are made.
-   }];
- }
- 
-@@ -375,4 +394,5 @@
-     Option<"targetVersionOption", "target", "std::string", "",
-            "The target version. Must be a version of the form #.#.# .">,
-   ];
--}
-+  let dependentDialects = ["mlir::vhlo::VhloDialect"];
-+}
-diff --ruN a/stablehlo/stablehlo/transforms/StablehloAggressiveFolder.cpp b/stablehlo/stablehlo/transforms/StablehloAggressiveFolder.cpp
---- stablehlo/stablehlo/transforms/StablehloAggressiveFolder.cpp
-+++ stablehlo/stablehlo/transforms/StablehloAggressiveFolder.cpp
-@@ -79,8 +79,9 @@
-   } else {
-     llvm::report_fatal_error("expected integer type");
-   }
--  return APSInt({/*numBits=*/numBits, value},
--                /*isUnsigned=*/isUnsigned);
-+  return APSInt(
-+      {/*numBits=*/numBits, value, /*isSigned=*/false, /*implicitTrunc=*/true},
-+      /*isUnsigned=*/isUnsigned);
- }
- 
- LogicalResult validateResultTypeForEval(PatternRewriter& rewriter,
-diff --ruN a/stablehlo/stablehlo/transforms/StablehloRefineArguments.cpp b/stablehlo/stablehlo/transforms/StablehloRefineArguments.cpp
---- stablehlo/stablehlo/transforms/StablehloRefineArguments.cpp
-+++ stablehlo/stablehlo/transforms/StablehloRefineArguments.cpp
-@@ -18,6 +18,7 @@
- 
- #include "llvm/ADT/STLExtras.h"
- #include "llvm/ADT/SmallVector.h"
-+#include "llvm/Support/LogicalResult.h"
- #include "mlir/AsmParser/AsmParser.h"
- #include "mlir/Dialect/Func/IR/FuncOps.h"
- #include "mlir/IR/Attributes.h"
-@@ -201,15 +202,7 @@
-       return signalPassFailure();
-     }
- 
--    // Verify that refinements are valid
--    if (failed(validateRefinedTypes(func, refinedTypes)))
--      return signalPassFailure();
--
--    // Wrap refined operands in operand wrapper to keep IR valid for refinement
--    wrapRefinedOperands(func, refinedTypes);
--
--    // Actually update main's input types.
--    refineOperandsAndUpdateFunctionSignature(func, refinedTypes);
-+    if (failed(refineArguments(func, refinedTypes))) return signalPassFailure();
-   }
- 
-  private:
-@@ -218,6 +211,19 @@
- 
- }  // namespace
- 
-+LogicalResult refineArguments(func::FuncOp func, TypeRange refinedTypes) {
-+  // Verify that refinements are valid
-+  if (failed(validateRefinedTypes(func, refinedTypes))) return failure();
-+
-+  // Wrap refined operands in operand wrapper to keep IR valid for refinement
-+  wrapRefinedOperands(func, refinedTypes);
-+
-+  // Actually update main's input types.
-+  refineOperandsAndUpdateFunctionSignature(func, refinedTypes);
-+
-+  return success();
-+}
-+
- std::unique_ptr<OperationPass<ModuleOp>> createStablehloRefineArgumentsPass(
-     TypeRange refinedTypes) {
-   return std::make_unique<StablehloRefineArgumentsPass>(refinedTypes);
-diff --ruN a/stablehlo/stablehlo/transforms/StablehloRefineShapes.cpp b/stablehlo/stablehlo/transforms/StablehloRefineShapes.cpp
---- stablehlo/stablehlo/transforms/StablehloRefineShapes.cpp
-+++ stablehlo/stablehlo/transforms/StablehloRefineShapes.cpp
-@@ -14,15 +14,20 @@
- 
- #include "stablehlo/transforms/StablehloRefineShapes.h"
- 
-+#include <cstddef>
- #include <cstdint>
-+#include <tuple>
- #include <utility>
- 
- #include "llvm/ADT/APInt.h"
- #include "llvm/ADT/STLExtras.h"
-+#include "llvm/ADT/ScopeExit.h"
- #include "llvm/ADT/SmallSet.h"
- #include "llvm/ADT/SmallVector.h"
- #include "llvm/ADT/StringRef.h"
-+#include "llvm/Support/Debug.h"
- #include "llvm/Support/ErrorHandling.h"
-+#include "llvm/Support/raw_ostream.h"
- #include "mlir/Dialect/Func/IR/FuncOps.h"
- #include "mlir/IR/Attributes.h"
- #include "mlir/IR/BuiltinAttributes.h"
-@@ -49,6 +54,8 @@
- #include "stablehlo/dialect/TypeInference.h"
+diff --ruN a/stablehlo/stablehlo/dialect/Serialization.cpp b/stablehlo/stablehlo/dialect/Serialization.cpp
+--- stablehlo/stablehlo/dialect/Serialization.cpp
++++ stablehlo/stablehlo/dialect/Serialization.cpp
+@@ -32,20 +32,25 @@
+ #include "stablehlo/dialect/VhloOps.h"
  #include "stablehlo/transforms/Passes.h"
  
-+#define DEBUG_TYPE "stablehlo-refine-shapes"
-+
+-#define DEBUG_TYPE "compat-passes"
++#define DEBUG_TYPE "stablehlo-compat"
+ 
  namespace mlir {
  namespace stablehlo {
  
-@@ -63,10 +70,10 @@
-            << values.size() << " types, got " << types.size();
-     });
+ LogicalResult serializePortableArtifact(ModuleOp module,
+                                         StringRef targetVersion,
+-                                        raw_ostream& os) {
++                                        raw_ostream& os,
++                                        bool allowOtherDialects) {
+   MLIRContext* context = module.getContext();
  
--  // Check whether `types` contain any new information with respect to existing
--  // return types. Even if just a single dimension size out of an entire tensor
--  // type got updated, using `inferMostSpecificType` ensures that we don't
--  // miss that.
-+  // Check whether `types` contain any new information with respect to
-+  // existing return types. Even if just a single dimension size out of an
-+  // entire tensor type got updated, using `inferMostSpecificType` ensures
-+  // that we don't miss that.
-   bool needsRefinement = false;
-   SmallVector<Type> refinedTypes;
-   for (auto it : llvm::zip(values.getTypes(), types)) {
-@@ -76,11 +83,12 @@
-     auto refinement = std::get<1>(it);
-     auto refinedType = hlo::inferMostSpecificType(
-         /*location=*/{}, {currentType, refinement});
--    if (failed(refinedType))
-+    if (failed(refinedType)) {
-       return rewriter.notifyMatchFailure(op, [&](Diagnostic& diag) {
-         diag << "inferMostSpecificType failed for " << currentType << " and "
-              << refinement;
-       });
-+    }
-     refinedTypes.push_back(*refinedType);
-     needsRefinement |= (currentType != *refinedType);
-   }
-@@ -106,11 +114,8 @@
+-  // Convert StableHLO --> VHLO. Will fail if entire program is not StableHLO.
++  // Convert StableHLO --> VHLO.
++  // If allowOtherDialects is true, we will allow other dialects to be present
++  // in the module, otherwise will fail if there are any other dialects present.
+   {
+     PassManager pm(context);
+-    pm.addPass(stablehlo::createStablehloLegalizeToVhloPass());
++    StablehloLegalizeToVhloPassOptions options;
++    options.allowOtherDialects = allowOtherDialects;
++    pm.addPass(stablehlo::createStablehloLegalizeToVhloPass(options));
+     if (!succeeded(pm.run(module))) {
+       return failure();
+     }
+diff --ruN a/stablehlo/stablehlo/dialect/Serialization.h b/stablehlo/stablehlo/dialect/Serialization.h
+--- stablehlo/stablehlo/dialect/Serialization.h
++++ stablehlo/stablehlo/dialect/Serialization.h
+@@ -34,7 +34,8 @@
+ // unsupported dialects.
+ LogicalResult serializePortableArtifact(ModuleOp module,
+                                         StringRef targetVersion,
+-                                        raw_ostream& os);
++                                        raw_ostream& os,
++                                        bool allowOtherDialects = false);
  
-       // Simply changing operand type of `func.return` won't work because
-       // that won't update the FunctionType of the enclosing `func.func`.
--      // Nonetheless, we still want to support these ops because they are widely
--      // used in StableHLO programs (although the plan of record is to replace
--      // `func.return` ops in StableHLO programs with `stablehlo.return`:
--      // https://github.com/openxla/stablehlo/issues/425).
-       if (isa<func::ReturnOp>(user)) continue;
-+      if (isa<func::CallOp>(user)) continue;
- 
-       // Unlike in TensorFlow's type inference pass, here we work only with
-       // allowlisted ops to focus our support on well-defined semantics of
-@@ -244,6 +249,233 @@
+ // Read StableHLO portable artifact
+ //
+diff --ruN a/stablehlo/stablehlo/dialect/VhloTypes.cpp b/stablehlo/stablehlo/dialect/VhloTypes.cpp
+--- stablehlo/stablehlo/dialect/VhloTypes.cpp
++++ stablehlo/stablehlo/dialect/VhloTypes.cpp
+@@ -323,6 +323,20 @@
+ }
  
  namespace {
- 
-+class RefinementKey {
-+ public:
-+  RefinementKey(func::FuncOp func, int64_t leadingTokenOperands,
-+                SmallVector<APSInt> const& globalConstants,
-+                SmallVector<Type> const& functionalArgumentTypes)
-+      : func(func),
-+        leadingTokenOperands(leadingTokenOperands),
-+        globalConstants(globalConstants),
-+        functionalArgumentTypes(functionalArgumentTypes) {}
++Value materializeIllegalCast(OpBuilder& builder, Type type, ValueRange inputs,
++                             Location loc) {
++  return builder.create<UnrealizedConversionCastOp>(loc, type, inputs)
++      ->getResult(0);
++}
++}  // namespace
 +
-+  static FailureOr<RefinementKey> fromCallOp(func::CallOp callOp) {
-+    LLVM_DEBUG(llvm::dbgs() << "RefinementKey::fromCallOp: "
-+                            << callOp.getCalleeType() << "\n");
-+    int64_t leadingTokenOperands = countLeadingTokenOperands(callOp);
-+    SmallVector<APSInt> globalConstants =
-+        getGlobalConstants(callOp, leadingTokenOperands);
-+    SmallVector<Type> functionalArgumentTypes = getFunctionalArgumentTypes(
-+        callOp, leadingTokenOperands, globalConstants.size());
-+
-+    FlatSymbolRefAttr calleeName = callOp.getCalleeAttr();
-+    const SymbolTable symbolTable(callOp->getParentOfType<ModuleOp>());
-+    auto callee = symbolTable.lookupNearestSymbolFrom<func::FuncOp>(
-+        callOp, calleeName.getAttr());
-+    if (!callee) return callOp.emitOpError() << "cannot resolve function call";
-+    return RefinementKey(callee, leadingTokenOperands, globalConstants,
-+                         functionalArgumentTypes);
-+  }
-+
-+  // Getters
-+  func::FuncOp getFunc() const { return func; }
-+  int64_t getLeadingTokenOperands() const { return leadingTokenOperands; }
-+  SmallVector<APSInt> const& getGlobalConstants() const {
-+    return globalConstants;
-+  }
-+  SmallVector<Type> const& getFunctionalArgumentTypes() const {
-+    return functionalArgumentTypes;
-+  }
-+
-+  // Get all non global-constant args, including tokens and functional args.
-+  SmallVector<Type> getAllNonGlobalConstantArgumentTypes(
-+      MLIRContext& context) const {
-+    SmallVector<Type> types(getLeadingTokenOperands() +
-+                            getFunctionalArgumentTypes().size());
-+    for (size_t i = 0; i < leadingTokenOperands; ++i)
-+      types[i] = stablehlo::TokenType::get(&context);
-+    for (auto [i, refinedType] : llvm::enumerate(getFunctionalArgumentTypes()))
-+      types[i + leadingTokenOperands] = refinedType;
-+    return types;
-+  }
-+
-+  // Utilities
-+  inline std::string toString() {
-+    std::string buffer;
-+    llvm::raw_string_ostream os(buffer);
-+    os << "RefinementKey(" << func.getName()
-+       << ", toks=" << leadingTokenOperands << ", dim_args=[";
-+    llvm::interleaveComma(globalConstants, os);
-+    os << "], fn_args=[";
-+    llvm::interleaveComma(functionalArgumentTypes, os);
-+    os << "])";
-+    return buffer;
-+  }
-+
-+ private:
-+  static int64_t countLeadingTokenOperands(func::CallOp callOp) {
-+    int64_t nrLeadingTokenOperands = 0;
-+    for (auto operand : callOp.getOperands()) {
-+      if (!isa<TokenType>(operand.getType())) break;
-+      nrLeadingTokenOperands++;
-+    }
-+    return nrLeadingTokenOperands;
-+  }
-+
-+  // global-constant arguments follow token args, and are scalar integer
-+  // constants These represent the known values of symbolic shapes sizes. I.e.
-+  // tensor<Axf32> : A = constant(5)
-+  static SmallVector<APSInt> getGlobalConstants(func::CallOp callOp,
-+                                                int64_t leadingTokenOperands) {
-+    SmallVector<APSInt> globalConstants;
-+    auto operands = callOp.getOperands();
-+    for (size_t i = leadingTokenOperands; i < operands.size(); ++i) {
-+      auto operandType = dyn_cast<RankedTensorType>(operands[i].getType());
-+      if (!operandType || operandType.getRank() != 0 ||
-+          !operandType.getElementType().isInteger())
-+        break;
-+
-+      SmallVector<APSInt> operand_int;
-+      if (failed(hlo::matchInts(operands[i], operand_int))) break;
-+      globalConstants.push_back(operand_int[0]);
-+    }
-+    return globalConstants;
-+  }
-+
-+  // Functional operands are the arguments that are not global-constant
-+  // arguments. These are the values that will remain after symbolic shape
-+  // refinement.
-+  static SmallVector<Type> getFunctionalArgumentTypes(
-+      func::CallOp callOp, int64_t leadingTokenOperands,
-+      int64_t globalConstantsSize) {
-+    SmallVector<Type> functionalArgumentTypes;
-+    auto operands = callOp.getOperands();
-+    for (size_t i = leadingTokenOperands + globalConstantsSize;
-+         i < operands.size(); ++i) {
-+      functionalArgumentTypes.push_back(operands[i].getType());
-+    }
-+    return functionalArgumentTypes;
-+  }
-+
-+ private:
-+  func::FuncOp func;
-+  int64_t leadingTokenOperands;
-+  SmallVector<APSInt> globalConstants;
-+  SmallVector<Type> functionalArgumentTypes;
-+};
-+
-+// Per-module state for shape refinement.
-+// An entry is Key is <FuncOp, SmallVector<APSInt>, SmallVector<Type>>
-+// Which correlates to <func, sym_int_values, arg_types>
-+class RefineShapeState {
-+ public:
-+  enum class RefinementState {
-+    NOT_ALREADY_REFINED,
-+    ALREADY_REFINED,
-+  };
-+
-+  // Validates that we are not attempting to refine a function with a different
-+  // context than previously, and are not attempting recursive refinement.
-+  // Returns failure() if validation fails. On success, returns a refinement
-+  // state that specifies whether the function has already been refined.
-+  FailureOr<RefinementState> validateFunctionRefinement(RefinementKey key) {
-+    func::FuncOp func = key.getFunc();
-+    StringRef funcName = func.getName();
-+
-+    auto found = refinementContexts.find(func);
-+    if (found == refinementContexts.end())
-+      return RefinementState::NOT_ALREADY_REFINED;
-+    RefinementKey prevKey = found->second;
-+
-+    // Since we refine until fixed point, we will refine a call to a function
-+    // both for the original function and for the refined one. In the latter
-+    // case, we should have empty globalConstants but everything else the
-+    // same.
-+    if (!key.getGlobalConstants().empty() &&
-+        prevKey.getGlobalConstants() != key.getGlobalConstants())
-+      return emitDifferentRefinementContextError(key.getFunc(), key, prevKey);
-+
-+    // Check that all non-global-constant arguments are the same.
-+    // Must compare all non-global-constant types, since tokens may become
-+    // leading:
-+    //  Refine iter1: `token, dim, token, arg` : 1 leading token
-+    //  Refine iter2: `token, token, arg` : 2 leading tokens
-+    MLIRContext& context = *func.getContext();
-+    if (key.getAllNonGlobalConstantArgumentTypes(context) !=
-+        prevKey.getAllNonGlobalConstantArgumentTypes(context))
-+      return emitDifferentRefinementContextError(key.getFunc(), key, prevKey);
-+
-+    // Don't allow recursive refinement.
-+    if (llvm::is_contained(functionsBeingRefined, funcName))
-+      return func.emitOpError()
-+             << "Function " << funcName << " is being refined recursively\n";
-+
-+    return RefinementState::ALREADY_REFINED;
-+  }
-+
-+  // Updates the state to signal the starting of a function refinement.
-+  // Callers must call `finishFunctionRefinement` when done.
-+  [[nodiscard]] auto createScopedFunctionRefinement(RefinementKey& key) {
-+    func::FuncOp func = key.getFunc();
-+    auto funcName = func.getName();
-+    functionsBeingRefined.push_back(funcName);
-+    refinementContexts.try_emplace(func, key);
-+    // Return a cleanup function that will pop the function from the stack
-+    // when it goes out of scope. This can only use values that will have the
-+    // same lifetime as cleanup fn. In this case, `this` and `key` are safe.
-+    return llvm::make_scope_exit([this, &key]() {
-+      if (key.getFunc().getName() != functionsBeingRefined.back())
-+        llvm::report_fatal_error(
-+            "Stack mismatch in createScopedFunctionRefinement");
-+      functionsBeingRefined.pop_back();
-+    });
-+  }
-+
-+ private:
-+  // Maps refined functions to the refinement context: the values of dimension
-+  // arguments and the types of non-global-constant arguments. A function is
-+  // added here when we start refining it.
-+  DenseMap<func::FuncOp, RefinementKey> refinementContexts;
-+
-+  // A stack of functions that are in the process of being refined, the current
-+  // one is last.
-+  SmallVector<llvm::StringRef> functionsBeingRefined;
-+
-+  LogicalResult emitDifferentRefinementContextError(func::FuncOp func,
-+                                                    RefinementKey key,
-+                                                    RefinementKey prevKey) {
-+    return func.emitOpError()
-+           << "refined with invompatible refinement keys:" << "\n  curr="
-+           << key.toString() << "\n  prev=" << prevKey.toString();
-+  }
-+};
-+
-+// Forward declaration
-+LogicalResult refineFunction(MLIRContext& context, RefineShapeState& state,
-+                             RefinementKey& key);
-+
-+// Check if a function only returns constant values, if so, return the constant
-+// values that it returns.
-+std::optional<SmallVector<DenseIntElementsAttr>> isConstantFunction(
-+    func::FuncOp func) {
-+  LLVM_DEBUG(llvm::dbgs() << "check if " << func.getName()
-+                          << " is a constant function\n");
-+  SmallVector<DenseIntElementsAttr> returnedConstants;
-+  func::ReturnOp ret = *func.getOps<func::ReturnOp>().begin();
-+  bool isConstant = llvm::all_of(ret->getOperands(), [&](auto returnVal) {
-+    DenseIntElementsAttr attr;
-+    Operation* return_operand_def = returnVal.getDefiningOp();
-+    if (return_operand_def &&
-+        matchPattern(return_operand_def, m_Constant(&attr))) {
-+      returnedConstants.push_back(attr);
-+      return true;
-+    }
-+    return false;
-+  });
-+  if (isConstant) return returnedConstants;
-+  return std::nullopt;
++void VhloTypeConverter::addUnrealizedMaterializations() {
++  addTargetMaterialization(materializeIllegalCast);
++  addSourceMaterialization(materializeIllegalCast);
++  addArgumentMaterialization(materializeIllegalCast);
 +}
 +
- // The patterns below implement shape refinement of individual ops.
- // In a nutshell, they use the upstream type inference infrastructure and a
- // StableHLO-specific extension to refine return types based on potentially
-@@ -297,6 +529,54 @@
++namespace {
+ // Helper functions for VHLO verifiers
+ template <typename TypeOrAttr>
+ bool isFromVhlo(TypeOrAttr t) {
+diff --ruN a/stablehlo/stablehlo/dialect/VhloTypes.h b/stablehlo/stablehlo/dialect/VhloTypes.h
+--- stablehlo/stablehlo/dialect/VhloTypes.h
++++ stablehlo/stablehlo/dialect/VhloTypes.h
+@@ -55,6 +55,9 @@
+   // it is likely that a subclass should call this last, especially if a default
+   // `Type -> Type` fallback conversion is registered.
+   void addBuiltinToVhloConversions();
++
++  // Mark unrealized casts as legal. Useful for dialect mixing.
++  void addUnrealizedMaterializations();
+ };
  
-     return refineReturnShape(rewriter, op, operandType.getShape());
-   }
-+};
+ // Autogenerated VHLO type printers and parsers.
+diff --ruN a/stablehlo/stablehlo/tests/ops_stablehlo_quantized.mlir b/stablehlo/stablehlo/tests/ops_stablehlo_quantized.mlir
+--- stablehlo/stablehlo/tests/ops_stablehlo_quantized.mlir
++++ stablehlo/stablehlo/tests/ops_stablehlo_quantized.mlir
+@@ -1338,7 +1338,7 @@
+ 
+ // -----
+ 
+-// expected-error@+1 {{scale out of expressed type range}}
++// expected-error@+1 {{scale 1.055040e+05 out of expressed type range}}
+ func.func @quantized_element_type_c6(%arg0: tensor<1x2x!quant.uniform<i4:f16, 10.550400e+04>>) {
+    %0 = stablehlo.add %arg0,  %arg0 : tensor<1x2x!quant.uniform<i4:f16, 10.550400e+04>>
+    func.return
+@@ -1346,7 +1346,7 @@
+ 
+ // -----
+ 
+-// expected-error@+1 {{scale out of expressed type range}}
++// expected-error@+1 {{scale 4.960464e-08 out of expressed type range}}
+ func.func @quantized_element_type_c6(%arg0: tensor<1x2x!quant.uniform<i4:f16, 4.960464e-08>>) {
+    %0 = stablehlo.add %arg0,  %arg0 : tensor<1x2x!quant.uniform<i4:f16, 4.960464e-08>>
+    func.return
+diff --ruN a/stablehlo/stablehlo/tests/vhlo/stablehlo_legalize_to_vhlo_mixed.mlir b/stablehlo/stablehlo/tests/vhlo/stablehlo_legalize_to_vhlo_mixed.mlir
+--- stablehlo/stablehlo/tests/vhlo/stablehlo_legalize_to_vhlo_mixed.mlir
++++ stablehlo/stablehlo/tests/vhlo/stablehlo_legalize_to_vhlo_mixed.mlir
+@@ -0,0 +1,189 @@
++// NOTE: Assertions have been autogenerated by utils/generate-test-checks.py
 +
-+struct RefineCallOpPattern : public OpRewritePattern<func::CallOp> {
-+  using OpRewritePattern::OpRewritePattern;
++// The script is designed to make adding checks to
++// a test case fast, it is *not* designed to be authoritative
++// about what constitutes a good test! The CHECK should be
++// minimized and named to reflect the test intent.
 +
-+  RefineCallOpPattern(MLIRContext* context, RefineShapeState& state)
-+      : OpRewritePattern<func::CallOp>(context), state(state) {}
++// NOTE: Assertions have been autogenerated by utils/generate-test-checks.py
 +
-+  LogicalResult matchAndRewrite(func::CallOp op,
-+                                PatternRewriter& rewriter) const override {
-+    auto refinementKey = RefinementKey::fromCallOp(op);
-+    if (failed(refinementKey)) return failure();
-+    if (failed(refineFunction(*rewriter.getContext(), state, *refinementKey)))
-+      return failure();
++// The script is designed to make adding checks to
++// a test case fast, it is *not* designed to be authoritative
++// minimized and named to reflect the test intent.
 +
-+    // Is the callee a constant function in this refinement context?
-+    auto callee = refinementKey->getFunc();
-+    std::optional<SmallVector<DenseIntElementsAttr>> constantAttrs =
-+        isConstantFunction(callee);
-+    if (constantAttrs.has_value()) {
-+      SmallVector<Value> constants;
-+      for (auto constAttr : constantAttrs.value()) {
-+        constants.push_back(
-+            rewriter.create<ConstantOp>(op.getLoc(), constAttr));
++// RUN: stablehlo-opt %s --stablehlo-legalize-to-vhlo=allow-other-dialects | FileCheck %s
++// RUN: stablehlo-opt %s > %t.0
++// RUN: stablehlo-opt %s --stablehlo-legalize-to-vhlo=allow-other-dialects | stablehlo-opt --vhlo-legalize-to-stablehlo > %t.1
++// RUN: diff %t.0 %t.1
++
++// CHECK-LABEL:   vhlo.func_v1 @op_other(
++// CHECK-SAME:                           %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: !vhlo.tensor_v1<!vhlo.f32_v1>) -> (!vhlo.tensor_v1<!vhlo.f32_v1>) {
++// CHECK:           %[[VAL_1:.*]] = builtin.unrealized_conversion_cast %[[VAL_0]] : !vhlo.tensor_v1<!vhlo.f32_v1> to tensor<f32>
++// CHECK:           %[[VAL_2:.*]] = arith.addf %[[VAL_1]], %[[VAL_1]] : tensor<f32>
++// CHECK:           %[[VAL_3:.*]] = builtin.unrealized_conversion_cast %[[VAL_2]] : tensor<f32> to !vhlo.tensor_v1<!vhlo.f32_v1>
++// CHECK:           "vhlo.return_v1"(%[[VAL_3]]) : (!vhlo.tensor_v1<!vhlo.f32_v1>) -> ()
++// CHECK:         }
++func.func @op_other(%arg0: tensor<f32>) -> tensor<f32> {
++  %0 = arith.addf %arg0, %arg0 : tensor<f32>
++  return %0 : tensor<f32>
++}
++
++// -----
++
++// CHECK-LABEL:   vhlo.func_v1 @op_shlo(
++// CHECK-SAME:                          %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: !vhlo.tensor_v1<!vhlo.f32_v1>) -> (!vhlo.tensor_v1<!vhlo.f32_v1>) {
++// CHECK:           %[[VAL_1:.*]] = "vhlo.add_v1"(%[[VAL_0]], %[[VAL_0]]) : (!vhlo.tensor_v1<!vhlo.f32_v1>, !vhlo.tensor_v1<!vhlo.f32_v1>) -> !vhlo.tensor_v1<!vhlo.f32_v1>
++// CHECK:           "vhlo.return_v1"(%[[VAL_1]]) : (!vhlo.tensor_v1<!vhlo.f32_v1>) -> ()
++// CHECK:         }
++func.func @op_shlo(%arg0: tensor<f32>) -> tensor<f32> {
++  %0 = stablehlo.add %arg0, %arg0 : tensor<f32>
++  return %0 : tensor<f32>
++}
++
++// -----
++
++// CHECK-LABEL:   vhlo.func_v1 @mixed_shlo_other_shlo(
++// CHECK-SAME:                                        %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: !vhlo.tensor_v1<!vhlo.f32_v1>) -> (!vhlo.tensor_v1<!vhlo.f32_v1>) {
++// CHECK:           %[[VAL_1:.*]] = builtin.unrealized_conversion_cast %[[VAL_0]] : !vhlo.tensor_v1<!vhlo.f32_v1> to tensor<f32>
++// CHECK:           %[[VAL_2:.*]] = "vhlo.abs_v1"(%[[VAL_0]]) : (!vhlo.tensor_v1<!vhlo.f32_v1>) -> !vhlo.tensor_v1<!vhlo.f32_v1>
++// CHECK:           %[[VAL_3:.*]] = builtin.unrealized_conversion_cast %[[VAL_2]] : !vhlo.tensor_v1<!vhlo.f32_v1> to tensor<f32>
++// CHECK:           %[[VAL_4:.*]] = arith.addf %[[VAL_3]], %[[VAL_1]] : tensor<f32>
++// CHECK:           %[[VAL_5:.*]] = builtin.unrealized_conversion_cast %[[VAL_4]] : tensor<f32> to !vhlo.tensor_v1<!vhlo.f32_v1>
++// CHECK:           %[[VAL_6:.*]] = "vhlo.abs_v1"(%[[VAL_5]]) : (!vhlo.tensor_v1<!vhlo.f32_v1>) -> !vhlo.tensor_v1<!vhlo.f32_v1>
++// CHECK:           "vhlo.return_v1"(%[[VAL_6]]) : (!vhlo.tensor_v1<!vhlo.f32_v1>) -> ()
++// CHECK:         }
++func.func @mixed_shlo_other_shlo(%arg0: tensor<f32>) -> tensor<f32> {
++  %0 = stablehlo.abs %arg0 : tensor<f32>
++  %1 = arith.addf %0, %arg0 : tensor<f32>
++  %2 = stablehlo.abs %1 : tensor<f32>
++  return %2 : tensor<f32>
++}
++
++// -----
++
++// CHECK-LABEL:   vhlo.func_v1 @mixed_other_shlo_other(
++// CHECK-SAME:                                         %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: !vhlo.tensor_v1<!vhlo.f32_v1>) -> (!vhlo.tensor_v1<!vhlo.f32_v1>) {
++// CHECK:           %[[VAL_1:.*]] = builtin.unrealized_conversion_cast %[[VAL_0]] : !vhlo.tensor_v1<!vhlo.f32_v1> to tensor<f32>
++// CHECK:           %[[VAL_2:.*]] = arith.addf %[[VAL_1]], %[[VAL_1]] : tensor<f32>
++// CHECK:           %[[VAL_3:.*]] = builtin.unrealized_conversion_cast %[[VAL_2]] : tensor<f32> to !vhlo.tensor_v1<!vhlo.f32_v1>
++// CHECK:           %[[VAL_4:.*]] = "vhlo.add_v1"(%[[VAL_3]], %[[VAL_0]]) : (!vhlo.tensor_v1<!vhlo.f32_v1>, !vhlo.tensor_v1<!vhlo.f32_v1>) -> !vhlo.tensor_v1<!vhlo.f32_v1>
++// CHECK:           %[[VAL_5:.*]] = builtin.unrealized_conversion_cast %[[VAL_4]] : !vhlo.tensor_v1<!vhlo.f32_v1> to tensor<f32>
++// CHECK:           %[[VAL_6:.*]] = arith.addf %[[VAL_5]], %[[VAL_1]] : tensor<f32>
++// CHECK:           %[[VAL_7:.*]] = builtin.unrealized_conversion_cast %[[VAL_6]] : tensor<f32> to !vhlo.tensor_v1<!vhlo.f32_v1>
++// CHECK:           "vhlo.return_v1"(%[[VAL_7]]) : (!vhlo.tensor_v1<!vhlo.f32_v1>) -> ()
++// CHECK:         }
++func.func @mixed_other_shlo_other(%arg0: tensor<f32>) -> tensor<f32> {
++  %0 = arith.addf %arg0, %arg0 : tensor<f32>
++  %1 = stablehlo.add %0, %arg0 : tensor<f32>
++  %2 = arith.addf %1, %arg0 : tensor<f32>
++  return %2 : tensor<f32>
++}
++
++// -----
++
++// CHECK-LABEL:   vhlo.func_v1 @op_with_region(
++// CHECK-SAME:                                 %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: !vhlo.tensor_v1<1x16x16x320x!vhlo.f32_v1>,
++// CHECK-SAME:                                 %[[VAL_1:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: !vhlo.tensor_v1<!vhlo.f32_v1>) -> (!vhlo.tensor_v1<1x320x!vhlo.f32_v1>) {
++// CHECK:           %[[VAL_2:.*]] = "vhlo.reduce_v1"(%[[VAL_0]], %[[VAL_1]]) <{dimensions = #{{.*}}<dense<[1, 2]> : tensor<2xi64>>}> ({
++// CHECK:           ^bb0(%[[VAL_3:.*]]: !vhlo.tensor_v1<!vhlo.f32_v1>, %[[VAL_4:.*]]: !vhlo.tensor_v1<!vhlo.f32_v1>):
++// CHECK:             %[[VAL_5:.*]] = "vhlo.add_v1"(%[[VAL_3]], %[[VAL_4]]) : (!vhlo.tensor_v1<!vhlo.f32_v1>, !vhlo.tensor_v1<!vhlo.f32_v1>) -> !vhlo.tensor_v1<!vhlo.f32_v1>
++// CHECK:             "vhlo.return_v1"(%[[VAL_5]]) : (!vhlo.tensor_v1<!vhlo.f32_v1>) -> ()
++// CHECK:           }) : (!vhlo.tensor_v1<1x16x16x320x!vhlo.f32_v1>, !vhlo.tensor_v1<!vhlo.f32_v1>) -> !vhlo.tensor_v1<1x320x!vhlo.f32_v1>
++// CHECK:           "vhlo.return_v1"(%[[VAL_2]]) : (!vhlo.tensor_v1<1x320x!vhlo.f32_v1>) -> ()
++// CHECK:         }
++func.func @op_with_region(%arg0: tensor<1x16x16x320xf32>, %arg1: tensor<f32>) -> tensor<1x320xf32> {
++  %0 = stablehlo.reduce(%arg0 init: %arg1) applies stablehlo.add across dimensions = [1, 2] : (tensor<1x16x16x320xf32>, tensor<f32>) -> tensor<1x320xf32>
++  return %0 : tensor<1x320xf32>
++}
++
++// -----
++
++// CHECK-LABEL:   vhlo.func_v1 @op_with_region_mixed_other_shlo_other(
++// CHECK-SAME:                                                        %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: !vhlo.tensor_v1<7x5x!vhlo.f32_v1>,
++// CHECK-SAME:                                                        %[[VAL_1:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: !vhlo.tensor_v1<5x!vhlo.f32_v1>) -> (!vhlo.tensor_v1<5x!vhlo.f32_v1>) {
++// CHECK:           %[[VAL_2:.*]] = "vhlo.reduce_v1"(%[[VAL_0]], %[[VAL_1]]) <{dimensions = #{{.*}}<dense<0> : tensor<1xi64>>}> ({
++// CHECK:           ^bb0(%[[VAL_3:.*]]: !vhlo.tensor_v1<5x!vhlo.f32_v1>, %[[VAL_4:.*]]: !vhlo.tensor_v1<5x!vhlo.f32_v1>):
++// CHECK:             %[[VAL_5:.*]] = builtin.unrealized_conversion_cast %[[VAL_4]] : !vhlo.tensor_v1<5x!vhlo.f32_v1> to tensor<5xf32>
++// CHECK:             %[[VAL_6:.*]] = builtin.unrealized_conversion_cast %[[VAL_3]] : !vhlo.tensor_v1<5x!vhlo.f32_v1> to tensor<5xf32>
++// CHECK:             %[[VAL_7:.*]] = arith.addf %[[VAL_6]], %[[VAL_5]] : tensor<5xf32>
++// CHECK:             %[[VAL_8:.*]] = builtin.unrealized_conversion_cast %[[VAL_7]] : tensor<5xf32> to !vhlo.tensor_v1<5x!vhlo.f32_v1>
++// CHECK:             %[[VAL_9:.*]] = "vhlo.add_v1"(%[[VAL_8]], %[[VAL_3]]) : (!vhlo.tensor_v1<5x!vhlo.f32_v1>, !vhlo.tensor_v1<5x!vhlo.f32_v1>) -> !vhlo.tensor_v1<5x!vhlo.f32_v1>
++// CHECK:             %[[VAL_10:.*]] = builtin.unrealized_conversion_cast %[[VAL_9]] : !vhlo.tensor_v1<5x!vhlo.f32_v1> to tensor<5xf32>
++// CHECK:             %[[VAL_11:.*]] = arith.addf %[[VAL_10]], %[[VAL_5]] : tensor<5xf32>
++// CHECK:             %[[VAL_12:.*]] = builtin.unrealized_conversion_cast %[[VAL_11]] : tensor<5xf32> to !vhlo.tensor_v1<5x!vhlo.f32_v1>
++// CHECK:             "vhlo.return_v1"(%[[VAL_12]]) : (!vhlo.tensor_v1<5x!vhlo.f32_v1>) -> ()
++// CHECK:           }) : (!vhlo.tensor_v1<7x5x!vhlo.f32_v1>, !vhlo.tensor_v1<5x!vhlo.f32_v1>) -> !vhlo.tensor_v1<5x!vhlo.f32_v1>
++// CHECK:           "vhlo.return_v1"(%[[VAL_2]]) : (!vhlo.tensor_v1<5x!vhlo.f32_v1>) -> ()
++// CHECK:         }
++func.func @op_with_region_mixed_other_shlo_other(%arg0: tensor<7x5xf32>, %arg1: tensor<5xf32>) -> tensor<5xf32> {
++  %0 = stablehlo.reduce(%arg0 init: %arg1) across dimensions = [0] : (tensor<7x5xf32>, tensor<5xf32>) -> tensor<5xf32>
++    reducer(%arg2: tensor<5xf32>, %arg3: tensor<5xf32>)  {
++    %1 = arith.addf %arg2, %arg3 : tensor<5xf32>
++    %2 = stablehlo.add %1, %arg2 : tensor<5xf32>
++    %3 = arith.addf %2, %arg3 : tensor<5xf32>
++    stablehlo.return %3 : tensor<5xf32>
++  }
++  return %0 : tensor<5xf32>
++}
++
++// -----
++
++// CHECK-LABEL:   vhlo.func_v1 @op_with_region_mixed_shlo_other_shlo(
++// CHECK-SAME:                                                       %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: !vhlo.tensor_v1<7x5x!vhlo.f32_v1>,
++// CHECK-SAME:                                                       %[[VAL_1:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: !vhlo.tensor_v1<5x!vhlo.f32_v1>) -> (!vhlo.tensor_v1<5x!vhlo.f32_v1>) {
++// CHECK:           %[[VAL_2:.*]] = "vhlo.reduce_v1"(%[[VAL_0]], %[[VAL_1]]) <{dimensions = #{{.*}}<dense<0> : tensor<1xi64>>}> ({
++// CHECK:           ^bb0(%[[VAL_3:.*]]: !vhlo.tensor_v1<5x!vhlo.f32_v1>, %[[VAL_4:.*]]: !vhlo.tensor_v1<5x!vhlo.f32_v1>):
++// CHECK:             %[[VAL_5:.*]] = builtin.unrealized_conversion_cast %[[VAL_4]] : !vhlo.tensor_v1<5x!vhlo.f32_v1> to tensor<5xf32>
++// CHECK:             %[[VAL_6:.*]] = "vhlo.abs_v1"(%[[VAL_3]]) : (!vhlo.tensor_v1<5x!vhlo.f32_v1>) -> !vhlo.tensor_v1<5x!vhlo.f32_v1>
++// CHECK:             %[[VAL_7:.*]] = builtin.unrealized_conversion_cast %[[VAL_6]] : !vhlo.tensor_v1<5x!vhlo.f32_v1> to tensor<5xf32>
++// CHECK:             %[[VAL_8:.*]] = arith.addf %[[VAL_7]], %[[VAL_5]] : tensor<5xf32>
++// CHECK:             %[[VAL_9:.*]] = builtin.unrealized_conversion_cast %[[VAL_8]] : tensor<5xf32> to !vhlo.tensor_v1<5x!vhlo.f32_v1>
++// CHECK:             %[[VAL_10:.*]] = "vhlo.abs_v1"(%[[VAL_9]]) : (!vhlo.tensor_v1<5x!vhlo.f32_v1>) -> !vhlo.tensor_v1<5x!vhlo.f32_v1>
++// CHECK:             "vhlo.return_v1"(%[[VAL_10]]) : (!vhlo.tensor_v1<5x!vhlo.f32_v1>) -> ()
++// CHECK:           }) : (!vhlo.tensor_v1<7x5x!vhlo.f32_v1>, !vhlo.tensor_v1<5x!vhlo.f32_v1>) -> !vhlo.tensor_v1<5x!vhlo.f32_v1>
++// CHECK:           "vhlo.return_v1"(%[[VAL_2]]) : (!vhlo.tensor_v1<5x!vhlo.f32_v1>) -> ()
++// CHECK:         }
++func.func @op_with_region_mixed_shlo_other_shlo(%arg0: tensor<7x5xf32>, %arg1: tensor<5xf32>) -> tensor<5xf32> {
++  %0 = stablehlo.reduce(%arg0 init: %arg1) across dimensions = [0] : (tensor<7x5xf32>, tensor<5xf32>) -> tensor<5xf32>
++    reducer(%arg2: tensor<5xf32>, %arg3: tensor<5xf32>)  {
++    %1 = stablehlo.abs %arg2 : tensor<5xf32>
++    %2 = arith.addf %1, %arg3 : tensor<5xf32>
++    %3 = stablehlo.abs %2 : tensor<5xf32>
++    stablehlo.return %3 : tensor<5xf32>
++  }
++  return %0 : tensor<5xf32>
++}
++
++// -----
++
++// CHECK-LABEL:   vhlo.func_v1 @stablehlo_in_other_op_region(
++// CHECK-SAME:                                               %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: !vhlo.tensor_v1<2x!vhlo.f32_v1>,
++// CHECK-SAME:                                               %[[VAL_1:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: !vhlo.index_v1) -> (!vhlo.tensor_v1<2x!vhlo.f32_v1>) {
++// CHECK:           %[[VAL_2:.*]] = builtin.unrealized_conversion_cast %[[VAL_0]] : !vhlo.tensor_v1<2x!vhlo.f32_v1> to tensor<2xf32>
++// CHECK:           %[[VAL_3:.*]] = arith.constant 0 : index
++// CHECK:           %[[VAL_4:.*]] = arith.constant 1 : index
++// CHECK:           %[[VAL_5:.*]] = arith.constant 2 : index
++// CHECK:           %[[VAL_6:.*]] = arith.constant 0.000000e+00 : f32
++// CHECK:           %[[VAL_7:.*]] = scf.for %[[VAL_8:.*]] = %[[VAL_3]] to %[[VAL_5]] step %[[VAL_4]] iter_args(%[[VAL_9:.*]] = %[[VAL_2]]) -> (tensor<2xf32>) {
++// CHECK:             %[[VAL_10:.*]] = tensor.insert %[[VAL_6]] into %[[VAL_9]]{{\[}}%[[VAL_8]]] : tensor<2xf32>
++// CHECK:             %[[VAL_11:.*]] = builtin.unrealized_conversion_cast %[[VAL_10]] : tensor<2xf32> to !vhlo.tensor_v1<2x!vhlo.f32_v1>
++// CHECK:             %[[VAL_12:.*]] = "vhlo.add_v1"(%[[VAL_11]], %[[VAL_11]]) : (!vhlo.tensor_v1<2x!vhlo.f32_v1>, !vhlo.tensor_v1<2x!vhlo.f32_v1>) -> !vhlo.tensor_v1<2x!vhlo.f32_v1>
++// CHECK:             %[[VAL_13:.*]] = builtin.unrealized_conversion_cast %[[VAL_12]] : !vhlo.tensor_v1<2x!vhlo.f32_v1> to tensor<2xf32>
++// CHECK:             scf.yield %[[VAL_13]] : tensor<2xf32>
++// CHECK:           }
++// CHECK:           %[[VAL_14:.*]] = builtin.unrealized_conversion_cast %[[VAL_7]] : tensor<2xf32> to !vhlo.tensor_v1<2x!vhlo.f32_v1>
++// CHECK:           "vhlo.return_v1"(%[[VAL_14]]) : (!vhlo.tensor_v1<2x!vhlo.f32_v1>) -> ()
++// CHECK:         }
++func.func @stablehlo_in_other_op_region(%arg0: tensor<2xf32>, %arg1: index) -> tensor<2xf32> {
++  %c0 = arith.constant 0 : index
++  %c1 = arith.constant 1 : index
++  %c2 = arith.constant 2 : index
++  %cst = arith.constant 0.0 : f32
++
++  %for = scf.for %i = %c0 to %c2 step %c1 iter_args(%arg2 = %arg0) -> tensor<2xf32> {
++    %new_out = tensor.insert %cst into %arg2[%i] : tensor<2xf32>
++    %new_out_add = stablehlo.add %new_out, %new_out : tensor<2xf32>
++    scf.yield %new_out_add : tensor<2xf32>
++  }
++  return %for : tensor<2xf32>
++}
+diff --ruN a/stablehlo/stablehlo/transforms/Passes.td b/stablehlo/stablehlo/transforms/Passes.td
+--- stablehlo/stablehlo/transforms/Passes.td
++++ stablehlo/stablehlo/transforms/Passes.td
+@@ -308,7 +308,26 @@
+ 
+ def StablehloLegalizeToVhloPass : Pass<"stablehlo-legalize-to-vhlo", "ModuleOp"> {
+   let summary = "Legalize StableHLO to VHLO.";
++  let description = [{
++    Legalize StableHLO to the latest version of ops in VHLO. These ops can then
++    be downgraded to older versions of VHLO for forward compatibility using
++    `VhloToVersionPass`.
++
++    ```mlir
++    stablehlo.exponential %[[ARG0]] <{result_accuracy = DEFAULT}> : tensor<f32>
++    # ====>
++    "vhlo.exponential_v2"(%[[ARG0]]) <{result_accuracy = #vhlo.DEFAULT_v1}> : !vhlo.tensor_v1<!vhlo.f32_v1>
++    ```
++
++    See [vhlo.md > The VHLO dialect](https://github.com/openxla/stablehlo/blob/main/docs/vhlo.md)
++    for full details on how VHLO is used to preserve forward and backward
++    compatibility.
++  }];
+   let dependentDialects = ["mlir::vhlo::VhloDialect"];
++  let options = [
++    Option<"allowOtherDialects", "allow-other-dialects", "bool", /*default=*/"false",
++           "Allow serialization to use other (potentially unstable) dialects, inserts unrealized casts between dialects.">,
++  ];
+ }
+ 
+ def StablehloRefineArgumentsPass : Pass<"stablehlo-refine-arguments", "ModuleOp"> {
+@@ -330,6 +349,7 @@
+       %0 = stablehlo.custom_call @stablehlo.shape_refinement_operand_wrapper(%arg0, %c) {...}
+         : (tensor<16xf32>, tensor<1xi64>) -> tensor<?xf32>
+       ...
++    }
+     ```
+ 
+     The `refinedTypesOption` can be used to specify a list of refined types.
+@@ -402,7 +422,23 @@
+ }
+ 
+ def VhloToVersionPass : Pass<"vhlo-to-version"> {
+-  let summary = "Convert between versions of VHLO.";
++  let summary = "Convert between versions of VHLO for compatibility.";
++  let description = [{
++    Converts between versions of VHLO for IR upgrading and downgrading to
++    preserve forward and backward compatibility.
++
++    ```mlir
++    "vhlo.exponential_v2"(%[[ARG0]]) <{result_accuracy = DEFAULT}>
++    # ==( -target=1.0.0 )==>
++    "vhlo.exponential_v1"(%[[ARG0]])
++    # ==( -target=1.9.0 )==>
++    "vhlo.exponential_v2"(%[[ARG0]]) <{result_accuracy = DEFAULT}>
++    ```
++
++    See [vhlo.md > The VHLO dialect](https://github.com/openxla/stablehlo/blob/main/docs/vhlo.md)
++    for full details on how VHLO is used to preserve forward and backward
++    compatibility.
++  }];
+   let options = [
+     Option<"targetVersionOption", "target", "std::string", "",
+            "The target version. Must be a version of the form #.#.# .">,
+diff --ruN a/stablehlo/stablehlo/transforms/StablehloCompatibilityExpander.cpp b/stablehlo/stablehlo/transforms/StablehloCompatibilityExpander.cpp
+--- stablehlo/stablehlo/transforms/StablehloCompatibilityExpander.cpp
++++ stablehlo/stablehlo/transforms/StablehloCompatibilityExpander.cpp
+@@ -47,7 +47,7 @@
+ #include "stablehlo/transforms/PassUtils.h"  // IWYU pragma: keep
+ #include "stablehlo/transforms/Passes.h"
+ 
+-#define DEBUG_TYPE "compat-passes"
++#define DEBUG_TYPE "stablehlo-compat"
+ 
+ namespace mlir {
+ namespace stablehlo {
+diff --ruN a/stablehlo/stablehlo/transforms/StablehloLegalizeToVhlo.cpp b/stablehlo/stablehlo/transforms/StablehloLegalizeToVhlo.cpp
+--- stablehlo/stablehlo/transforms/StablehloLegalizeToVhlo.cpp
++++ stablehlo/stablehlo/transforms/StablehloLegalizeToVhlo.cpp
+@@ -12,6 +12,7 @@
+ limitations under the License.
+ ==============================================================================*/
+ 
++#include <cstddef>
+ #include <cstdint>
+ #include <memory>
+ #include <type_traits>
+@@ -24,6 +25,8 @@
+ #include "mlir/IR/Attributes.h"
+ #include "mlir/IR/Builders.h"
+ #include "mlir/IR/BuiltinAttributes.h"
++#include "mlir/IR/BuiltinDialect.h"
++#include "mlir/IR/BuiltinOps.h"
+ #include "mlir/IR/BuiltinTypes.h"
+ #include "mlir/IR/PatternMatch.h"
+ #include "mlir/IR/ValueRange.h"
+@@ -37,7 +40,7 @@
+ #include "stablehlo/transforms/MapStablehloToVhlo.h"
+ #include "stablehlo/transforms/Passes.h"
+ 
+-#define DEBUG_TYPE "compat-passes"
++#define DEBUG_TYPE "stablehlo-compat"
+ 
+ namespace mlir {
+ namespace stablehlo {
+@@ -53,17 +56,33 @@
+ 
+ class StablehloToVhloTypeConverter : public vhlo::VhloTypeConverter {
+  public:
+-  StablehloToVhloTypeConverter() : vhlo::VhloTypeConverter() {
+-    addConversion([](Type type) -> Type {
+-      if (llvm::isa<vhlo::VhloDialect>(type.getDialect())) return type;
+-
+-      LLVM_DEBUG(llvm::dbgs() << "Invalid type: " << type << '\n');
++  StablehloToVhloTypeConverter(bool allowOtherDialects)
++      : vhlo::VhloTypeConverter() {
++    LLVM_DEBUG(
++        llvm::dbgs()
++        << "[StablehloToVhloTypeConverter] Creating with allowOtherDialects: "
++        << allowOtherDialects << '\n');
++
++    addConversion([&allowOtherDialects](Type type) -> Type {
++      if (isa<vhlo::VhloDialect>(type.getDialect())) return type;
++
++      if (allowOtherDialects &&
++          !isa<BuiltinDialect, StablehloDialect>(type.getDialect())) {
++        LLVM_DEBUG(llvm::dbgs()
++                   << "[StablehloToVhloTypeConverter] Valid non-VHLO type: "
++                   << type << '\n');
++        return type;
 +      }
-+      rewriter.replaceOp(op, constants);
-+      return success();
-+    }
-+    if (!refinementKey->getGlobalConstants().empty()) {
-+      // Drop the global-constant arguments, but only if necessary, or else we
-+      // will end up trying to refine the new CallOp forever.
-+      SmallVector<Value> newOperands;
-+      auto leadingTokenOperands =
-+          op.getOperands().take_front(refinementKey->getLeadingTokenOperands());
-+      auto functionalOperands = op.getOperands().take_back(
-+          refinementKey->getFunctionalArgumentTypes().size());
-+      newOperands.append(leadingTokenOperands.begin(),
-+                         leadingTokenOperands.end());
-+      newOperands.append(functionalOperands.begin(), functionalOperands.end());
-+      op = rewriter.replaceOpWithNewOp<func::CallOp>(
-+          op, op.getResultTypes(), callee.getSymName(), newOperands);
-+      LLVM_DEBUG(llvm::dbgs() << "Replaced call with " << op << "\n");
-+    }
-+    return refineReturnTypes(rewriter, op, callee.getResultTypes());
-+  }
 +
-+ private:
-+  RefineShapeState& state;
- };
++      LLVM_DEBUG(llvm::dbgs() << "[StablehloToVhloTypeConverter] Invalid type: "
++                              << type << '\n');
+       return {};
+     });
+     addConversion([](TokenType token) -> Type {
+       return vhlo::TokenV1Type::get(token.getContext());
+     });
+     addBuiltinToVhloConversions();
++    if (allowOtherDialects) addUnrealizedMaterializations();
+   }
  
- struct RefineConvertOpPattern : public OpRewritePattern<ConvertOp> {
-@@ -718,49 +998,116 @@
+   Attribute convertEncoding(Attribute attr) const final {
+@@ -1021,14 +1040,27 @@
+ struct StablehloLegalizeToVhloPass
+     : public impl::StablehloLegalizeToVhloPassBase<
+           StablehloLegalizeToVhloPass> {
++  using StablehloLegalizeToVhloPassBase::StablehloLegalizeToVhloPassBase;
++
+   LogicalResult initialize(MLIRContext* context) override {
+     target = std::make_shared<ConversionTarget>(*context);
+     target->addIllegalDialect<stablehlo::StablehloDialect>();
+     target->addIllegalDialect<func::FuncDialect>();
+     target->addLegalDialect<vhlo::VhloDialect>();
++    LLVM_DEBUG(llvm::dbgs()
++               << "allowOtherDialects: " << allowOtherDialects << "\n");
++
++    converter =
++        std::make_shared<StablehloToVhloTypeConverter>(allowOtherDialects);
++    if (allowOtherDialects) {
++      target->addLegalOp<UnrealizedConversionCastOp>();
++    } else {
++      target->addIllegalOp<UnrealizedConversionCastOp>();
++    }
+ 
+     RewritePatternSet patterns_(context);
+-    stablehlo::populateStablehloToVhloPatterns(&patterns_, &converter, context);
++    stablehlo::populateStablehloToVhloPatterns(&patterns_, converter.get(),
++                                               context);
+     patterns = std::move(patterns_);
+ 
+     return success();
+@@ -1043,7 +1075,7 @@
+   }
+ 
+  private:
+-  StablehloToVhloTypeConverter converter;
++  std::shared_ptr<StablehloToVhloTypeConverter> converter;
+   FrozenRewritePatternSet patterns;
+   std::shared_ptr<ConversionTarget> target;
+ };
+diff --ruN a/stablehlo/stablehlo/transforms/VhloLegalizeToStablehlo.cpp b/stablehlo/stablehlo/transforms/VhloLegalizeToStablehlo.cpp
+--- stablehlo/stablehlo/transforms/VhloLegalizeToStablehlo.cpp
++++ stablehlo/stablehlo/transforms/VhloLegalizeToStablehlo.cpp
+@@ -27,6 +27,7 @@
+ #include "mlir/Dialect/Func/IR/FuncOps.h"
+ #include "mlir/IR/Attributes.h"
+ #include "mlir/IR/BuiltinAttributes.h"
++#include "mlir/IR/BuiltinOps.h"
+ #include "mlir/IR/BuiltinTypeInterfaces.h"
+ #include "mlir/IR/PatternMatch.h"
+ #include "mlir/IR/ValueRange.h"
+@@ -40,7 +41,7 @@
+ #include "stablehlo/transforms/MapStablehloToVhlo.h"
+ #include "stablehlo/transforms/Passes.h"
+ 
+-#define DEBUG_TYPE "compat-passes"
++#define DEBUG_TYPE "stablehlo-compat"
+ 
+ namespace mlir {
+ namespace stablehlo {
+@@ -63,6 +64,7 @@
+       return stablehlo::TokenType::get(token.getContext());
+     });
+     addVhloToBuiltinConversions();
++    addUnrealizedMaterializations();
+   }
+ 
+   Attribute convertEncoding(Attribute attr) const final {
+@@ -1021,6 +1023,36 @@
    }
  };
  
-+LogicalResult applyShapeRefinementPatterns(func::FuncOp func,
-+                                           RefineShapeState& state) {
-+  MLIRContext* context = func.getContext();
-+  RewritePatternSet patterns(context);
-+  GreedyRewriteConfig config;
-+
-+  // The algorithm behind this pass consists of a single traversal of the
-+  // function. This is sufficient because we only support one function per
-+  // program at the moment.
-+  // TODO(#1048): Find out why .maxIterations = 1 no longer works.
-+  // There have been recent refactors to applyPatternsAndFoldGreedily
-+  // upstream, and that might be the reason.
-+  config.useTopDownTraversal = true;
-+  config.enableRegionSimplification = GreedySimplifyRegionLevel::Aggressive;
-+  config.maxIterations = 2;
-+  config.maxNumRewrites = GreedyRewriteConfig::kNoLimit;
-+  config.strictMode = GreedyRewriteStrictness::AnyOp;
-+
-+  populateStablehloRefineShapesPatterns(&patterns, context);
-+  patterns.add<RefineCallOpPattern>(context, state);
-+
-+  // The folding patterns implement partial evaluation of shape computations
-+  // which is a critical part of implementing type refinement for ops like
-+  // dynamic_broadcast_in_dim, dynamic_iota and dynamic_reshape whose shape
-+  // depends on the value of their shape operands.
-+  populateStablehloShapeFolderPatterns(&patterns, context);
-+
-+  if (failed(applyPatternsAndFoldGreedily(func, std::move(patterns), config)))
-+    func.emitError("Failed to converge StablehloRefineShapes in ")
-+        << config.maxIterations << " iterations";
-+
-+  return success();
-+}
-+
-+LogicalResult refineFunction(MLIRContext& context, RefineShapeState& state,
-+                             RefinementKey& key) {
-+  LLVM_DEBUG(llvm::dbgs() << "Refining: " << key.toString() << "\n");
-+  auto refinementState = state.validateFunctionRefinement(key);
-+  if (failed(refinementState)) return failure();
-+
-+  auto func = key.getFunc();
-+  if (*refinementState == RefineShapeState::RefinementState::ALREADY_REFINED) {
-+    LLVM_DEBUG(llvm::dbgs() << "Function " << func.getName()
-+                            << " already refined, skipping\n");
++// Fold unnecessary unrealized conversion casts.
++// unrealized_conversion(unrealized_conversion(X) : Y) : X -> X
++// Not as complicated at mlir::reconcileUnrealizedCasts because we know that the
++// types must be the same and shouldn't be in chains greater than 2.
++struct ReconcileUnrealizedConversionCasts
++    : public OpRewritePattern<UnrealizedConversionCastOp> {
++  using OpRewritePattern<UnrealizedConversionCastOp>::OpRewritePattern;
++  LogicalResult matchAndRewrite(UnrealizedConversionCastOp op,
++                                PatternRewriter& rewriter) const override {
++    SmallVector<UnrealizedConversionCastOp> unrealizedCasts(
++        op->getNumOperands() + 1);
++    unrealizedCasts.push_back(op);
++    for (auto operand : op.getOperands()) {
++      auto unrealizedOperand =
++          operand.getDefiningOp<UnrealizedConversionCastOp>();
++      if (!unrealizedOperand) {
++        LLVM_DEBUG(llvm::dbgs() << "Failed to reconcile unrealized conversion "
++                                   "casts: "
++                                << op.getOperationName() << "\n");
++        return success();
++      }
++      unrealizedCasts.push_back(unrealizedOperand);
++    }
++    LLVM_DEBUG(llvm::dbgs() << "Reconciling unrealized conversion casts: "
++                            << op.getOperationName() << "\n");
++    mlir::reconcileUnrealizedCasts(unrealizedCasts);
 +    return success();
 +  }
++};
 +
-+  auto scopedCleanup = state.createScopedFunctionRefinement(key);
-+
-+  // StableHLO functions must have exactly one block.
-+  if (!func.getRegion().hasOneBlock())
-+    return func.emitOpError() << "must have exactly one block";
-+
-+  // Replace the global-constant arguments with their values and drop args.
-+  // Wrap non-global-constant arguments with bitcast_convert.
-+  OpBuilder builder(func.getRegion());
-+  builder.setInsertionPointToStart(&func.getRegion().front());
-+  int64_t leadingTokenOperands = key.getLeadingTokenOperands();
-+
-+  for (auto [i, dimValue] : llvm::enumerate(key.getGlobalConstants())) {
-+    int64_t operandIdx = leadingTokenOperands + i;
-+    BlockArgument arg = func.getArgument(operandIdx);
-+    Type argType = arg.getType();
-+    ShapedType argShapedType = dyn_cast<ShapedType>(argType);
-+
-+    if (!argShapedType)
-+      return func.emitOpError()
-+             << "expected global constant argument to be shaped";
-+
-+    auto replacement_op = builder.create<stablehlo::ConstantOp>(
-+        arg.getLoc(), argType, DenseElementsAttr::get(argShapedType, dimValue));
-+    arg.replaceAllUsesWith(replacement_op);
-+  }
-+  BitVector argIndices(func.getNumArguments());
-+  size_t firstFunctionalArgument =
-+      leadingTokenOperands + key.getGlobalConstants().size();
-+  argIndices.set(leadingTokenOperands, firstFunctionalArgument);
-+  func.eraseArguments(argIndices);
-+
-+  // Refine the remaining argument types, wrap with shape buffer custom calls.
-+  SmallVector<Type> refinedTypes =
-+      key.getAllNonGlobalConstantArgumentTypes(context);
-+  if (failed(refineArguments(func, refinedTypes))) return failure();
-+  LLVM_DEBUG(llvm::dbgs() << "Refined function type for " << func.getName()
-+                          << ": " << func.getFunctionType() << "\n");
-+
-+  // Now iterate into the function body and apply refinement patterns.
-+  if (failed(applyShapeRefinementPatterns(func, state))) return failure();
-+
-+  LLVM_DEBUG(llvm::dbgs() << "refineFunction " << func.getName()
-+                          << ": end with type " << func.getFunctionType()
-+                          << "\n");
-+  return success();
-+}
-+
- struct StablehloRefineShapesPass
-     : public impl::StablehloRefineShapesPassBase<StablehloRefineShapesPass> {
-   using StablehloRefineShapesPassBase::StablehloRefineShapesPassBase;
+ template <typename... StablehloOpTypes>
+ void populateVhloToStablehloPatterns(RewritePatternSet* patterns,
+                                      TypeConverter* converter,
+@@ -1043,6 +1075,7 @@
  
--  LogicalResult initialize(MLIRContext* context) override {
--    // The algorithm behind this pass consists of a single traversal of the
--    // function. This is sufficient because we only support one function per
--    // program at the moment.
--    // TODO(#1048): Find out why .maxIterations = 1 no longer works.
--    // There have been recent refactors to applyPatternsAndFoldGreedily
--    // upstream, and that might be the reason.
--    config.useTopDownTraversal = true;
--    config.enableRegionSimplification = GreedySimplifyRegionLevel::Aggressive;
--    config.maxIterations = 2;
--    config.maxNumRewrites = GreedyRewriteConfig::kNoLimit;
--    config.strictMode = GreedyRewriteStrictness::AnyOp;
--
--    RewritePatternSet patterns_(context);
--    populateStablehloRefineShapesPatterns(&patterns_, context);
--
--    // The folding patterns implement partial evaluation of shape computations
--    // which is a critical part of implementing type refinement for ops like
--    // dynamic_broadcast_in_dim, dynamic_iota and dynamic_reshape whose shape
--    // depends on the value of their shape operands.
--    populateStablehloShapeFolderPatterns(&patterns_, context);
--    patterns = std::move(patterns_);
--
--    return success();
--  }
--
-   void runOnOperation() override {
-     auto func = getStablehloRefineShapesTarget(getOperation());
-     if (!func) return signalPassFailure();
+     RewritePatternSet patterns_(context);
+     stablehlo::populateVhloToStablehloPatterns(&patterns_, &converter, context);
++    patterns_.add<ReconcileUnrealizedConversionCasts>(context);
+     patterns = std::move(patterns_);
  
--    if (failed(applyPatternsAndFoldGreedily(func, patterns, config))) {
--      func.emitError("Failed to converge StablehloRefineShapes in ")
--          << config.maxIterations << " iterations";
--    }
--  }
--
-- private:
--  FrozenRewritePatternSet patterns;
--  GreedyRewriteConfig config;
-+    // Start with empty state, and no dim args / token args.
-+    MLIRContext* context = func.getContext();
-+    RefineShapeState state;
-+    RefinementKey key(func, 0, {}, llvm::to_vector(func.getArgumentTypes()));
-+    if (failed(refineFunction(*context, state, key)))
-+      return signalPassFailure();
-+  }
- };
- 
- }  // namespace
-@@ -807,6 +1154,7 @@
-                                            MLIRContext* context) {
-   patterns->add<RefineAllGatherOpPattern>(context);
-   patterns->add<RefineBitcastConvertOpPattern>(context);
-+  // patterns->add<RefineCallOpPattern>(context); // Populate requires inline
-   patterns->add<RefineConvertOpPattern>(context);
-   patterns->add<RefineConvolutionOpPattern>(context);
-   patterns->add<RefineCustomCallOpPattern>(context);
-diff --ruN a/stablehlo/stablehlo/transforms/StablehloRefineShapes.h b/stablehlo/stablehlo/transforms/StablehloRefineShapes.h
---- stablehlo/stablehlo/transforms/StablehloRefineShapes.h
-+++ stablehlo/stablehlo/transforms/StablehloRefineShapes.h
-@@ -34,6 +34,11 @@
- // Returns a nullptr and emits appropriate errors if such a function cannot
- // be obtained from the module.
- func::FuncOp getStablehloRefineShapesTarget(ModuleOp module);
+     return success();
+@@ -1055,6 +1088,12 @@
+     if (failed(applyPartialConversion(getOperation(), *target, patterns))) {
+       return signalPassFailure();
+     }
 +
-+// Refine the arguments of the given function using the given types.
-+// Wraps all operands in a custom call to keep the IR valid during refinement.
-+// %0 = stablehlo.custom_call @stablehlo.shape_refinement_operand_wrapper(%arg0)
-+LogicalResult refineArguments(func::FuncOp func, TypeRange refinedTypes);
++    // Cleanup unrealized conversion casts (if any, in case of dialect mixing)
++    SmallVector<UnrealizedConversionCastOp> ops;
++    getOperation().walk(
++        [&ops](UnrealizedConversionCastOp op) { ops.push_back(op); });
++    reconcileUnrealizedCasts(ops);
+   }
  
- // Refines the values using the given types.
- // Tricky implementation details:
+  private:
+diff --ruN a/stablehlo/stablehlo/transforms/VhloToVersion.cpp b/stablehlo/stablehlo/transforms/VhloToVersion.cpp
+--- stablehlo/stablehlo/transforms/VhloToVersion.cpp
++++ stablehlo/stablehlo/transforms/VhloToVersion.cpp
+@@ -40,7 +40,7 @@
+ #include "stablehlo/dialect/VhloTypes.h"
+ #include "stablehlo/transforms/Passes.h"
+ 
+-#define DEBUG_TYPE "compat-passes"
++#define DEBUG_TYPE "stablehlo-compat"
+ 
+ namespace mlir {
+ namespace stablehlo {
 

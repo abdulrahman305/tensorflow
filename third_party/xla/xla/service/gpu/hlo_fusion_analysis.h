@@ -25,8 +25,8 @@ limitations under the License.
 #include "absl/log/check.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
+#include "xla/hlo/utils/hlo_traversal.h"
 #include "xla/service/gpu/backend_configs.pb.h"
-#include "xla/service/gpu/hlo_traversal.h"
 #include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/stream_executor/device_description.h"
 
@@ -46,6 +46,7 @@ class HloFusionAnalysis {
     kInputSlices,
     kScatter,
     kCuDnn,
+    kDynamicMemcpy,
   };
 
   // Precomputed information about inputs (arguments) and outputs (roots) of the

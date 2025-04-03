@@ -21,7 +21,6 @@ limitations under the License.
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/strings/string_view.h"
-#include "absl/types/optional.h"
 #include "xla/tsl/lib/gtl/map_util.h"
 #include "xla/tsl/profiler/utils/tf_op_utils.h"
 
@@ -39,6 +38,8 @@ const char kSparseCorePlaneRegex[] = {
 // migrated.
 const absl::string_view kCustomPlanePrefix = "/device:CUSTOM:";
 
+const absl::string_view kScopeRangeIdTreePlaneName =
+    "/host:__ScopeRangeCallStack__";
 const absl::string_view kTpuRuntimePlaneName = "/host:TPU-runtime";
 const absl::string_view kCuptiDriverApiPlaneName = "/host:CUPTI";
 const absl::string_view kRoctracerApiPlaneName = "/host:ROCTRACER";
@@ -50,6 +51,8 @@ const absl::string_view kSyscallsPlaneName = "Syscalls";
 
 const absl::string_view kStepLineName = "Steps";
 const absl::string_view kSparseCoreStepLineName = "Sparse Core Steps";
+const absl::string_view kSparseCoreModuleLineName = "Sparse Core Modules";
+const absl::string_view kSparseCoreOpLineName = "Sparse Core Ops";
 const absl::string_view kTensorFlowNameScopeLineName = "Framework Name Scope";
 const absl::string_view kTensorFlowOpLineName = "Framework Ops";
 const absl::string_view kXlaModuleLineName = "XLA Modules";
@@ -59,6 +62,8 @@ const absl::string_view kKernelLaunchLineName = "Launch Stats";
 const absl::string_view kSourceLineName = "Source code";
 const absl::string_view kHostOffloadOpLineName = "Host Offload Ops";
 const absl::string_view kCounterEventsLineName = "_counters_";
+const absl::string_view kTensorCoreSyncFlagLineName = "Tensor Core Sync Flag";
+const absl::string_view kSparseCoreSyncsLineName = "Sparse Core Syncs";
 
 const absl::string_view kDeviceVendorNvidia = "Nvidia";
 const absl::string_view kDeviceVendorAMD = "AMD";
@@ -274,6 +279,7 @@ const StatTypeMap& GetStatTypeMap() {
        {"flops", kFlops},
        {"model_flops", kModelFlops},
        {"bytes_accessed", kBytesAccessed},
+       {"raw_bytes_accessed", kRawBytesAccessed},
        {"memory_access_breakdown", kMemoryAccessBreakdown},
        {"shape_with_layout", kShapeWithLayout},
        {"source", kSourceInfo},
@@ -282,6 +288,8 @@ const StatTypeMap& GetStatTypeMap() {
        {"bytes_transferred", kBytesTransferred},
        {"queue", kDmaQueue},
        {"dcn_collective_info", kDcnCollectiveInfo},
+       {"all_reduce_id", kAllReduceId},
+       {"all_reduce_unique_id", kAllReduceUniqueId},
        // Performance counter related.
        {"Raw Value", kRawValue},
        {"Scaled Value", kScaledValue},
@@ -314,6 +322,8 @@ const StatTypeMap& GetStatTypeMap() {
        {"peak_sram_wr_bw_gigabytes_per_second",
         kDevCapPeakSramWrBwGigabytesPerSecond},
        {"device_vendor", kDevVendor},
+       {"has_megacore", kDevHasMegacore},
+       {"has_merged_vmem", kDevHasMergedVmem},
        // Batching related.
        {"batch_size_after_padding", kBatchSizeAfterPadding},
        {"padding_amount", kPaddingAmount},
@@ -354,37 +364,42 @@ const StatTypeMap& GetStatTypeMap() {
        {"gpu_device_name", kGpuDeviceName},
        {"source_stack", kSourceStack},
        {"device_offset_ps", kDeviceOffsetPs},
-       {"device_duration_ps", kDeviceDurationPs}});
+       {"device_duration_ps", kDeviceDurationPs},
+       {"scope_range_id", kScopeRangeId},
+       {"core_details", kCoreDetails}});
   DCHECK_EQ(stat_type_map->size(), kNumStatTypes);
   return *stat_type_map;
 }
 
 const MegaScaleStatTypeMap& GetMegaScaleStatTypeMap() {
-  static auto* stat_type_map = new MegaScaleStatTypeMap({
-      {"graph_key", kMegaScaleGraphKey},
-      {"local_device_id", kMegaScaleLocalDeviceId},
-      {"num_actions", kMegaScaleNumActions},
-      {"collective_type", kMegaScaleCollectiveType},
-      {"input_size", kMegaScaleInputSize},
-      {"slack_us", kMegaScaleSlackUs},
-      {"action_type", kMegaScaleActionType},
-      {"start_end_type", kMegaScaleStartEndType},
-      {"action_index", kMegaScaleActionIndex},
-      {"action_duration_ns", kMegaScaleActionDurationNs},
-      {"action_inputs", kMegaScaleActionInputs},
-      {"transfer_source", kMegaScaleTransferSource},
-      {"transfer_destinations", kMegaScaleTransferDestinations},
-      {"buffer_sizes", kMegaScaleBufferSizes},
-      {"compute_operation", kMegaScaleComputeOperation},
-      {"chunk", kMegaScaleChunk},
-      {"launch_id", kMegaScaleLaunchId},
-      {"loop_iteration", kMegaScaleLoopIteration},
-      {"transmission_budget_us", kMegaScaleTransmissionBudgetUs},
-      {"delay_budget_us", kMegaScaleDelayBudgetUs},
-      {"graph_protos", kMegaScaleGraphProtos},
-      {"network_transport_latency_us", kMegaScaleNetworkTransportLatency},
-      {"hlo_module", kMegaScaleHloModule},
-  });
+  static auto* stat_type_map = new MegaScaleStatTypeMap(
+      {{"graph_key", kMegaScaleGraphKey},
+       {"local_device_id", kMegaScaleLocalDeviceId},
+       {"num_actions", kMegaScaleNumActions},
+       {"collective_type", kMegaScaleCollectiveType},
+       {"input_size", kMegaScaleInputSize},
+       {"send_channel_id", kMegaScaleSendChannelId},
+       {"recv_channel_id", kMegaScaleRecvChannelId},
+       {"slack_us", kMegaScaleSlackUs},
+       {"action_type", kMegaScaleActionType},
+       {"start_end_type", kMegaScaleStartEndType},
+       {"action_index", kMegaScaleActionIndex},
+       {"action_duration_ns", kMegaScaleActionDurationNs},
+       {"action_inputs", kMegaScaleActionInputs},
+       {"transfer_source", kMegaScaleTransferSource},
+       {"transfer_destinations", kMegaScaleTransferDestinations},
+       {"dcn_topology_level", kMegaScaleTransferDcnTopologyLevel},
+       {"buffer_sizes", kMegaScaleBufferSizes},
+       {"compute_operation", kMegaScaleComputeOperation},
+       {"chunk", kMegaScaleChunk},
+       {"launch_id", kMegaScaleLaunchId},
+       {"loop_iteration", kMegaScaleLoopIteration},
+       {"transmission_budget_us", kMegaScaleTransmissionBudgetUs},
+       {"delay_budget_us", kMegaScaleDelayBudgetUs},
+       {"graph_protos", kMegaScaleGraphProtos},
+       {"network_transport_latency_us", kMegaScaleNetworkTransportLatency},
+       {"hlo_module", kMegaScaleHloModule},
+       {"multi_slice_topology", kMegaScaleMultiSliceTopology}});
   DCHECK_EQ(stat_type_map->size(), kNumMegaScaleStatTypes);
   return *stat_type_map;
 }
