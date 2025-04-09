@@ -85,10 +85,27 @@ xla_cc_test(
 )
 
 cc_library(
+    name = "abstract_tracked_device_buffer",
+    srcs = ["abstract_tracked_device_buffer.cc"],
+    hdrs = ["abstract_tracked_device_buffer.h"],
+    deps = [
+        ":pjrt_client",
+        ":pjrt_future",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/synchronization",
+        "@local_tsl//tsl/profiler/lib:traceme",
+    ],
+)
+
+cc_library(
     name = "tracked_device_buffer",
     srcs = ["tracked_device_buffer.cc"],
     hdrs = ["tracked_device_buffer.h"],
     deps = [
+        ":abstract_tracked_device_buffer",
         ":event_pool",
         ":pjrt_client",
         ":pjrt_common",
@@ -504,6 +521,7 @@ cc_library(
     hdrs = ["pjrt_stream_executor_client.h"],
     visibility = internal_visibility(["//xla:friends"]),
     deps = [
+        ":abstract_tracked_device_buffer",
         ":event_pool",
         ":host_callback",
         ":host_memory_spaces",
@@ -1155,6 +1173,17 @@ cc_library(
         ":pjrt_device_description",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+cc_library(
+    name = "async_work_runner",
+    hdrs = ["async_work_runner.h"],
+    deps = [
+        "//xla/tsl/concurrency:async_value",
+        "//xla/tsl/concurrency:ref_count",
+        "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/types:span",
     ],
 )

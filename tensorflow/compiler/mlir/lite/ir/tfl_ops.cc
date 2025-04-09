@@ -2230,21 +2230,18 @@ namespace {
 // * The input's defining op is another tfl.reshape.
 // TODO(antiagainst): This pattern probably should be moved to the peephole
 // category, after we have the infra for peephole passes.
-struct RemoveAdjacentReshape : public RewritePattern::SplitMatchAndRewrite {
+struct RemoveAdjacentReshape : public RewritePattern {
   explicit RemoveAdjacentReshape(MLIRContext* context)
-      : RewritePattern::SplitMatchAndRewrite(ReshapeOp::getOperationName(), 1,
-                                             context) {}
+      : RewritePattern(ReshapeOp::getOperationName(), 1, context) {}
 
-  LogicalResult match(Operation* op) const override {
+  LogicalResult matchAndRewrite(Operation* op,
+                                PatternRewriter& rewriter) const override {
     auto thisOp = cast<ReshapeOp>(op);
-    auto prevOp = thisOp.getOperand(0).getDefiningOp();
-    return isa_and_nonnull<ReshapeOp>(prevOp) ? success() : failure();
-  }
-
-  void rewrite(Operation* op, PatternRewriter& rewriter) const override {
-    auto thisOp = cast<ReshapeOp>(op);
-    auto prevOp = cast<ReshapeOp>(thisOp.getOperand(0).getDefiningOp());
-
+    auto prevOp =
+        dyn_cast_or_null<ReshapeOp>(thisOp.getOperand(0).getDefiningOp());
+    if (!prevOp) {
+      return failure();
+    }
     // Replace
     //   %1 = "tfl.reshape"(%0, %shape0)
     //   %2 = "tfl.reshape"(%1, %shape1)
@@ -2252,6 +2249,7 @@ struct RemoveAdjacentReshape : public RewritePattern::SplitMatchAndRewrite {
     //   %2 = "tfl.reshape"(%0, %shape1)
     rewriter.replaceOpWithNewOp<ReshapeOp>(
         op, thisOp.getType(), prevOp.getOperand(0), thisOp.getOperand(1));
+    return success();
   }
 };
 
@@ -2963,12 +2961,12 @@ namespace {
 
 /// This pattern matches and remove a tfl.fake_quant if all the users of this op
 /// and itself have "minmax" attribute set.
-struct DropFakeQuant : public RewritePattern::SplitMatchAndRewrite {
+struct DropFakeQuant : public RewritePattern {
   explicit DropFakeQuant(MLIRContext* context)
-      : RewritePattern::SplitMatchAndRewrite(FakeQuantOp::getOperationName(), 1,
-                                             context) {}
+      : RewritePattern(FakeQuantOp::getOperationName(), 1, context) {}
 
-  LogicalResult match(Operation* op) const override {
+  LogicalResult matchAndRewrite(Operation* op,
+                                PatternRewriter& rewriter) const override {
     // We only match the op with valid "minmax" attribute.
     if (!HasValidMinMaxAttribute(op)) return failure();
 
@@ -2978,12 +2976,9 @@ struct DropFakeQuant : public RewritePattern::SplitMatchAndRewrite {
     for (auto* operand : fakeQuantOp.getResult().getUsers())
       if (!HasValidMinMaxAttribute(operand)) return failure();
 
-    return success();
-  }
-
-  void rewrite(Operation* op, PatternRewriter& rewriter) const override {
     // Replace the matched FakeQuantOp by its primary operand.
     rewriter.replaceOp(op, op->getOperand(0));
+    return success();
   }
 };
 }  // end anonymous namespace
@@ -4447,6 +4442,27 @@ int64_t TransposeConvOp::GetArithmeticCount(Operation* op) {
 // StridedSliceOp
 //===----------------------------------------------------------------------===//
 
+bool VerifyStridedSliceOpInputRankConstraints(StridedSliceOp op) {
+  auto ranked_input_type =
+      mlir::dyn_cast<RankedTensorType>(op.getInput().getType());
+
+  // If input is unranked, there is nothing else to be verified.
+  if (!ranked_input_type) return true;
+  const int num_input_dims = ranked_input_type.getRank();
+
+  // The kernel will reshape the input tensor with new axis, it only supports
+  // this reshaped tensor up to 5D.
+  const uint32_t ellipsis_mask = op.getEllipsisMask();
+  const uint32_t new_axis_mask = op.getNewAxisMask();
+  int num_added_axis = 0;
+  for (int i = 0; i < 8; ++i) {
+    if (!((1 << i) & ellipsis_mask) && ((1 << i) & new_axis_mask)) {
+      num_added_axis++;
+    }
+  }
+  return (num_input_dims + num_added_axis <= 5);
+}
+
 LogicalResult StridedSliceOp::verify() {
   StridedSliceOp op = *this;
   auto ranked_input_type =
@@ -4473,17 +4489,6 @@ LogicalResult StridedSliceOp::verify() {
     if (strides_type.getDimSize(0) > num_input_dims) return failure();
   }
 
-  // The kernel will reshape the input tensor with new axis, it only supports
-  // this reshaped tensor up to 5D.
-  uint32_t ellipsis_mask = op.getEllipsisMask();
-  uint32_t new_axis_mask = op.getNewAxisMask();
-  int num_added_axis = 0;
-  for (int i = 0; i < 8; ++i) {
-    if (!((1 << i) & ellipsis_mask) && ((1 << i) & new_axis_mask)) {
-      num_added_axis++;
-    }
-  }
-  if (num_input_dims + num_added_axis > 5) return failure();
   return success();
 }
 

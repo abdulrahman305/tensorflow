@@ -187,6 +187,19 @@ void BufferSequencingEvent::ExecuteFutureTasks() {
   thread_pool_->Schedule(std::move(call_all_task_callbacks));
 }
 
+ShapedBuffer RawSEDeviceMemory::AsShapedBuffer(
+    PjRtDevice* device, const Shape& on_device_shape) const {
+  ShapedBuffer shaped_buffer(on_device_shape, device->local_device_id().value(),
+                             device->local_hardware_id().value());
+  ShapeTree<se::DeviceMemoryBase>::iterator iterator =
+      shaped_buffer.buffers().begin();
+  CHECK(iterator != shaped_buffer.buffers().end());
+  iterator->second = mem();
+  ++iterator;
+  CHECK(iterator == shaped_buffer.buffers().end());
+  return shaped_buffer;
+}
+
 class AllocatedRawSEDeviceMemory : public RawSEDeviceMemory {
  public:
   AllocatedRawSEDeviceMemory(se::DeviceMemoryBase value, int device_ordinal,
@@ -273,6 +286,13 @@ void TrackedDeviceBuffer::ReleaseDeviceMemory() {
   device_memory_ = tsl::RCReference<RawSEDeviceMemory>();
 }
 
+void TrackedDeviceBuffer::ConfirmDonation() {
+  // As a sanity check ensure no more usage events can be added to the buffer.
+  LockUseAndTransferUsageEvents();
+  // Release the memory so that no new usage is possible.
+  ReleaseDeviceMemory();
+}
+
 void TrackedDeviceBuffer::AddUsageEvent(
     se::Stream* usage_stream, std::shared_ptr<BufferSequencingEvent> event,
     bool reference_held) {
@@ -321,12 +341,20 @@ void GetDeviceBufferEvents(
   }
 }
 
-void WaitForBufferDefinitionEventsOnStream(const TrackedDeviceBuffer& buffer,
-                                           se::Stream* stream) {
-  absl::flat_hash_set<BufferSequencingEvent*> events;
-  GetDeviceBufferEvents(buffer, /*get_usage_events=*/false, &events);
-  for (BufferSequencingEvent* event : events) {
-    event->WaitForEventOnStream(stream);
+void WaitForBufferDefinitionEventsOnStream(
+    absl::Span<const std::shared_ptr<BufferSequencingEvent>> definition_events,
+    se::Stream* stream) {
+  if (definition_events.size() <= 1) {
+    for (const auto& event : definition_events) {
+      event->WaitForEventOnStream(stream);
+    }
+  } else {
+    absl::flat_hash_set<BufferSequencingEvent*> events;
+    for (const auto& event : definition_events) {
+      if (events.emplace(event.get()).second) {
+        event->WaitForEventOnStream(stream);
+      }
+    }
   }
 }
 

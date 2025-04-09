@@ -192,17 +192,28 @@ CommandBufferCmd::State* CommandBufferCmd::StateManager::GetOrCreate(
 // CommandBufferCmdSequence
 //===----------------------------------------------------------------------===//
 
-CommandBufferCmdSequence::CommandBufferCmdSequence(
-    SynchronizationMode synchronization_mode)
-    : synchronization_mode_(synchronization_mode) {}
-
-void CommandBufferCmdSequence::Append(std::unique_ptr<CommandBufferCmd> cmd) {
-  for (const BufferUse& buffer : cmd->buffers()) {
-    buffers_.insert(buffer);
-    allocs_indices_.insert(buffer.slice().index());
-  }
-
+void CommandBufferCmdSequence::Builder::Append(
+    std::unique_ptr<CommandBufferCmd> cmd) {
   commands_.push_back({std::move(cmd)});
+}
+
+CommandBufferCmdSequence CommandBufferCmdSequence::Builder::Build(
+    SynchronizationMode synchronization_mode) && {
+  return CommandBufferCmdSequence(synchronization_mode, std::move(commands_));
+}
+
+CommandBufferCmdSequence::CommandBufferCmdSequence(
+    SynchronizationMode synchronization_mode,
+    std::vector<std::unique_ptr<CommandBufferCmd>> commands)
+    : synchronization_mode_(synchronization_mode),
+      commands_(std::move(commands)) {
+  // Record all buffers used by commands in the sequence.
+  for (const std::unique_ptr<CommandBufferCmd>& cmd : commands_) {
+    for (const BufferUse& buffer : cmd->buffers()) {
+      buffers_.insert(buffer);
+      allocs_indices_.insert(buffer.slice().index());
+    }
+  }
 }
 
 absl::Status CommandBufferCmdSequence::Prepare(
@@ -981,10 +992,15 @@ CublasLtCmd::CublasLtCmd(
 
 absl::StatusOr<se::gpu::BlasLt::MatmulPlan*> CublasLtCmd::GetMatmulPlan(
     const se::Stream* stream) {
-  auto it = matmul_plans_cache_.find(stream);
-  if (it != matmul_plans_cache_.end()) return it->second.get();
+  {
+    absl::MutexLock lock(&matmul_plans_cache_mutex_);
+    auto it = matmul_plans_cache_.find(stream);
+    if (it != matmul_plans_cache_.end()) return it->second.get();
+  }
   TF_ASSIGN_OR_RETURN(auto plan, se::gpu::BlasLt::GetMatmulPlan(
                                      stream, gemm_config_, epilogue_));
+
+  absl::MutexLock lock(&matmul_plans_cache_mutex_);
   auto [it_insert, _] = matmul_plans_cache_.emplace(stream, std::move(plan));
   return it_insert->second.get();
 }
@@ -993,13 +1009,17 @@ absl::StatusOr<se::gpu::BlasLt::MatmulAlgorithm>
 CublasLtCmd::GetMatmulAlgorithm(const se::Stream* stream,
                                 const se::gpu::BlasLt::MatmulPlan* plan,
                                 int64_t max_workspace) {
-  auto it = matmul_algorithm_cache_.find(plan);
-  if (it != matmul_algorithm_cache_.end()) return it->second;
+  {
+    absl::MutexLock lock(&matmul_algorithm_cache_mutex_);
+    auto it = matmul_algorithm_cache_.find(plan);
+    if (it != matmul_algorithm_cache_.end()) return it->second;
+  }
   TF_ASSIGN_OR_RETURN(
       auto algorithms,
       plan->GetAlgorithms(stream, /*max_algorithm_count*/ 128,
                           /*max_workspace_size*/ max_workspace));
   TF_RET_CHECK(algorithm_idx_ >= 0 && algorithm_idx_ < algorithms.size());
+  absl::MutexLock lock(&matmul_algorithm_cache_mutex_);
   auto [it_insert, _] =
       matmul_algorithm_cache_.emplace(plan, algorithms[algorithm_idx_]);
   return it_insert->second;
@@ -1142,7 +1162,14 @@ absl::StatusOr<CommandBufferCmd::RecordedCommands> CuDnnCmd::Record(
     VLOG(5) << "  Arg: " << arg << ": " << buf.opaque();
     operands.push_back(buf);
   }
-
+  TF_ASSIGN_OR_RETURN(
+      const bool supports_explicit,
+      graph_->get()->SupportsExplicitCommandBufferConstruction());
+  if (supports_explicit) {
+    return RecordedCommands::Create(command_buffer->DnnGraph(
+        *graph_->get(), *execute_params.stream,
+        absl::Span<se::DeviceMemoryBase>(operands), {}));
+  }
   return RecordedCommands::Create(AddTracedCommandBuffer(
       execute_params, record_params, command_buffer, [&](se::Stream* stream) {
         return graph_->get()->Execute(
@@ -1667,7 +1694,7 @@ CommandBufferCmd::BufferUseVector CollectiveBroadcastCmd::buffers() {
 
 DynamicSliceFusionCmd::DynamicSliceFusionCmd(
     ExecutionStreamId execution_stream_id,
-    std::unique_ptr<CommandBufferCmdSequence> embedded_commands,
+    CommandBufferCmdSequence embedded_commands,
     std::vector<std::optional<BufferAllocation::Slice>> arguments,
     std::vector<std::unique_ptr<BufferAllocation>> fake_allocations,
     std::vector<std::optional<std::vector<DynamicSliceThunk::Offset>>> offsets,
@@ -1722,7 +1749,7 @@ bool DynamicSliceFusionCmd::force_update() {
 
 absl::Status DynamicSliceFusionCmd::Initialize(
     const Thunk::InitializeParams& params, StateManager& state) {
-  TF_RETURN_IF_ERROR(embedded_commands_->Initialize(params, state));
+  TF_RETURN_IF_ERROR(embedded_commands_.Initialize(params, state));
   absl::MutexLock lock(&mutex_);
   if (offsets_allocs_.contains(params.executor)) return absl::OkStatus();
 
@@ -1754,7 +1781,7 @@ absl::Status DynamicSliceFusionCmd::Prepare(
                    slice.orig_shape->dimensions_size());
     }
   }
-  TF_RETURN_IF_ERROR(embedded_commands_->Prepare(params, resource_requests));
+  TF_RETURN_IF_ERROR(embedded_commands_.Prepare(params, resource_requests));
   return absl::OkStatus();
 }
 
@@ -1890,15 +1917,15 @@ DynamicSliceFusionCmd::Record(const Thunk::ExecuteParams& execute_params,
       execute_params.stream->parent()
           ->CreateCommandBuffer(se::CommandBuffer::Mode::kNested)
           .value();
-  TF_RETURN_IF_ERROR(embedded_commands_->Record(new_params, record_params,
-                                                nested_command_buffer.get()));
+  TF_RETURN_IF_ERROR(embedded_commands_.Record(new_params, record_params,
+                                               nested_command_buffer.get()));
   return RecordedCommands::Create(
       command_buffer->AddNestedCommandBuffer(*nested_command_buffer, {}));
 }
 
 CommandBufferCmd::BufferUseVector DynamicSliceFusionCmd::buffers() {
   CommandBufferCmd::BufferUseVector buffers;
-  auto embed_buffers = embedded_commands_->buffers();
+  auto embed_buffers = embedded_commands_.buffers();
   for (auto buffer_usage : embed_buffers) {
     CHECK(
         embeded_to_origin_slice_map_[buffer_usage.slice().index()].has_value());

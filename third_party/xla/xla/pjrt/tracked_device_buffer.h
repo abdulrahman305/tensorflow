@@ -26,6 +26,7 @@ limitations under the License.
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/functional/any_invocable.h"
+#include "xla/pjrt/abstract_tracked_device_buffer.h"
 #include "xla/pjrt/event_pool.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/service/executable.h"
@@ -210,6 +211,10 @@ class RawSEDeviceMemory : public tsl::ReferenceCounted<RawSEDeviceMemory> {
   // buffer.
   virtual void UnsafeReleaseMemory() = 0;
 
+  // Builds a ShapedBuffer which points to mem() of shape on_device_shape.
+  ShapedBuffer AsShapedBuffer(PjRtDevice* device,
+                              const Shape& on_device_shape) const;
+
   static tsl::RCReference<RawSEDeviceMemory> Create(
       se::DeviceMemoryBase value, PjRtLocalDeviceId device_id,
       se::DeviceMemoryAllocator* allocator);
@@ -225,7 +230,7 @@ class RawSEDeviceMemory : public tsl::ReferenceCounted<RawSEDeviceMemory> {
 // owns all of the device memory in the tuple. It also tracks the definition and
 // usage of the memory on streams, to allow for synchronized usage and deletion
 // of memory under all of the allocation model semantics.
-class TrackedDeviceBuffer {
+class TrackedDeviceBuffer : public AbstractTrackedDeviceBuffer {
  public:
   // Helper object to keep track of usage of the buffer on streams.
   struct StreamAndEvent {
@@ -269,8 +274,8 @@ class TrackedDeviceBuffer {
     return device_memory_;
   }
 
-  absl::Span<const std::shared_ptr<BufferSequencingEvent>> definition_events()
-      const {
+  const absl::InlinedVector<std::shared_ptr<BufferSequencingEvent>, 2>&
+  definition_events() const {
     return definition_events_;
   }
   absl::Span<const StreamAndEvent> usage_events() const {
@@ -280,6 +285,9 @@ class TrackedDeviceBuffer {
   // Relinquishes ownership of the buffer's device memory, e.g., after the
   // buffer is passed to a computation that aliases its inputs to outputs.
   void ReleaseDeviceMemory();
+
+  // Only to be called by ScopedHold to mark a successful donation.
+  void ConfirmDonation() override;
 
   // Indicates that the buffer has been used on a stream.
   //
@@ -341,8 +349,9 @@ void GetDeviceBufferEvents(const TrackedDeviceBuffer& buffer,
                            absl::flat_hash_set<BufferSequencingEvent*>* events);
 
 // Waits for all of the definition events in a buffer on 'stream'.
-void WaitForBufferDefinitionEventsOnStream(const TrackedDeviceBuffer& buffer,
-                                           se::Stream* stream);
+void WaitForBufferDefinitionEventsOnStream(
+    absl::Span<const std::shared_ptr<BufferSequencingEvent>> definition_events,
+    se::Stream* stream);
 
 }  // namespace xla
 

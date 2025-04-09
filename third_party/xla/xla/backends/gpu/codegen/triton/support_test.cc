@@ -89,6 +89,7 @@ bool DoesOpSupportType(HloOpcode opcode, PrimitiveType type) {
     case HloOpcode::kReal:
     case HloOpcode::kImag:
     case HloOpcode::kLogistic:
+    case HloOpcode::kCholesky:
       return pu::IsFloatingPointType(type) || pu::IsComplexType(type);
     case HloOpcode::kCbrt:
     case HloOpcode::kErf:
@@ -2518,17 +2519,146 @@ INSTANTIATE_TEST_SUITE_P(CustomCallSuite, CustomCallTest,
                          ::testing::ValuesIn(AllDevicesToTest()),
                          TritonSupportTestDeviceToString);
 
+class CholeskyTest
+    : public TritonSupportTest,
+      public ::testing::WithParamInterface<
+          // The bool parameter is used to parametrize the lower=?.
+          std::tuple<PrimitiveType, se::GpuComputeCapability, bool>> {};
+
+TEST_P(CholeskyTest, Cholesky) {
+  auto [data_type, cc, lower] = GetParam();
+
+  const std::string kHloTestTemplate = absl::Substitute(
+      R"(
+    ENTRY triton_computation {
+      parameter = $0[4,4] parameter(0)
+      ROOT cholesky_op = $0[4,4] cholesky(parameter), lower=$1
+    })",
+      primitive_util::LowercasePrimitiveTypeName(data_type), lower);
+
+  TF_ASSERT_OK_AND_ASSIGN(TestedInstruction ti, ParseTemplateAndGetInstruction(
+                                                    kHloTestTemplate, data_type,
+                                                    HloOpcode::kCholesky));
+  RunSupportTest(std::move(ti), /*output_tile_sizes=*/{2, 2}, cc);
+}
+
+std::string CholeskyTestName(
+    const ::testing::TestParamInfo<
+        std::tuple<PrimitiveType, se::GpuComputeCapability, bool>>& data) {
+  const auto [data_type, cc, lower] = data.param;
+  return absl::StrCat(primitive_util::LowercasePrimitiveTypeName(data_type),
+                      "_", ComputeCapabilityToString(cc), "_", lower);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CholeskySuite, CholeskyTest,
+    ::testing::Combine(
+        ::testing::ValuesIn(AllOpSupportedTypes(HloOpcode::kCholesky)),
+        ::testing::ValuesIn(AllDevicesToTest()), ::testing::Bool()),
+    CholeskyTestName);
+
+class FftTest : public TritonSupportTest,
+                public ::testing::WithParamInterface<
+                    std::tuple<PrimitiveType, se::GpuComputeCapability>> {};
+
+TEST_P(FftTest, FFT) {
+  auto [data_type, cc] = GetParam();
+
+  const std::string hlo_text = R"(
+    ENTRY triton_computation {
+      parameter = $0[16,16] parameter(0)
+      ROOT fft_op = $0[16,16] fft(parameter), fft_type=FFT, fft_length={16}
+    })";
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      TestedInstruction ti,
+      ParseTemplateAndGetInstruction(hlo_text, data_type, HloOpcode::kFft));
+
+  RunSupportTest(std::move(ti), {4, 4}, cc);
+}
+
+TEST_P(FftTest, IFFT) {
+  auto [data_type, cc] = GetParam();
+
+  const std::string hlo_text = R"(
+    ENTRY triton_computation {
+      parameter = $0[16,16] parameter(0)
+      ROOT fft_op = $0[16,16] fft(parameter), fft_type=IFFT, fft_length={16}
+    })";
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      TestedInstruction ti,
+      ParseTemplateAndGetInstruction(hlo_text, data_type, HloOpcode::kFft));
+
+  RunSupportTest(std::move(ti), {4, 4}, cc);
+}
+
+TEST_P(FftTest, RFFT) {
+  auto [data_type, cc] = GetParam();
+  const std::string complex_data_type_str =
+      primitive_util::LowercasePrimitiveTypeName(data_type);
+  // Real type matching the complex type for real -> complex conversion.
+  const std::string real_data_type_str =
+      primitive_util::LowercasePrimitiveTypeName(
+          primitive_util::ComplexComponentType(data_type));
+
+  const std::string hlo_text = absl::Substitute(
+      R"(
+    ENTRY triton_computation {
+      parameter = $0[16,16,32] parameter(0)
+      ROOT fft_op = $1[16,16,17] fft(parameter), fft_type=RFFT, fft_length={16,32}
+    })",
+      real_data_type_str, complex_data_type_str);
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      TestedInstruction ti,
+      ParseTemplateAndGetInstruction(hlo_text, data_type, HloOpcode::kFft));
+
+  RunSupportTest(std::move(ti), {4, 4, 4}, cc);
+}
+
+TEST_P(FftTest, IRFFT) {
+  auto [data_type, cc] = GetParam();
+  const std::string complex_data_type_str =
+      primitive_util::LowercasePrimitiveTypeName(data_type);
+  // Real type matching the complex type for complex -> real conversion.
+  const std::string real_data_type_str =
+      primitive_util::LowercasePrimitiveTypeName(
+          primitive_util::ComplexComponentType(data_type));
+
+  const std::string hlo_text = absl::Substitute(
+      R"(
+  ENTRY triton_computation {
+    parameter = $0[16,16,32,33] parameter(0)
+    ROOT fft_op = $1[16,16,32,64] fft(parameter), fft_type=IRFFT, fft_length={16,32,64}
+  })",
+      complex_data_type_str, real_data_type_str);
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      TestedInstruction ti,
+      ParseTemplateAndGetInstruction(hlo_text, data_type, HloOpcode::kFft));
+
+  RunSupportTest(std::move(ti), {4, 4, 4, 4}, cc);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    FftTestSuite, FftTest,
+    // FFT takes a complex type either as input, output or both. When there is a
+    // complex <-> real conversion, the real type can be directly inferred from
+    // the complex type (C64 <-> F32, C128 <-> F64).
+    ::testing::Combine(::testing::ValuesIn({C64, C128}),
+                       ::testing::ValuesIn(AllDevicesToTest())),
+    TritonSupportTestTypeAndDeviceToString);
+
 constexpr std::array kUnsupportedOps = {
     // clang-format off
     // go/keep-sorted start
-    HloOpcode::kCholesky,
     HloOpcode::kConvolution,
     HloOpcode::kCopyDone,
     HloOpcode::kCopyStart,
     HloOpcode::kDynamicReshape,
     HloOpcode::kDynamicSlice,
     HloOpcode::kDynamicUpdateSlice,
-    HloOpcode::kFft,
     HloOpcode::kGather,
     HloOpcode::kGetTupleElement,
     HloOpcode::kInfeed,
@@ -2581,11 +2711,13 @@ absl::flat_hash_set<HloOpcode> AllTestedOpcodes() {
   ret.emplace(HloOpcode::kBatchNormTraining);
   ret.emplace(HloOpcode::kBitcastConvert);
   ret.emplace(HloOpcode::kCall);
+  ret.emplace(HloOpcode::kCholesky);
   ret.emplace(HloOpcode::kComplex);
   ret.emplace(HloOpcode::kConditional);
   ret.emplace(HloOpcode::kCustomCall);
   ret.emplace(HloOpcode::kDomain);
   ret.emplace(HloOpcode::kDot);
+  ret.emplace(HloOpcode::kFft);
   ret.emplace(HloOpcode::kGetDimensionSize);
   ret.emplace(HloOpcode::kReverse);
   ret.emplace(HloOpcode::kRngBitGenerator);

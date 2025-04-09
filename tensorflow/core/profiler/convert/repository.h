@@ -43,11 +43,13 @@ constexpr char kNoHostIdentifier[] = "NO_HOST";
 
 enum StoredDataType {
   DCN_COLLECTIVE_STATS,
+  OP_STATS,
 };
 
 static auto* kHostDataSuffixes =
     new std::vector<std::pair<StoredDataType, const char*>>(
-        {{StoredDataType::DCN_COLLECTIVE_STATS, ".dcn_collective_stats.pb"}});
+        {{StoredDataType::DCN_COLLECTIVE_STATS, ".dcn_collective_stats.pb"},
+         {StoredDataType::OP_STATS, ".op_stats.pb"}});
 
 // File system directory snapshot of a profile session.
 class SessionSnapshot {
@@ -181,14 +183,19 @@ absl::Status ReadBinaryProto(const SessionSnapshot& session_snapshot,
   return session_snapshot.ReadBinaryProto(data_type, host, proto);
 }
 
+// TODO(b/408280338) Remove this function as 0 reference is found.
+// Add a dummy cost_analysis factory function as a no-op now.
 // Process HloModuleMap from all XSpaces in a session.
 inline absl::StatusOr<HloModuleMap> ProcessHloModuleMap(
     const SessionSnapshot& session_snapshot) {
   HloModuleMap hlo_module_map;
+  tensorflow::profiler::HloCostAnalysisWrapper::Factory create_cost_analysis =
+      []() { return nullptr; };
   for (int i = 0; i < session_snapshot.XSpaceSize(); i++) {
     TF_ASSIGN_OR_RETURN(std::unique_ptr<XSpace> xspace,
                         session_snapshot.GetXSpace(i));
-    ProcessHloModuleMapFromXSpace(hlo_module_map, xspace.get());
+    ProcessHloModuleMapFromXSpace(hlo_module_map, xspace.get(),
+                                  create_cost_analysis);
   }
   return hlo_module_map;
 }
