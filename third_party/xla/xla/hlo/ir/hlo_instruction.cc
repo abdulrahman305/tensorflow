@@ -1381,7 +1381,7 @@ absl::StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
     instruction->set_original_value(original_value);
   }
 
-  return std::move(instruction);
+  return instruction;
 }
 
 /* static */ std::unique_ptr<HloInstruction> HloInstruction::CreateParameter(
@@ -4297,7 +4297,7 @@ std::string FrontendAttributesToString(
     if (LexesAsJsonDict(item.second)) {
       absl::StrAppend(out, item.first, "=", item.second);
     } else {
-      absl::StrAppend(out, item.first, "=\"", item.second, "\"");
+      absl::StrAppend(out, item.first, "=\"", CEscape(item.second), "\"");
     }
   };
   return absl::StrFormat("{%s}",
