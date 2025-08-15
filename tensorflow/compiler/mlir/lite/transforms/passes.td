@@ -283,7 +283,8 @@ def PrepareTFPass : Pass<"tfl-prepare-tf", "mlir::func::FuncOp"> {
   let dependentDialects = ["TFL::TensorFlowLiteDialect",
     "mlir::quant::QuantDialect",
     "mlir::quantfork::QuantizationForkDialect",
-    "mhlo::MhloDialect"
+    "mhlo::MhloDialect",
+    "stablehlo::StablehloDialect"
   ];
   let options = [
       Option<"unfold_batch_matmul_", "unfold_batchmatmul",
@@ -350,6 +351,31 @@ def LowerQuantAnnotationsPass : Pass<"tfl-lower-quant-annotations", "mlir::Modul
     "mlir::quant::QuantDialect",
     "TF::TensorFlowDialect",
     "stablehlo::StablehloDialect"
+  ];
+}
+
+def PropagateQsvPass : Pass<"tfl-propagate-qsv", "mlir::ModuleOp"> {
+  let summary = "Propagates Quantization Scale/Value (QSV) information through the graph.";
+  let description = [{
+      This transformation pass propagates the QSV data across operations in the
+      TensorFlow Lite dialect.
+  }];
+  let constructor = "CreatePropagateQsvPass()";
+  let dependentDialects = [
+    "TFL::TensorFlowLiteDialect",
+    "mlir::quant::QuantDialect"
+  ];
+}
+
+def BiasQuantizerPass : Pass<"tfl-bias-quantizer", "mlir::ModuleOp"> {
+  let summary = "Quantizes bias tensors with respect to other tensors.";
+  let description = [{
+      This pass quantizes bias tensors based on the quantization parameters of
+      other tensors in the same op.
+  }];
+  let constructor = "CreateBiasQuantizerPass()";
+  let dependentDialects = [
+    "TFL::TensorFlowLiteDialect",
   ];
 }
 

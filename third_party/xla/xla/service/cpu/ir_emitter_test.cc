@@ -45,11 +45,13 @@ limitations under the License.
 #include "xla/backends/cpu/codegen/jit_compiler.h"
 #include "xla/backends/cpu/codegen/target_machine_features.h"
 #include "xla/cpu_function_runtime.h"
+#include "xla/hlo/analysis/alias_info.h"
 #include "xla/hlo/analysis/hlo_ordering.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_schedule.h"
 #include "xla/hlo/parser/hlo_parser.h"
+#include "xla/hlo/testlib/hlo_hardware_independent_test_base.h"
 #include "xla/hlo/transforms/simplifiers/hlo_memory_scheduler.h"
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/buffer_value.h"
@@ -62,7 +64,7 @@ limitations under the License.
 #include "xla/service/hlo_module_config.h"
 #include "xla/service/llvm_ir/llvm_util.h"
 #include "xla/service/logical_buffer.h"
-#include "xla/tests/hlo_test_base.h"
+#include "xla/shape_util.h"
 #include "xla/tsl/lib/core/status_test_util.h"
 #include "tsl/platform/env.h"
 #include "tsl/platform/errors.h"
@@ -73,7 +75,7 @@ limitations under the License.
 namespace xla::cpu {
 namespace {
 
-using IrEmitterTest = HloTestBase;
+using IrEmitterTest = HloHardwareIndependentTestBase;
 
 static std::pair<llvm::Function*, llvm::BasicBlock*> CreateFunction(
     llvm::LLVMContext& context, llvm::Module* module, llvm::IRBuilderBase* b) {
@@ -106,12 +108,15 @@ TEST_F(IrEmitterTest, ComputeFuncStack) {
   const HloInstruction* zero = FindInstruction(hlo.get(), "zero");
   ASSERT_NE(zero, nullptr);
 
+  AliasInfo alias_info;
   TF_ASSERT_OK_AND_ASSIGN(
       std::unique_ptr<BufferAssignment> buffer_assignment,
       BufferAssigner::Run(
           hlo.get(), std::make_unique<DependencyHloOrdering>(hlo.get()),
-          backend().compiler()->BufferSizeBytesFunction(),
-          [](LogicalBuffer::Color) { return /*alignment=*/1; }));
+          [](const BufferValue& buffer) {
+            return ShapeUtil::ByteSizeOf(buffer.shape(), sizeof(void*));
+          },
+          &alias_info, [](LogicalBuffer::Color) { return /*alignment=*/1; }));
 
   TargetMachineFeaturesStub target_machine([](int64_t size) { return 1; });
 
@@ -268,26 +273,27 @@ CreateIrEmitterForConstantEmissionTests(HloModule& module,
   auto buffer_size_bytes_function = [](const BufferValue& buffer) {
     return CpuExecutable::ShapeSizeBytes(buffer.shape());
   };
+  AliasInfo alias_info;
   auto scheduler =
       debug_options.xla_cpu_enable_concurrency_optimized_scheduler()
           ? std::unique_ptr<ModuleSchedulerAlgorithm>(
-                std::make_unique<BFScheduler>(buffer_size_bytes_function))
-          : std::make_unique<DFSMemoryScheduler>(buffer_size_bytes_function);
+                std::make_unique<BFScheduler>(&alias_info,
+                                              buffer_size_bytes_function))
+          : std::make_unique<DFSMemoryScheduler>(&alias_info,
+                                                 buffer_size_bytes_function);
 
   TF_ASSIGN_OR_RETURN(HloSchedule schedule,
                       ScheduleModule(&module, *scheduler));
   TF_RETURN_IF_ERROR(module.set_schedule(schedule));
 
-  auto memory_alignment = [](LogicalBuffer::Color) {
-    return cpu_function_runtime::MinAlign();
-  };
+  auto memory_alignment = [](LogicalBuffer::Color) { return MinAlign(); };
   // Run buffer allocation on the HLO graph.
   TF_ASSIGN_OR_RETURN(
       std::unique_ptr<BufferAssignment> assignment,
-      BufferAssigner::Run(&module,
-                          std::make_unique<SequentialHloOrdering>(schedule),
-                          buffer_size_bytes_function, memory_alignment,
-                          /*allocate_buffers_for_constants=*/true));
+      BufferAssigner::Run(
+          &module, std::make_unique<SequentialHloOrdering>(schedule),
+          buffer_size_bytes_function, &alias_info, memory_alignment,
+          /*allocate_buffers_for_constants=*/true));
 
   auto target_machine_features =
       std::make_unique<TargetMachineFeatures>(jit_compiler.target_machine());

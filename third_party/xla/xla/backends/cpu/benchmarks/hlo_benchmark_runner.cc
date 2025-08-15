@@ -18,6 +18,7 @@ limitations under the License.
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -28,16 +29,15 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/blocking_counter.h"
 #include "absl/types/span.h"
+#include "xla/debug_options_flags.h"
 #include "xla/hlo/builder/xla_computation.h"
+#include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_input_output_alias_config.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/parser/hlo_parser.h"
+#include "xla/hlo/testlib/verified_hlo_module.h"
 #include "xla/literal.h"
-#include "xla/pjrt/cpu/abstract_tfrt_cpu_buffer.h"
 #include "xla/pjrt/cpu/cpu_client.h"
-#include "xla/pjrt/cpu/cpu_device.h"
-#include "xla/pjrt/cpu/cpu_event.h"
-#include "xla/pjrt/cpu/tracked_cpu_device_buffer.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/pjrt/plugin/xla_cpu/cpu_client_options.h"
@@ -45,7 +45,7 @@ limitations under the License.
 #include "xla/service/hlo_module_config.h"
 #include "xla/shape_util.h"
 #include "xla/tests/test_utils.h"
-#include "xla/tsl/concurrency/async_value_ref.h"
+#include "xla/tools/hlo_module_loader.h"
 #include "xla/tsl/platform/env.h"
 #include "xla/tsl/platform/errors.h"
 #include "xla/tsl/platform/statusor.h"
@@ -53,6 +53,7 @@ limitations under the License.
 #include "xla/tsl/platform/threadpool.h"
 #include "xla/util.h"
 #include "tsl/platform/casts.h"
+#include "tsl/platform/path.h"
 
 namespace xla::cpu {
 
@@ -127,17 +128,38 @@ absl::Status RunHloBenchmark(benchmark::State& state,
                              absl::Span<const Literal* const> args,
                              StrToStrMapping replacements,
                              const HloBenchmarkOptions& benchmark_options) {
+  TF_ASSIGN_OR_RETURN(std::unique_ptr<HloModule> module,
+                      ParseAndReturnUnverifiedModule(
+                          absl::StrReplaceAll(hlo_module, replacements),
+                          HloModuleConfig() /* unused */));
+  return RunHloBenchmark(state, std::move(module), args, benchmark_options);
+}
+
+absl::Status RunHloBenchmark(benchmark::State& state,
+                             std::unique_ptr<HloComputation> hlo_computation,
+                             absl::Span<const Literal* const> args,
+                             const HloBenchmarkOptions& benchmark_options) {
+  std::unique_ptr<HloModule> module = std::make_unique<VerifiedHloModule>(
+      "test", HloModuleConfig() /* unused */,
+      /*verifier_layout_sensitive=*/false,
+      /*allow_mixed_precision_in_hlo_verifier=*/true,
+      ShapeUtil::ByteSizeOfElements);
+  module->AddEntryComputation(std::move(hlo_computation));
+
+  return RunHloBenchmark(state, std::move(module), args, benchmark_options);
+}
+
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+absl::Status RunHloBenchmark(benchmark::State& state,
+                             std::unique_ptr<HloModule> module,
+                             absl::Span<const Literal* const> args,
+                             const HloBenchmarkOptions& benchmark_options) {
   xla::CpuClientOptions client_options;
   TF_ASSIGN_OR_RETURN(std::unique_ptr<PjRtClient> client,
                       xla::GetXlaPjrtCpuClient(client_options));
   PjRtDevice* device = client->devices().front();
   TF_ASSIGN_OR_RETURN(PjRtMemorySpace * memory_space,
                       device->default_memory_space());
-
-  TF_ASSIGN_OR_RETURN(std::unique_ptr<HloModule> module,
-                      ParseAndReturnUnverifiedModule(
-                          absl::StrReplaceAll(hlo_module, replacements),
-                          HloModuleConfig() /* unused */));
 
   XlaComputation computation(module->ToProto());
 
@@ -147,9 +169,15 @@ absl::Status RunHloBenchmark(benchmark::State& state,
     compile_options.executable_build_options.mutable_debug_options()
         ->add_xla_disable_hlo_passes("cpu-parallel-task-assigner");
   }
+  // TODO(intel-tf): Remove this if-block once oneDNN custom calls are enabled
+  // with thunk runtime
+  if (!benchmark_options.use_thunk_runtime) {
+    compile_options.executable_build_options.mutable_debug_options()
+        ->set_xla_cpu_use_thunk_runtime(false);
+  }
   std::unique_ptr<PjRtLoadedExecutable> executable;
   if (benchmark_options.aot_options) {
-    auto* cpu_client = tsl::down_cast<TfrtCpuClient*>(client.get());
+    auto* cpu_client = tsl::down_cast<PjRtCpuClient*>(client.get());
     TF_ASSIGN_OR_RETURN(executable, cpu_client->CompileAheadOfTimeAndLoad(
                                         computation, compile_options,
                                         *benchmark_options.aot_options));
@@ -281,14 +309,20 @@ absl::Status CompileHloBenchmark(benchmark::State& state,
                                  absl::string_view hlo_module,
                                  StrToStrMapping replacements,
                                  const HloBenchmarkOptions& benchmark_options) {
-  xla::CpuClientOptions client_options;
-  TF_ASSIGN_OR_RETURN(std::unique_ptr<PjRtClient> client,
-                      xla::GetXlaPjrtCpuClient(client_options));
-
   TF_ASSIGN_OR_RETURN(std::unique_ptr<HloModule> module,
                       ParseAndReturnUnverifiedModule(
                           absl::StrReplaceAll(hlo_module, replacements),
                           HloModuleConfig() /* unused */));
+
+  return CompileHloBenchmark(state, std::move(module), benchmark_options);
+}
+
+absl::Status CompileHloBenchmark(benchmark::State& state,
+                                 std::unique_ptr<HloModule> module,
+                                 const HloBenchmarkOptions& benchmark_options) {
+  xla::CpuClientOptions client_options;
+  TF_ASSIGN_OR_RETURN(std::unique_ptr<PjRtClient> client,
+                      xla::GetXlaPjrtCpuClient(client_options));
 
   XlaComputation computation(module->ToProto());
 
@@ -296,6 +330,12 @@ absl::Status CompileHloBenchmark(benchmark::State& state,
   if (benchmark_options.disable_parallel_task_assigner) {
     compile_options.executable_build_options.mutable_debug_options()
         ->add_xla_disable_hlo_passes("cpu-parallel-task-assigner");
+  }
+  // TODO(intel-tf): Remove this if-block once oneDNN custom calls are enabled
+  // with thunk runtime
+  if (!benchmark_options.use_thunk_runtime) {
+    compile_options.executable_build_options.mutable_debug_options()
+        ->set_xla_cpu_use_thunk_runtime(false);
   }
 
   for (auto _ : state) {
@@ -305,6 +345,72 @@ absl::Status CompileHloBenchmark(benchmark::State& state,
   }
 
   return absl::OkStatus();
+}
+
+namespace {
+
+absl::StatusOr<std::pair<std::unique_ptr<HloModule>,
+                         std::unique_ptr<RunHloModuleIterationLiterals>>>
+LoadFromHloSnapshotOrHloModuleProto(const std::string& hlo_data,
+                                    absl::string_view extension) {
+  auto iteration_literals_proto =
+      std::make_unique<RunHloModuleIterationLiterals>();
+  if (extension == "pb" || extension == "pbtxt") {
+    TF_ASSIGN_OR_RETURN(iteration_literals_proto,
+                        LoadInputFromData(hlo_data, extension));
+  }
+
+  TF_ASSIGN_OR_RETURN(auto hlo_module, LoadModuleFromData(hlo_data, extension));
+
+  return std::make_pair(std::move(hlo_module),
+                        std::move(iteration_literals_proto));
+}
+
+absl::StatusOr<std::pair<std::unique_ptr<HloModule>,
+                         std::unique_ptr<RunHloModuleIterationLiterals>>>
+LoadFromHloUnoptimizedSnapshot(
+    const HloUnoptimizedSnapshot& unoptimized_snapshot) {
+  TF_ASSIGN_OR_RETURN(
+      HloModuleConfig config,
+      HloModule::CreateModuleConfigFromProto(unoptimized_snapshot.hlo_module(),
+                                             xla::GetDebugOptionsFromFlags()));
+
+  TF_ASSIGN_OR_RETURN(
+      std::unique_ptr<HloModule> hlo_module,
+      HloModule::CreateFromProto(unoptimized_snapshot.hlo_module(), config));
+
+  auto iteration_literals_proto =
+      std::make_unique<RunHloModuleIterationLiterals>();
+
+  if (unoptimized_snapshot.partitions_size() > 1) {
+    return absl::InvalidArgumentError(
+        "HLO snapshot has multiple partitions which is not currently "
+        "supported.");
+  }
+  for (const auto& arg : unoptimized_snapshot.partitions(0).arguments()) {
+    *iteration_literals_proto->add_arguments() = arg;
+  }
+
+  return std::make_pair(std::move(hlo_module),
+                        std::move(iteration_literals_proto));
+}
+
+}  // namespace
+
+absl::StatusOr<std::pair<std::unique_ptr<HloModule>,
+                         std::unique_ptr<RunHloModuleIterationLiterals>>>
+LoadHloModuleAndMaybeIterationLiterals(absl::string_view hlo_path) {
+  std::string hlo_data;
+  TF_RETURN_IF_ERROR(tsl::ReadFileToString(tsl::Env::Default(),
+                                           std::string(hlo_path), &hlo_data));
+
+  HloUnoptimizedSnapshot unoptimized_snapshot;
+  if (unoptimized_snapshot.ParseFromString(hlo_data)) {
+    return LoadFromHloUnoptimizedSnapshot(unoptimized_snapshot);
+  }
+
+  return LoadFromHloSnapshotOrHloModuleProto(hlo_data,
+                                             tsl::io::Extension(hlo_path));
 }
 
 }  // namespace xla::cpu

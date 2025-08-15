@@ -25,14 +25,15 @@ limitations under the License.
 #include "absl/log/log.h"
 #include "mlir/IR/MLIRContext.h"
 #include "xla/hlo/ir/hlo_computation.h"
+#include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
+#include "xla/hlo/testlib/hlo_hardware_independent_test_base.h"
 #include "xla/hlo/testlib/verified_hlo_module.h"
 #include "xla/hlo/utils/hlo_traversal.h"
 #include "xla/service/gpu/gpu_device_info_for_tests.h"
 #include "xla/service/gpu/model/symbolic_tile_analysis.h"
 #include "xla/service/instruction_fusion.h"
 #include "xla/stream_executor/device_description.h"
-#include "xla/tests/hlo_test_base.h"
 #include "xla/tsl/platform/status_matchers.h"
 #include "xla/tsl/platform/statusor.h"
 #include "xla/tsl/platform/test.h"
@@ -43,7 +44,7 @@ namespace {
 
 using ::tsl::testing::IsOkAndHolds;
 
-class TritonEmitterConstraintsTest : public HloTestBase {
+class TritonEmitterConstraintsTest : public HloHardwareIndependentTestBase {
  public:
   std::optional<SymbolicTileAnalysis> TryAnalyzeModule(
       HloModule* module, bool with_triton_emitter_specific_constraints = true) {
@@ -101,22 +102,27 @@ ENTRY entry_computation {
 
   std::optional<SymbolicTileAnalysis> analysis = TryAnalyzeModule(module.get());
   ASSERT_TRUE(analysis.has_value());
+  const HloInstruction* fusion_root =
+      module->entry_computation()->root_instruction()->fused_expression_root();
 
   // The biggest tile in the program has 8 * 65536 = 524288 elements.
-  EXPECT_THAT(analysis->ParametersSatisfyConstraints({8, 128}),
-              IsOkAndHolds(true));
+  EXPECT_THAT(analysis->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({8, 128})}})),
+              absl_testing::IsOkAndHolds(true));
 
   // The biggest tile in the program is 18 * 50304 = 905472 elements which is
   // smaller than the limit of 1048576, but since Triton requires all tile sizes
   // to be a power of 2, the actual tile will be 32 * 65536 = 2097152 elements.
-  EXPECT_THAT(analysis->ParametersSatisfyConstraints({18, 50304}),
-              IsOkAndHolds(false));
+  EXPECT_THAT(analysis->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({18, 50304})}})),
+              absl_testing::IsOkAndHolds(false));
 
   // Because of reduce, we need to load full rows from param_0 and the load tile
   // will be 1024 * 65536 = 67108864 elements, that is larger than the limit of
   // 1048576.
-  EXPECT_THAT(analysis->ParametersSatisfyConstraints({1024, 1}),
-              IsOkAndHolds(false));
+  EXPECT_THAT(analysis->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({1024, 1})}})),
+              absl_testing::IsOkAndHolds(false));
 }
 
 TEST_F(TritonEmitterConstraintsTest, TooManyBlocksConstraintIsEnforced) {
@@ -143,15 +149,19 @@ ENTRY entry_computation {
 
   std::optional<SymbolicTileAnalysis> analysis = TryAnalyzeModule(module.get());
   ASSERT_TRUE(analysis.has_value());
+  const HloInstruction* fusion_root =
+      module->entry_computation()->root_instruction()->fused_expression_root();
 
   // This tiling will require (65536 * 65536) / (128 * 128) = 262144 blocks.
-  EXPECT_THAT(analysis->ParametersSatisfyConstraints({128, 128}),
-              IsOkAndHolds(true));
+  EXPECT_THAT(analysis->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({128, 128})}})),
+              absl_testing::IsOkAndHolds(true));
 
   // This would require to run 65538 * 65538 = 4294967296 blocks that is larger
   // than the hardware limit of 2^32 - 1.
-  EXPECT_THAT(analysis->ParametersSatisfyConstraints({1, 1}),
-              IsOkAndHolds(false));
+  EXPECT_THAT(analysis->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({1, 1})}})),
+              absl_testing::IsOkAndHolds(false));
 }
 
 TEST_F(TritonEmitterConstraintsTest, CustomReshapeConstraintsAreEnforced) {
@@ -170,14 +180,17 @@ ENTRY entry_computation {
   std::optional<SymbolicTileAnalysis> analysis_without_triton_constraints =
       TryAnalyzeModule(module.get(),
                        /*with_triton_emitter_specific_constraints=*/false);
-
   ASSERT_TRUE(analysis_without_triton_constraints.has_value());
+  const HloInstruction* fusion_root =
+      module->entry_computation()->root_instruction()->fused_expression_root();
+
+  Tiling tiling({{fusion_root, FlatTiling({2, 6})}});
 
   // (2, 6) is a theoretically valid tiling for this reshape, so
   // SymbolicTileAnalysis should allow it.
   EXPECT_THAT(
-      analysis_without_triton_constraints->ParametersSatisfyConstraints({2, 6}),
-      IsOkAndHolds(true));
+      analysis_without_triton_constraints->ParametersSatisfyConstraints(tiling),
+      absl_testing::IsOkAndHolds(true));
 
   std::optional<SymbolicTileAnalysis> analysis_with_triton_constraints =
       TryAnalyzeModule(module.get(),
@@ -189,13 +202,13 @@ ENTRY entry_computation {
   // work because of Triton's power of two restriction. Thus, we should reject
   // it here.
   EXPECT_THAT(
-      analysis_with_triton_constraints->ParametersSatisfyConstraints({2, 6}),
-      IsOkAndHolds(false));
+      analysis_with_triton_constraints->ParametersSatisfyConstraints(tiling),
+      absl_testing::IsOkAndHolds(false));
 
   // However, (1, 6) is valid and should still work.
-  EXPECT_THAT(
-      analysis_with_triton_constraints->ParametersSatisfyConstraints({1, 6}),
-      IsOkAndHolds(true));
+  EXPECT_THAT(analysis_with_triton_constraints->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({1, 6})}})),
+              absl_testing::IsOkAndHolds(true));
 }
 
 TEST_F(TritonEmitterConstraintsTest,
@@ -250,12 +263,14 @@ ENTRY main {
       TryAnalyzeModule(module.get(),
                        /*with_triton_emitter_specific_constraints=*/false);
   ASSERT_TRUE(analysis_without_triton_constraints.has_value());
+  const HloInstruction* fusion_root =
+      module->entry_computation()->root_instruction()->fused_expression_root();
 
   // (16,) is a theoretically valid tiling for this concatenate, so
   // SymbolicTileAnalysis should allow it.
-  EXPECT_THAT(
-      analysis_without_triton_constraints->ParametersSatisfyConstraints({16}),
-      IsOkAndHolds(true));
+  EXPECT_THAT(analysis_without_triton_constraints->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({16})}})),
+              absl_testing::IsOkAndHolds(true));
 
   std::optional<SymbolicTileAnalysis> analysis_with_triton_constraints =
       TryAnalyzeModule(module.get(),
@@ -270,14 +285,14 @@ ENTRY main {
   //
   // Note: this is perfectly OK to expand later as our codegen improves to
   // handle this case.
-  EXPECT_THAT(
-      analysis_with_triton_constraints->ParametersSatisfyConstraints({16}),
-      IsOkAndHolds(false));
+  EXPECT_THAT(analysis_with_triton_constraints->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({16})}})),
+              absl_testing::IsOkAndHolds(false));
 
   // However, (4,) is valid and should still work.
-  EXPECT_THAT(
-      analysis_with_triton_constraints->ParametersSatisfyConstraints({4}),
-      IsOkAndHolds(true));
+  EXPECT_THAT(analysis_with_triton_constraints->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({4})}})),
+              absl_testing::IsOkAndHolds(true));
 }
 
 TEST_F(TritonEmitterConstraintsTest,
@@ -304,12 +319,14 @@ ENTRY main {
       TryAnalyzeModule(module.get(),
                        /*with_triton_emitter_specific_constraints=*/false);
   ASSERT_TRUE(analysis_without_triton_constraints.has_value());
+  const HloInstruction* fusion_root =
+      module->entry_computation()->root_instruction()->fused_expression_root();
 
   // (8,) is a theoretically valid tiling for this concatenate, and one that
   // works for all operands, so SymbolicTileAnalysis should allow it.
-  EXPECT_THAT(
-      analysis_without_triton_constraints->ParametersSatisfyConstraints({8}),
-      IsOkAndHolds(true));
+  EXPECT_THAT(analysis_without_triton_constraints->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({8})}})),
+              absl_testing::IsOkAndHolds(true));
 
   std::optional<SymbolicTileAnalysis> analysis_with_triton_constraints =
       TryAnalyzeModule(module.get(),
@@ -323,15 +340,15 @@ ENTRY main {
   //
   // Note: this is perfectly OK to expand later as our codegen improves to
   // handle this case.
-  EXPECT_THAT(
-      analysis_with_triton_constraints->ParametersSatisfyConstraints({8}),
-      IsOkAndHolds(false));
+  EXPECT_THAT(analysis_with_triton_constraints->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({8})}})),
+              absl_testing::IsOkAndHolds(false));
 
   // Even the smallest tiling, (1,) should be rejected here. (This is
   // unnecessary in theory, but a sanity check for the implementation).
-  EXPECT_THAT(
-      analysis_with_triton_constraints->ParametersSatisfyConstraints({1}),
-      IsOkAndHolds(false));
+  EXPECT_THAT(analysis_with_triton_constraints->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({1})}})),
+              absl_testing::IsOkAndHolds(false));
 }
 
 TEST_F(TritonEmitterConstraintsTest,
@@ -358,12 +375,14 @@ ENTRY main {
       TryAnalyzeModule(module.get(),
                        /*with_triton_emitter_specific_constraints=*/false);
   ASSERT_TRUE(analysis_without_triton_constraints.has_value());
+  const HloInstruction* fusion_root =
+      module->entry_computation()->root_instruction()->fused_expression_root();
 
   // (8,) is a theoretically valid tiling for this concatenate, and one that
   // works for all operands, so SymbolicTileAnalysis should allow it.
-  EXPECT_THAT(
-      analysis_without_triton_constraints->ParametersSatisfyConstraints({8}),
-      IsOkAndHolds(true));
+  EXPECT_THAT(analysis_without_triton_constraints->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({8})}})),
+              absl_testing::IsOkAndHolds(true));
 
   std::optional<SymbolicTileAnalysis> analysis_with_triton_constraints =
       TryAnalyzeModule(module.get(),
@@ -377,15 +396,132 @@ ENTRY main {
   //
   // Note: this is perfectly OK to expand later as our codegen improves to
   // handle this case.
-  EXPECT_THAT(
-      analysis_with_triton_constraints->ParametersSatisfyConstraints({8}),
-      IsOkAndHolds(false));
+  EXPECT_THAT(analysis_with_triton_constraints->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({8})}})),
+              absl_testing::IsOkAndHolds(false));
 
   // Even the smallest tiling, (1,) should be rejected here. (This is
   // unnecessary in theory, but a sanity check for the implementation).
+  EXPECT_THAT(analysis_with_triton_constraints->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({1})}})),
+              absl_testing::IsOkAndHolds(false));
+}
+
+TEST_F(TritonEmitterConstraintsTest, FusionHasValidTileSizes) {
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifiedHloModule> module,
+                          ParseAndReturnVerifiedModule(R"(
+HloModule m
+
+fused_computation {
+  param_0 = f32[36] parameter(0)
+  abs = f32[36] abs(param_0)
+  ROOT reshape = f32[6,6] reshape(abs)
+}
+
+ENTRY entry_computation {
+  param_0 = f32[36] parameter(0)
+  ROOT fusion = f32[6,6] fusion(param_0), kind=kCustom,
+    calls=fused_computation, backend_config={"fusion_backend_config":{"kind":"__triton"}}
+})"));
+  std::optional<SymbolicTileAnalysis> analysis_without_triton_constraints =
+      TryAnalyzeModule(module.get(),
+                       /*with_triton_emitter_specific_constraints=*/false);
+  ASSERT_TRUE(analysis_without_triton_constraints.has_value());
+  const HloInstruction* fusion_root =
+      module->entry_computation()->root_instruction()->fused_expression_root();
+
+  // (1,3) is a theoretically valid tiling for this fusion, so
+  // SymbolicTileAnalysis should allow it.
+  EXPECT_THAT(analysis_without_triton_constraints->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({1, 3})}})),
+              absl_testing::IsOkAndHolds(true));
+
+  std::optional<SymbolicTileAnalysis> analysis_with_triton_constraints =
+      TryAnalyzeModule(module.get(),
+                       /*with_triton_emitter_specific_constraints=*/true);
+
+  ASSERT_TRUE(analysis_with_triton_constraints.has_value());
+
+  // (1,3) is a theoretically valid tiling for this fusion, but it does not pass
+  // the triton specific condition that all tile sizes are either powers of 2,
+  // or equal to the dimension size.
+  EXPECT_THAT(analysis_with_triton_constraints->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({1, 3})}})),
+              absl_testing::IsOkAndHolds(false));
+
+  // However if we capture the last dimension fully, it should be valid.
+  EXPECT_THAT(analysis_with_triton_constraints->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({1, 6})}})),
+              absl_testing::IsOkAndHolds(true));
+
+  // Also powers of 2 are valid.
+  EXPECT_THAT(analysis_with_triton_constraints->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({2, 1})}})),
+              absl_testing::IsOkAndHolds(true));
+  EXPECT_THAT(analysis_with_triton_constraints->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({1, 8})}})),
+              absl_testing::IsOkAndHolds(true));
+  EXPECT_THAT(analysis_with_triton_constraints->ParametersSatisfyConstraints(
+                  Tiling({{fusion_root, FlatTiling({1, 4})}})),
+              absl_testing::IsOkAndHolds(true));
+}
+
+TEST_F(TritonEmitterConstraintsTest, MultiOutputFusionHasPowerOfTwoTileSizes) {
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifiedHloModule> module,
+                          ParseAndReturnVerifiedModule(R"(
+HloModule m
+
+add {
+  p0 = f32[] parameter(0)
+  p1 = f32[] parameter(1)
+  ROOT add = f32[] add(p0, p1)
+}
+
+fused_computation {
+  param_0 = f32[36] parameter(0)
+  abs = f32[36] abs(param_0)
+  reshape = f32[3,12] reshape(abs)
+  zero = f32[] constant(0)
+  reduce = f32[3] reduce(reshape, zero), to_apply=add, dimensions={1}
+  ROOT tuple = (f32[3], f32[36]) tuple(reduce, abs)
+}
+
+ENTRY entry_computation {
+  param_0 = f32[36] parameter(0)
+  ROOT fusion = (f32[3], f32[36]) fusion(param_0), kind=kCustom,
+    calls=fused_computation, backend_config={"fusion_backend_config":{"kind":"__triton"}}
+})"));
+  std::optional<SymbolicTileAnalysis> analysis_without_triton_constraints =
+      TryAnalyzeModule(module.get(),
+                       /*with_triton_emitter_specific_constraints=*/false);
+  ASSERT_TRUE(analysis_without_triton_constraints.has_value());
+  const HloInstruction* reduce_root = module->entry_computation()
+                                          ->root_instruction()
+                                          ->fused_expression_root()
+                                          ->operand(0);
+
+  Tiling tiling({{reduce_root, FlatTiling({1})}});
+
+  // (1,) is a theoretically valid tiling for this multi-output fusion, so
+  // SymbolicTileAnalysis should allow it.
   EXPECT_THAT(
-      analysis_with_triton_constraints->ParametersSatisfyConstraints({1}),
-      IsOkAndHolds(false));
+      analysis_without_triton_constraints->ParametersSatisfyConstraints(tiling),
+      absl_testing::IsOkAndHolds(true));
+
+  std::optional<SymbolicTileAnalysis> analysis_with_triton_constraints =
+      TryAnalyzeModule(module.get(),
+                       /*with_triton_emitter_specific_constraints=*/true);
+
+  ASSERT_TRUE(analysis_with_triton_constraints.has_value());
+
+  // (1,) is a theoretically valid tiling for this multi-output fusion, but the
+  // propagated tile size of (1,12) for the extra output does not pass the
+  // condition that all tile sizes are powers of 2. This can result in different
+  // paddings for the different roots being used, which can cause problems if
+  // buffers are shared.
+  EXPECT_THAT(
+      analysis_with_triton_constraints->ParametersSatisfyConstraints(tiling),
+      absl_testing::IsOkAndHolds(false));
 }
 
 }  // namespace

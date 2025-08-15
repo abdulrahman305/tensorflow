@@ -87,9 +87,9 @@ cc_library(
         ":xla_cpu_dialect_inc_gen",
         ":xla_cpu_ops_inc_gen",
         ":xla_cpu_types_inc_gen",
+        "//xla/codegen/emitters/ir:xla",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:BytecodeOpInterface",
         "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:Support",
     ],
 )

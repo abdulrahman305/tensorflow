@@ -479,6 +479,7 @@ class HloCostAnalysis : public ConstDfsHloVisitor {
   absl::Status HandleDomain(const HloInstruction* domain) override;
   absl::Status HandleDot(const HloInstruction* dot) override;
   absl::Status HandleRaggedDot(const HloInstruction* dot) override;
+  absl::Status HandleScaledDot(const HloInstruction* dot) override;
   absl::Status HandleConvolution(const HloInstruction* convolution) override;
   absl::Status HandleFft(const HloInstruction* fft) override;
   absl::Status HandleTriangularSolve(const HloInstruction* hlo) override;
@@ -576,7 +577,7 @@ class HloCostAnalysis : public ConstDfsHloVisitor {
   int64_t transcendental_count(const HloInstruction& hlo) const;
   int64_t bytes_accessed(const HloInstruction& hlo) const;
   int64_t operand_bytes_accessed(const HloInstruction& hlo, int64_t operand_num,
-                                 ShapeIndex index = {}) const;
+                                 const ShapeIndex& index = {}) const;
   // Value indicating how much each input of the instruction
   // is used assuming its output is fully used.
   // This is 1.0 for most cases except operations involving slicing (<1)

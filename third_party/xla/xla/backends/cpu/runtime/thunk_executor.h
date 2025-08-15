@@ -19,12 +19,14 @@ limitations under the License.
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <new>
+#include <memory>
 #include <queue>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
+#include "absl/base/optimization.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/container/fixed_array.h"
 #include "absl/container/inlined_vector.h"
@@ -39,27 +41,6 @@ limitations under the License.
 
 namespace xla::cpu {
 
-namespace internal {
-// Clang does not allow defining a nested struct with member initializer, as
-// a workaround we define a struct in internal namespace and create an alias.
-struct ThunkExecutorOptions {
-  enum class ReadyQueueType { kFifo, kLifo, kPriority };
-
-  // If all thunks in a sequence use buffers of size less than or equal to the
-  // given threshold, we mark execution as sequential, as concurrency overheads
-  // will likely dominate the overall execution time.
-  size_t execute_sequential_buffer_threshold = 512;
-
-  // If thunk sequence length is less than or equal to the given threshold, we
-  // mark execution as sequential, as concurrency overheads will likely dominate
-  // the overall execution time.
-  size_t execute_sequential_num_thunks_threshold = 8;
-
-  // The type of a queue for ready thunks.
-  ReadyQueueType ready_queue_type = ReadyQueueType::kFifo;
-};
-}  // namespace internal
-
 // A dataflow-style (run when ready) executor for a ThunkSequence that depends
 // on buffer uses to build a DAG defining execution order. At run time executes
 // thunks concurrently in a given thread pool.
@@ -68,13 +49,36 @@ class ThunkExecutor {
   using BufferUses = Thunk::BufferUses;
   using ResourceUses = Thunk::ResourceUses;
   using ExecuteEvent = Thunk::ExecuteEvent;
-  using Options = internal::ThunkExecutorOptions;
 
   ThunkExecutor(ThunkExecutor&&) = default;
   ThunkExecutor& operator=(ThunkExecutor&&) = default;
 
-  static absl::StatusOr<ThunkExecutor> Create(
-      ThunkSequence thunk_sequence, const Options& options = Options());
+  struct Options {
+    enum class ReadyQueueType { kFifo, kLifo, kPriority };
+
+    // If all thunks in a sequence use buffers of size less than or equal to the
+    // given threshold, we mark execution as sequential, as concurrency
+    // overheads will likely dominate the overall execution time.
+    size_t execute_sequential_buffer_threshold = 512;
+
+    // If thunk sequence length is less than or equal to the given threshold, we
+    // mark execution as sequential, as concurrency overheads will likely
+    // dominate the overall execution time.
+    size_t execute_sequential_num_thunks_threshold = 8;
+
+    // The type of a queue for ready thunks.
+    ReadyQueueType ready_queue_type = ReadyQueueType::kFifo;
+
+    // Flag denoting whether the executor is nested within another executor.
+    bool is_nested_executor = true;
+  };
+
+  static absl::StatusOr<ThunkExecutor> Create(ThunkSequence thunk_sequence,
+                                              const Options& options);
+
+  static absl::StatusOr<ThunkExecutor> Create(ThunkSequence thunk_sequence) {
+    return Create(std::move(thunk_sequence), Options());
+  }
 
   // Executes the thunk sequence using the prepared dataflow graph. Executor
   // uses runner to execute ready tasks concurrently. If runner is not provided,
@@ -96,6 +100,7 @@ class ThunkExecutor {
   // We use underlying execution graph nodes to index into the thunk sequence.
   using NodeId = ExecutionGraph::NodeId;
   using NodeDef = ExecutionGraph::NodeDef;
+  using NodeEdge = ExecutionGraph::NodeEdge;
 
   // A ready queue that executes nodes in FIFO order.
   class FifoReadyQueue {
@@ -168,15 +173,6 @@ class ThunkExecutor {
   };
 
  private:
-  // Align all atomic counters to a cache line boundary to avoid false
-  // sharing between multiple worker threads.
-  static constexpr size_t kAtomicAlignment =
-#if defined(__cpp_lib_hardware_interference_size)
-      std::hardware_destructive_interference_size;
-#else
-      64;
-#endif
-
   // A struct to keep the state of a running ThunkExecutor.
   struct ExecuteState {
     // At run time NodeDef instantiated as a Node with an atomic counter that
@@ -184,8 +180,8 @@ class ThunkExecutor {
     struct Node {
       explicit Node(const NodeDef& node_def);
 
-      alignas(kAtomicAlignment) std::atomic<int64_t> counter;
-      absl::Span<const NodeId> out_edges;
+      ABSL_CACHELINE_ALIGNED std::atomic<int64_t> counter;
+      absl::Span<const NodeEdge> out_edges;
     };
 
     static_assert(std::is_trivially_destructible_v<Node>,
@@ -197,28 +193,25 @@ class ThunkExecutor {
       alignas(Node) std::byte data[sizeof(Node)];
     };
 
-    ExecuteState(ThunkExecutor* executor, Thunk::TaskRunner* runner);
+    explicit ExecuteState(ThunkExecutor* executor);
 
     Node& node(NodeId id) {
       DCHECK_LT(id, nodes.size()) << "Node id is out of bounds";
       return *reinterpret_cast<Node*>(&nodes.data()[id]);
     }
 
-    ThunkExecutor* executor;
-    Thunk::TaskRunner* runner;
-
     // Note: using alignas(Node) here instead of in NodeStorage does not work:
     // `nodes` would be aligned, but not its elements.
     absl::FixedArray<NodeStorage> nodes;
     tsl::AsyncValueRef<ExecuteEvent> execute_event;
 
-    // Once the number of pending sink nodes drops to zero, the execution is
+    // Once the number of pending nodes drops to zero, the execution is
     // completed and we set `execute_event` as concrete or error.
-    alignas(kAtomicAlignment) std::atomic<int64_t> pending_sink_nodes;
+    ABSL_CACHELINE_ALIGNED std::atomic<int64_t> pending_nodes;
 
     // We store the first error from failed thunks in `abort_status` and at the
     // end of execution the executor forwards it via the `execute_event`.
-    alignas(kAtomicAlignment) std::atomic<bool> abort;
+    ABSL_CACHELINE_ALIGNED std::atomic<bool> abort;
     absl::Mutex abort_mutex;
     absl::Status abort_status ABSL_GUARDED_BY(abort_mutex);
   };
@@ -244,22 +237,35 @@ class ThunkExecutor {
 
   // Executes nodes in the ready queue with given thunk parameters.
   template <typename ReadyQueue>
-  void Execute(ExecuteState* state, const Thunk::ExecuteParams& params,
-               ReadyQueue ready_queue, Thunk::ExecuteSession::Lock lock);
+  void Execute(std::shared_ptr<ExecuteState> state,
+               const Thunk::ExecuteParams& params, ReadyQueue ready_queue,
+               Thunk::ExecuteSession::Lock lock);
 
   // Splits ready queue starting from `start_index` into ThunkExecutor tasks and
   // offloads them to the task runner.
   template <typename ReadyQueue>
-  void SplitReadyQueue(ExecuteState* state, const Thunk::ExecuteParams& params,
+  void SplitReadyQueue(const std::shared_ptr<ExecuteState>& state,
+                       const Thunk::ExecuteParams& params,
                        ReadyQueue& ready_queue, int64_t split_threshold);
+
+  // Processes out edges of a scheduled `node` and updates `ready_queue` with
+  // nodes that are ready to execute. Returns true if `node` had any scheduling
+  // edges, and pending nodes counter was incremented, and must be dropped when
+  // `node` is completed.
+  template <typename ReadyQueue>
+  bool ProcessScheduledOutEdges(ExecuteState* state, ExecuteState::Node& node,
+                                ReadyQueue& ready_queue);
 
   // Processes out edges of a completed `node` and updates `ready_queue` with
   // nodes that are ready to execute. If `node_event` is in error state, aborts
-  // the execution and records the error status to forward it to the caller.
-  template <typename ReadyQueue>
-  void ProcessOutEdges(ExecuteState* state,
-                       tsl::AsyncValuePtr<Thunk::ExecuteEvent> node_event,
-                       ExecuteState::Node& node, ReadyQueue& ready_queue);
+  // the execution and records the error status to forward it to the caller. We
+  // can combine processing of scheduling edges with processing of completed
+  // edges, if thunk completes execution in the caller thread.
+  template <bool process_scheduling_edges, typename ReadyQueue>
+  void ProcessCompletedOutEdges(
+      ExecuteState* state, tsl::AsyncValuePtr<Thunk::ExecuteEvent> node_event,
+      ExecuteState::Node& node, ReadyQueue& ready_queue,
+      bool drop_pending_nodes);
 
   ThunkSequence thunk_sequence_;
   ExecutionGraph execution_graph_;

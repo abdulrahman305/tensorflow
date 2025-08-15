@@ -18,15 +18,15 @@ limitations under the License.
 
 #include <cstdint>
 #include <optional>
-#include <string>
+#include <vector>
 
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/raw_ostream.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Value.h"
@@ -37,6 +37,7 @@ limitations under the License.
 #include "xla/codegen/emitter_loc_op_builder.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_module.h"
+#include "xla/service/gpu/model/symbolic_tile_analysis.h"
 #include "xla/service/gpu/model/tiled_hlo_computation.h"
 #include "xla/service/gpu/model/tiled_hlo_instruction.h"
 #include "xla/service/hlo_module_config.h"
@@ -59,6 +60,11 @@ struct TritonWrapperResult {
   int64_t shmem_bytes = 0;
   std::optional<se::ClusterDim> cluster_dim;
   std::optional<stream_executor::gpu::TmaMetadata> tma_metadata;
+
+  // The captured nvvm.annotations from the lowest level LLVM IR coming from
+  // Triton. We need to propagate them because we later create the kernel and
+  // splice the impl_fn into it.
+  std::vector<llvm::Metadata*> nvvm_annotations;
 };
 
 // Load the MLIR dialects required for Triton IR generation.
@@ -98,16 +104,12 @@ std::string GetLibdevicePath(const HloModuleConfig& hlo_config,
 
 // TODO(b/406472229): Move the contents of this namespace to a helpers file
 // to avoid polluting `fusion_emitter.h`.
-// Exposed for testing purposes only. Do not use.
+// Exposed for testing and experimental purposes only. Do not use.
 namespace ir_emitter_triton_internal {
 
 // Computes the transformation from a 1-d program_id to a tile multi-index.
 llvm::SmallVector<mlir::Value, 3> ComputeDelinearizedTileIndex(
     EmitterLocOpBuilder& b, absl::Span<const int64_t> num_output_tiles_per_dim);
-
-absl::StatusOr<mlir::triton::xla::TileOp> CreateTileOp(
-    EmitterLocOpBuilder& b, mlir::ValueRange tile_multi_index,
-    const TiledHloInstruction& tiled_hlo, mlir::Value parent_base_ptr);
 
 // Dumps the Triton IR to a string.
 //
@@ -125,6 +127,22 @@ inline std::string DumpTritonIR(mlir::ModuleOp triton_module,
   }
   return triton_ir;
 }
+
+// Given a tiling specification for a fusion and an annotated fusion, derives a
+// tiling for the annotated fusion.
+//
+// Note that the tiling extracted here is voluntarily not checked against the
+// specification, which means that it could be invalid. This should only be the
+// case, though, if this logic gets stale, or if the fusion does not contain
+// the required annotations. Checking constraints is not cheap, so we left it up
+// to the caller to decide when to check the constraints.
+//
+// TODO(b/421837868): this belongs near/in `BlockLevelParameters`, but we start
+// with this here in order to allow an incremental replacement.
+absl::StatusOr<Tiling> TilingFromAnnotatedFusion(
+    const HloFusionInstruction* fusion,
+    const SymbolicTileAnalysis& symbolic_tile_analysis,
+    const BlockLevelParameters& block_level_parameters);
 
 }  // namespace ir_emitter_triton_internal
 }  // namespace gpu

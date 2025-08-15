@@ -15,7 +15,6 @@ limitations under the License.
 
 #include <iostream>
 #include <memory>
-#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -34,6 +33,7 @@ limitations under the License.
 #include "xla/hlo/tools/hlo_diff/hlo_gumgraph_diff.h"
 #include "xla/hlo/tools/hlo_diff/render/hlo_gumgraph_html_renderer.h"
 #include "xla/hlo/tools/hlo_diff/render/hlo_gumgraph_text_renderer.h"
+#include "xla/service/hlo.pb.h"
 #include "xla/service/hlo_module_config.h"
 #include "xla/service/hlo_module_util.h"
 #include "xla/tsl/platform/env.h"
@@ -174,10 +174,7 @@ absl::Status RunGumgraphDiff(HloModule& first_module, HloModule& second_module,
   std::string html_output = opts.render_options.html_output;
   if (!html_output.empty()) {
     std::ostringstream html;
-    RenderHtml(
-        diff, diff_summary, nullptr,
-        [](absl::string_view op_name) { return std::nullopt; },
-        [](absl::string_view op_name) { return std::nullopt; }, html);
+    RenderHtml(diff, diff_summary, html);
     TF_RETURN_IF_ERROR(
         tsl::WriteStringToFile(tsl::Env::Default(), html_output, html.str()));
 

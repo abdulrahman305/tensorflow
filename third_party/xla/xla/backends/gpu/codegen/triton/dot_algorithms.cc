@@ -15,7 +15,6 @@ limitations under the License.
 
 #include "xla/backends/gpu/codegen/triton/dot_algorithms.h"
 
-#include <cstdint>
 #include <limits>
 #include <optional>
 #include <string>
@@ -80,25 +79,6 @@ using AlgorithmEmitter = absl::StatusOr<Value> (*)(EmitterLocOpBuilder&,
                                                    const DotOperands&,
                                                    const PrecisionSpec&);
 
-Value RoundToBF16(EmitterLocOpBuilder b, Value input) {
-  return Cast(b, input, b.getBF16Type());
-}
-
-// Truncates |input| of F32 type to the number representable in Bf16 toward
-// zero.
-Value MaskToBF16(EmitterLocOpBuilder& b, Value input) {
-  ShapedType input_type = mlir::dyn_cast<ShapedType>(input.getType());
-  Type input_type_as_i32 = input_type.clone(b.getI32Type());
-  Value input_as_i32 = b.create<ttir::BitcastOp>(input_type_as_i32, input);
-  Value mask = triton::CreateConst<uint32_t>(b, b.getI32Type(), 0xFFFF0000u,
-                                             input_type.getShape())
-                   .UnwrapTensor();
-  Value high_bits =
-      b.create<arith::AndIOp>(input_type_as_i32, input_as_i32, mask);
-
-  return b.create<ttir::BitcastOp>(input_type, high_bits);
-}
-
 // If lhs is 1.0, we will have lhs_high = 1.0 and lhs_low = 0.0.
 // If rhs is +infinity, we will have:
 // +infinity * 1.0 = +infinity
@@ -138,13 +118,12 @@ std::vector<Value> SplitF32(EmitterLocOpBuilder b, Value input,
   std::vector<Value> split_inputs;
   split_inputs.reserve(split_count);
   for (int i = 0; i < split_count; ++i) {
+    Value input_as_bf16 = Cast(b, input, b.getBF16Type());
     if (i != split_count - 1) {
-      Value masked = MaskToBF16(b, input);
-      input = b.create<arith::SubFOp>(input, masked);
-      split_inputs.push_back(RoundToBF16(b, masked));
-    } else {
-      split_inputs.push_back(RoundToBF16(b, input));
+      Value input_as_f32 = Cast(b, input_as_bf16, b.getF32Type());
+      input = b.create<arith::SubFOp>(input, input_as_f32);
     }
+    split_inputs.push_back(input_as_bf16);
   }
   return split_inputs;
 }
@@ -160,35 +139,35 @@ Value IEEEDot(EmitterLocOpBuilder b, Value lhs, Value rhs, Value acc) {
 absl::StatusOr<Value> EmitBF16x9Matmul(EmitterLocOpBuilder& b,
                                        const DotOperands& dot_operands,
                                        const PrecisionSpec& precision_spec) {
+  constexpr int kNumParts = 3;
+  constexpr int kHigh = 0;
+  constexpr int kMid = 1;
+  constexpr int kLow = 2;
+
   Type f32 = b.getF32Type();
   TF_RETURN_IF_ERROR(ExpectType(dot_operands.lhs, f32));
   TF_RETURN_IF_ERROR(ExpectType(dot_operands.rhs, f32));
   TF_RETURN_IF_ERROR(ExpectType(dot_operands.accumulator, f32));
 
-  std::vector<Value> lhs_parts = SplitF32(b, dot_operands.lhs, 3);
-  std::vector<Value> rhs_parts = SplitF32(b, dot_operands.rhs, 3);
+  std::vector<Value> lhs_parts = SplitF32(b, dot_operands.lhs, kNumParts);
+  std::vector<Value> rhs_parts = SplitF32(b, dot_operands.rhs, kNumParts);
 
-  Value local_acc = triton::ZerosLike(b, dot_operands.accumulator);
-  Value result;
+  Value result = triton::ZerosLike(b, dot_operands.accumulator);
 
-  // low @ low + low @ mid + mid @ low
-  result = IEEEDot(b, lhs_parts[2], rhs_parts[2], local_acc);
-  result = IEEEDot(b, lhs_parts[1], rhs_parts[2], result);
-  result = IEEEDot(b, lhs_parts[2], rhs_parts[1], result);
+  result = IEEEDot(b, lhs_parts[kLow], rhs_parts[kLow], result);
+  result = IEEEDot(b, lhs_parts[kMid], rhs_parts[kLow], result);
+  result = IEEEDot(b, lhs_parts[kLow], rhs_parts[kMid], result);
 
-  // mid @ mid
-  result = IEEEDot(b, lhs_parts[1], rhs_parts[1], result);
+  result = IEEEDot(b, lhs_parts[kMid], rhs_parts[kMid], result);
 
-  // high @ low + low @ high
-  result = IEEEDot(b, lhs_parts[2], rhs_parts[0], result);
-  result = IEEEDot(b, lhs_parts[0], rhs_parts[2], result);
+  result = IEEEDot(b, lhs_parts[kLow], rhs_parts[kHigh], result);
+  result = IEEEDot(b, lhs_parts[kHigh], rhs_parts[kLow], result);
 
-  // high @ mid + mid @ high
-  result = IEEEDot(b, lhs_parts[1], rhs_parts[0], result);
-  result = IEEEDot(b, lhs_parts[0], rhs_parts[1], result);
+  result = IEEEDot(b, lhs_parts[kMid], rhs_parts[kHigh], result);
+  result = IEEEDot(b, lhs_parts[kHigh], rhs_parts[kMid], result);
 
   result = ZeroNaNs(b, result);
-  result = IEEEDot(b, lhs_parts[0], rhs_parts[0], result);
+  result = IEEEDot(b, lhs_parts[kHigh], rhs_parts[kHigh], result);
   result = b.create<arith::AddFOp>(dot_operands.accumulator, result);
   return result;
 }
@@ -198,26 +177,31 @@ absl::StatusOr<Value> EmitBF16x9Matmul(EmitterLocOpBuilder& b,
 absl::StatusOr<Value> EmitBF16x6Matmul(EmitterLocOpBuilder& b,
                                        const DotOperands& dot_operands,
                                        const PrecisionSpec& precision_spec) {
+  constexpr int kNumParts = 3;
+  constexpr int kHigh = 0;
+  constexpr int kMid = 1;
+  constexpr int kLow = 2;
+
   Type f32 = b.getF32Type();
   TF_RETURN_IF_ERROR(ExpectType(dot_operands.lhs, f32));
   TF_RETURN_IF_ERROR(ExpectType(dot_operands.rhs, f32));
   TF_RETURN_IF_ERROR(ExpectType(dot_operands.accumulator, f32));
 
-  std::vector<Value> lhs_parts = SplitF32(b, dot_operands.lhs, 3);
-  std::vector<Value> rhs_parts = SplitF32(b, dot_operands.rhs, 3);
+  std::vector<Value> lhs_parts = SplitF32(b, dot_operands.lhs, kNumParts);
+  std::vector<Value> rhs_parts = SplitF32(b, dot_operands.rhs, kNumParts);
 
-  Value local_acc = triton::ZerosLike(b, dot_operands.accumulator);
-  Value result = IEEEDot(b, lhs_parts[1], rhs_parts[1], local_acc);
-  // high @ low + low @ high
-  result = IEEEDot(b, lhs_parts[2], rhs_parts[0], result);
-  result = IEEEDot(b, lhs_parts[0], rhs_parts[2], result);
+  Value result = triton::ZerosLike(b, dot_operands.accumulator);
 
-  // high @ mid + mid @ high
-  result = IEEEDot(b, lhs_parts[1], rhs_parts[0], result);
-  result = IEEEDot(b, lhs_parts[0], rhs_parts[1], result);
+  result = IEEEDot(b, lhs_parts[kMid], rhs_parts[kMid], result);
+
+  result = IEEEDot(b, lhs_parts[kLow], rhs_parts[kHigh], result);
+  result = IEEEDot(b, lhs_parts[kHigh], rhs_parts[kLow], result);
+
+  result = IEEEDot(b, lhs_parts[kMid], rhs_parts[kHigh], result);
+  result = IEEEDot(b, lhs_parts[kHigh], rhs_parts[kMid], result);
 
   result = ZeroNaNs(b, result);
-  result = IEEEDot(b, lhs_parts[0], rhs_parts[0], result);
+  result = IEEEDot(b, lhs_parts[kHigh], rhs_parts[kHigh], result);
   result = b.create<arith::AddFOp>(dot_operands.accumulator, result);
   return result;
 }
@@ -227,19 +211,23 @@ absl::StatusOr<Value> EmitBF16x6Matmul(EmitterLocOpBuilder& b,
 absl::StatusOr<Value> EmitBF16x3Matmul(EmitterLocOpBuilder& b,
                                        const DotOperands& dot_operands,
                                        const PrecisionSpec& precision_spec) {
+  constexpr int kNumParts = 2;
+  constexpr int kHigh = 0;
+  constexpr int kLow = 1;
+
   Type f32 = b.getF32Type();
   TF_RETURN_IF_ERROR(ExpectType(dot_operands.lhs, f32));
   TF_RETURN_IF_ERROR(ExpectType(dot_operands.rhs, f32));
   TF_RETURN_IF_ERROR(ExpectType(dot_operands.accumulator, f32));
 
-  std::vector<Value> lhs_bf16 = SplitF32(b, dot_operands.lhs, 2);
-  std::vector<Value> rhs_bf16 = SplitF32(b, dot_operands.rhs, 2);
+  std::vector<Value> lhs_bf16 = SplitF32(b, dot_operands.lhs, kNumParts);
+  std::vector<Value> rhs_bf16 = SplitF32(b, dot_operands.rhs, kNumParts);
 
-  Value local_acc = triton::ZerosLike(b, dot_operands.accumulator);
-  Value result = IEEEDot(b, lhs_bf16[1], rhs_bf16[0], local_acc);
-  result = IEEEDot(b, lhs_bf16[0], rhs_bf16[1], result);
+  Value result = triton::ZerosLike(b, dot_operands.accumulator);
+  result = IEEEDot(b, lhs_bf16[kLow], rhs_bf16[kHigh], result);
+  result = IEEEDot(b, lhs_bf16[kHigh], rhs_bf16[kLow], result);
   result = ZeroNaNs(b, result);
-  result = IEEEDot(b, lhs_bf16[0], rhs_bf16[0], result);
+  result = IEEEDot(b, lhs_bf16[kHigh], rhs_bf16[kHigh], result);
   result = b.create<arith::AddFOp>(dot_operands.accumulator, result);
   return result;
 }
@@ -441,7 +429,6 @@ absl::StatusOr<std::optional<Type>> GetForceOperandsType(
 
 }  // namespace
 
-// TODO(b/266862493): Add support for more types as needed.
 absl::StatusOr<Type> GetDotAccumulatorType(EmitterLocOpBuilder& b,
                                            const HloDotInstruction& dot) {
   const PrecisionConfig::Algorithm algorithm =

@@ -27,6 +27,7 @@ limitations under the License.
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_replace.h"
+#include "absl/strings/string_view.h"
 #include "xla/comparison_util.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instruction.h"
@@ -46,10 +47,11 @@ namespace {
 
 class WhileLoopAnalysisTest : public HloHardwareIndependentTestBase {
  protected:
-  [[nodiscard]] absl::StatusOr<int64_t> MakeWhileLoopAndGetTripCount(
-      int init, int limit, int step, ComparisonDirection dir);
-  [[nodiscard]] absl::StatusOr<Range> MakeWhileLoopAndGetRange(
-      int init, int limit, int step, ComparisonDirection dir);
+  absl::StatusOr<int64_t> MakeWhileLoopAndGetTripCount(int init, int limit,
+                                                       int step,
+                                                       ComparisonDirection dir);
+  absl::StatusOr<Range> MakeWhileLoopAndGetRange(int init, int limit, int step,
+                                                 ComparisonDirection dir);
 };
 
 absl::StatusOr<int64_t> WhileLoopAnalysisTest::MakeWhileLoopAndGetTripCount(
@@ -152,7 +154,7 @@ absl::StatusOr<Range> WhileLoopAnalysisTest::MakeWhileLoopAndGetRange(
 }
 
 TEST_F(WhileLoopAnalysisTest, SingleIterationUpperBound) {
-  const char* const kHloModule = R"(
+  absl::string_view kHloModule = R"(
     HloModule ModuleWithWhile
 
     body {
@@ -183,7 +185,7 @@ TEST_F(WhileLoopAnalysisTest, SingleIterationUpperBound) {
 }
 
 TEST_F(WhileLoopAnalysisTest, SimpleLoopWithCustomCallNonTuple) {
-  std::string hlo_string = R"(
+  absl::string_view hlo_string = R"(
   HloModule SimpleLoop
   SimpleLoop.body {
     loop_var.1 = (s32[]{:T(128)}, s32[3]{0}) parameter(0)
@@ -215,7 +217,7 @@ TEST_F(WhileLoopAnalysisTest, SimpleLoopWithCustomCallNonTuple) {
 }
 
 TEST_F(WhileLoopAnalysisTest, SimpleLoopWithCustomCall) {
-  std::string hlo_string = R"(
+  absl::string_view hlo_string = R"(
   HloModule SimpleLoop
   SimpleLoop.body {
     loop_var.1 = (s32[]{:T(128)}, s32[3]{0}) parameter(0)
@@ -248,7 +250,7 @@ TEST_F(WhileLoopAnalysisTest, SimpleLoopWithCustomCall) {
 }
 
 TEST_F(WhileLoopAnalysisTest, NoUpperBound) {
-  const char* const kHloModule = R"(
+  absl::string_view kHloModule = R"(
     HloModule ModuleWithWhile
 
     body {
@@ -370,7 +372,7 @@ TEST_F(WhileLoopAnalysisTest, ExactBoundTrivialTripCount) {
 }
 
 TEST_F(WhileLoopAnalysisTest, NoAIVNoConstChain) {
-  const char* const kHloModule = R"(
+  absl::string_view kHloModule = R"(
     HloModule ModuleWithWhile
 
     body {
@@ -407,7 +409,7 @@ TEST_F(WhileLoopAnalysisTest, NoAIVNoConstChain) {
 }
 
 TEST_F(WhileLoopAnalysisTest, AIVMultiChain) {
-  const char* const kHloModule = R"(
+  absl::string_view kHloModule = R"(
     HloModule ModuleWithWhile
 
     body {
@@ -448,7 +450,7 @@ TEST_F(WhileLoopAnalysisTest, AIVMultiChain) {
 }
 
 TEST_F(WhileLoopAnalysisTest, NoAIV) {
-  const char* const kHloModule = R"(
+  absl::string_view kHloModule = R"(
     HloModule ModuleWithWhile
 
     body {
@@ -485,7 +487,7 @@ TEST_F(WhileLoopAnalysisTest, NoAIV) {
 }
 
 TEST_F(WhileLoopAnalysisTest, AIVNoChain) {
-  const char* const kHloModule = R"(
+  absl::string_view kHloModule = R"(
     HloModule ModuleWithWhile
 
     body {
@@ -522,7 +524,7 @@ TEST_F(WhileLoopAnalysisTest, AIVNoChain) {
 }
 
 TEST_F(WhileLoopAnalysisTest, NonScalarUpdateOp) {
-  const char* hlo = R"(
+  absl::string_view hlo = R"(
     HloModule test, replica_count=2
     add {
       param.3 = s32[] parameter(0)
@@ -558,7 +560,7 @@ TEST_F(WhileLoopAnalysisTest, NonScalarUpdateOp) {
 }
 
 TEST_F(WhileLoopAnalysisTest, UpdateOnIndVarCopySuccess) {
-  const char* hlo = R"(
+  absl::string_view hlo = R"(
     HloModule test, replica_count=2
     body {
       param.0 = (s32[], s32[]) parameter(0)
@@ -591,7 +593,7 @@ TEST_F(WhileLoopAnalysisTest, UpdateOnIndVarCopySuccess) {
 }
 
 TEST_F(WhileLoopAnalysisTest, IndVarInitialiationNotConstantSuccess) {
-  const char* hlo = R"(
+  absl::string_view hlo = R"(
     HloModule test, replica_count=2
     body {
       param.0 = (s32[], s32[]) parameter(0)
@@ -624,7 +626,7 @@ TEST_F(WhileLoopAnalysisTest, IndVarInitialiationNotConstantSuccess) {
 }
 
 TEST_F(WhileLoopAnalysisTest, FusedUpdateOp) {
-  const char* hlo = R"(
+  absl::string_view hlo = R"(
   HloModule test, replica_count=2
   add {
     param.3 = s32[] parameter(0)
@@ -661,7 +663,7 @@ TEST_F(WhileLoopAnalysisTest, FusedUpdateOp) {
 }
 
 TEST_F(WhileLoopAnalysisTest, NonScalarConditionOp) {
-  const char* hlo = R"(
+  absl::string_view hlo = R"(
     HloModule test, replica_count=2
     add {
       param.3 = s32[] parameter(0)
@@ -704,7 +706,7 @@ TEST_F(WhileLoopAnalysisTest, NonScalarConditionOp) {
 }
 
 TEST_F(WhileLoopAnalysisTest, IndvarWithNonScalarShape) {
-  const std::string hlo_string = R"(
+  absl::string_view hlo_string = R"(
   HloModule test
 
   loop.body {
@@ -786,7 +788,7 @@ TEST_F(WhileLoopAnalysisTest, FusedConditionOp) {
 }
 
 TEST_F(WhileLoopAnalysisTest, AvoidBruteForceForHugeParams) {
-  const char* hlo = R"(
+  absl::string_view hlo = R"(
   HloModule test
   fused_comp {
     p.0 = pred[100000000]{0} parameter(0)
@@ -834,7 +836,7 @@ TEST_F(WhileLoopAnalysisTest, AvoidBruteForceForHugeParams) {
 TEST_F(WhileLoopAnalysisTest, LoopFusionForLoopVariable) {
   // This test verifies that fusions in initialization, condition and update are
   // accepted by while loop analysis.
-  const char* hlo = R"(
+  absl::string_view hlo = R"(
   HloModule test
   fused_add.11 {
     param_0.968 = s32[] parameter(0)
@@ -886,7 +888,7 @@ TEST_F(WhileLoopAnalysisTest, LoopFusionForLoopVariable) {
 }
 
 TEST_F(WhileLoopAnalysisTest, UpdateIsMultipleOperationsWithConstantOperand) {
-  const char* hlo = R"(
+  absl::string_view hlo = R"(
   HloModule test
   body {
     param.1 = (s32[], s32[8,8]) parameter(0)
@@ -920,7 +922,7 @@ TEST_F(WhileLoopAnalysisTest, UpdateIsMultipleOperationsWithConstantOperand) {
 
 TEST_F(WhileLoopAnalysisTest,
        UpdateIsMultipleOperationsWithoutConstantOperand) {
-  const char* hlo = R"(
+  absl::string_view hlo = R"(
   HloModule test
   body {
     param.1 = (s32[], s32[8,8]) parameter(0)
@@ -954,7 +956,7 @@ TEST_F(WhileLoopAnalysisTest,
 
 TEST_F(WhileLoopAnalysisTest,
        ConditionIsMultipleOperationsWithConstantOperand) {
-  const char* hlo = R"(
+  absl::string_view hlo = R"(
   HloModule test
   body {
     param.1 = (s32[], s32[8,8]) parameter(0)
@@ -988,7 +990,7 @@ TEST_F(WhileLoopAnalysisTest,
 
 TEST_F(WhileLoopAnalysisTest,
        ConditionIsMultipleOperationsWithoutConstantOperand) {
-  const char* hlo = R"(
+  absl::string_view hlo = R"(
   HloModule test
   body {
     param.1 = (s32[], s32[8,8]) parameter(0)
@@ -1021,7 +1023,7 @@ TEST_F(WhileLoopAnalysisTest,
 }
 
 TEST_F(WhileLoopAnalysisTest, GetIndvarIndexShouldWorkWhenParamIsCopied) {
-  const char* hlo = R"(
+  absl::string_view hlo = R"(
     HloModule test
 
     fused_copy {
@@ -1063,7 +1065,7 @@ TEST_F(WhileLoopAnalysisTest, GetIndvarIndexShouldWorkWhenParamIsCopied) {
 
 TEST_F(WhileLoopAnalysisTest,
        MatchTrivialLoopCountFailsWhenIndvarIsNotIncrementedByConstant) {
-  const char* hlo_with_constant = R"(
+  absl::string_view hlo_with_constant = R"(
   HloModule test
   body {
     param.1 = (s32[], s32[]) parameter(0)
@@ -1085,7 +1087,7 @@ TEST_F(WhileLoopAnalysisTest,
     tuple = (s32[], s32[]) tuple(c0, data)
     ROOT while = (s32[], s32[]) while(tuple), body=body, condition=condition
   })";
-  const char* hlo_without_constant = R"(
+  absl::string_view hlo_without_constant = R"(
   HloModule test
   body {
     param.1 = (s32[], s32[]) parameter(0)
@@ -1121,6 +1123,48 @@ TEST_F(WhileLoopAnalysisTest,
       MatchTrivialLoopTripCount(while_op_without_constant, 0,
                                 LiteralUtil::CreateR0<int32_t>(0));
   EXPECT_EQ(trip_count_without_constant, std::nullopt);
+}
+
+TEST_F(WhileLoopAnalysisTest,
+       MatchTrivialLoopCountWithSimpleArithmeticOnIndvar) {
+  absl::string_view hlo_string = R"(
+HloModule ModuleWithWhile
+body {
+  p_body = (f32[2], s32[]) parameter(0)
+  val = f32[2] get-tuple-element(p_body), index=0
+  index = s32[] get-tuple-element(p_body), index=1
+  one = s32[] constant(1)
+  inc = s32[] add(index, one)
+  ROOT root = (f32[2], s32[]) tuple(val, inc)
+}
+condition {
+  p_cond = (f32[2], s32[]) parameter(0)
+  gte = s32[] get-tuple-element(p_cond), index=1
+  const = s32[] constant(10)
+  ROOT result = pred[] compare(gte, const), direction=LE
+}
+ENTRY entry {
+  param.0 = f32[2] parameter(0)
+  const.0 = s32[] constant(1)
+  const.1 = s32[] constant(1)
+  add.0 = s32[] add(const.0, const.1)
+  while_init = (f32[2], s32[]) tuple(param.0, add.0)
+  ROOT while = (f32[2], s32[]) while(while_init), condition=condition, body=body
+}
+  )";
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> m,
+                          ParseAndReturnVerifiedModule(hlo_string));
+
+  HloInstruction* while_op = m->entry_computation()->root_instruction();
+  std::optional<Range> range = MatchTrivialLoopRange(while_op);
+
+  EXPECT_TRUE(range.has_value());
+  EXPECT_EQ(range->min().GetSignedValue(), 2);
+  EXPECT_TRUE(range->max().has_value());
+  EXPECT_EQ(range->max().value().GetSignedValue(), 10);
+  EXPECT_TRUE(range->step().has_value());
+  EXPECT_EQ(range->step().value().GetSignedValue(), 1);
 }
 }  // namespace
 }  // namespace xla

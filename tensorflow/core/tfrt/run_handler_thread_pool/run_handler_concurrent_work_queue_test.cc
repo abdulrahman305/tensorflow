@@ -19,6 +19,7 @@ limitations under the License.
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/status/status.h"
 #include "absl/strings/match.h"
 #include "xla/tsl/protobuf/error_codes.pb.h"
 #include "tensorflow/core/platform/errors.h"
@@ -183,8 +184,8 @@ TEST_F(RunHandlerThreadWorkQueueTest, NoHandlerReturnsError) {
   tfrt::RequestContextBuilder ctx_builder(nullptr, nullptr);
   EXPECT_THAT(
       queue->InitializeRequest(/*request_id=*/100),
-      tensorflow::testing::StatusIs(
-          tensorflow::error::INTERNAL,
+      absl_testing::StatusIs(
+          absl::StatusCode::kDeadlineExceeded,
           "Could not obtain RunHandler for request after waiting for 1 ms."));
 }
 

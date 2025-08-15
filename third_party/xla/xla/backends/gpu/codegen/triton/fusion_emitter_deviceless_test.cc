@@ -35,6 +35,7 @@ limitations under the License.
 #include "xla/stream_executor/device_description.h"
 #include "xla/tsl/platform/status_matchers.h"
 #include "xla/tsl/platform/statusor.h"
+#include "xla/xla.pb.h"
 
 namespace xla::gpu {
 namespace {
@@ -100,12 +101,12 @@ ENTRY e {
     EXPECT_THAT(RunFileCheck(annotated_ir, R"(
       CHECK:  [[SOMETHING:.*]] "triton_dot -> [[FILE_LINE:fusion_emitter.*:.*]]"
     )"),
-                IsOkAndHolds(true));
+                absl_testing::IsOkAndHolds(true));
   } else {
     EXPECT_THAT(RunFileCheck(annotated_ir, R"(
       CHECK:  [[SOMETHING:.*]] "triton_dot"
     )"),
-                IsOkAndHolds(true));
+                absl_testing::IsOkAndHolds(true));
   }
 }
 
@@ -145,7 +146,7 @@ ENTRY entry {
   EXPECT_THAT(TritonWrapper("test_fn", triton_fusion,
                             se::CudaComputeCapability::Hopper(), dev_info,
                             block_level_parameters, &llvm_module, mlir_context),
-              tsl::testing::StatusIs(
+              absl_testing::StatusIs(
                   absl::StatusCode::kFailedPrecondition,
                   ::testing::HasSubstr(
                       "(num_warps, num_ctas, num_stages) must be positive")));

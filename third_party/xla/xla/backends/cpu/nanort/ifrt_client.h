@@ -22,7 +22,6 @@ limitations under the License.
 #include <optional>
 #include <vector>
 
-#include "absl/base/nullability.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
@@ -49,7 +48,20 @@ limitations under the License.
 #include "xla/python/ifrt/value.h"
 #include "xla/tsl/concurrency/ref_count.h"
 
+namespace Eigen {
+class ThreadPoolInterface;
+struct ThreadPoolDevice;
+}  // namespace Eigen
+
 namespace xla::cpu {
+
+// Options for creating a NanoIfrtClient client.
+struct NanoIfrtOptions {
+  // If set, this thread pool will be used as an intra-op thread pool for
+  // the underlying NanoRtClient. It is a user's responsibility to ensure that
+  // the thread pool outlives all pending executions.
+  Eigen::ThreadPoolInterface* intra_op_threadpool = nullptr;
+};
 
 // NanoIfrtClient is a thin wrapper around NanoRtClient that implements the
 // ifrt::Client interface.
@@ -72,44 +84,46 @@ class NanoIfrtClient : public llvm::RTTIExtends<NanoIfrtClient, ifrt::Client> {
 
   // Creates a client with a single device. Typically this is how this client
   // should be used.
-  static std::shared_ptr<NanoIfrtClient> Create();
+  static std::shared_ptr<NanoIfrtClient> Create(
+      const NanoIfrtOptions& options = {});
 
   // Creates a client with the given number of devices, this is provided for
   // testing and to allow the client to be used in applications that expect
   // programs to be sharded.
-  static std::shared_ptr<NanoIfrtClient> CreateWithDevices(int32_t num_devices);
+  static std::shared_ptr<NanoIfrtClient> CreateWithDevices(
+      int32_t num_devices, const NanoIfrtOptions& options = {});
 
   // Returns a single device sharding. Generally callers should prefer to use
   // this when possible for optimal performance.
-  std::shared_ptr<ifrt::Sharding> default_sharding() const;
+  ifrt::ShardingRef default_sharding() const;
 
   // Returns the underlying NanoRtClient.
   NanoRtClient* nano_client() { return &client_; }
 
-  using HostBufferSemantics = xla::ifrt::Client::HostBufferSemantics;
+  // Returns the optional intra-op device constructed from the Eigen thread
+  // pool passed to the constructor via NanoIfrtOptions.
+  const Eigen::ThreadPoolDevice* intra_op_device() const {
+    return intra_op_device_.get();
+  }
+
+  using HostBufferSemantics = ifrt::Client::HostBufferSemantics;
 
   // Creates an array from a host buffer. The buffer will be used directly
   // without a copy if the copy semantics allow it and the layout is row major
   // and dense.
-  absl::StatusOr<tsl::RCReference<ifrt::Array>> MakeArrayFromHostBuffer(
+  absl::StatusOr<ifrt::ArrayRef> MakeArrayFromHostBuffer(
       const void* data, ifrt::DType dtype, ifrt::Shape shape,
       std::optional<absl::Span<const int64_t>> byte_strides,
-      absl::Nonnull<std::shared_ptr<const ifrt::Sharding>> sharding,
-      HostBufferSemantics semantics,
-      std::function<void()> on_done_with_host_buffer,
-      tsl::RCReference<xla::ifrt::UserContext> user_context) override;
+      ifrt::ShardingRef sharding, HostBufferSemantics semantics,
+      std::function<void()> on_done_with_host_buffer) override;
 
-  absl::StatusOr<std::vector<tsl::RCReference<ifrt::Array>>>
-  MakeArraysFromHostBufferShards(
+  absl::StatusOr<std::vector<ifrt::ArrayRef>> MakeArraysFromHostBufferShards(
       absl::Span<MakeArraysFromHostBufferShardsSpec> specs,
-      HostBufferSemantics semantics,
-      tsl::RCReference<xla::ifrt::UserContext> user_context) override;
+      HostBufferSemantics semantics) override;
 
-  absl::StatusOr<std::vector<tsl::RCReference<xla::ifrt::Array>>>
-  MakeErrorArrays(
+  absl::StatusOr<std::vector<ifrt::ArrayRef>> MakeErrorArrays(
       const absl::Status& error,
-      absl::Span<const xla::ifrt::ArraySpec> array_specs,
-      tsl::RCReference<xla::ifrt::UserContext> user_context) override;
+      absl::Span<const ifrt::ArraySpec> array_specs) override;
 
   // Assembles a sharded array from a list of single device arrays. If the
   // provided sharding is specific enough to assemble a dense array, this method
@@ -117,30 +131,27 @@ class NanoIfrtClient : public llvm::RTTIExtends<NanoIfrtClient, ifrt::Client> {
   //
   // Otherwise we will produce an assembled array on demand when it is first
   // accessed by an XLA program.
-  absl::StatusOr<tsl::RCReference<ifrt::Array>>
-  AssembleArrayFromSingleDeviceArrays(
-      ifrt::DType dtype, ifrt::Shape shape,
-      absl::Nonnull<std::shared_ptr<const ifrt::Sharding>> sharding,
-      absl::Span<tsl::RCReference<ifrt::Array>> arrays,
+  absl::StatusOr<ifrt::ArrayRef> AssembleArrayFromSingleDeviceArrays(
+      ifrt::DType dtype, ifrt::Shape shape, ifrt::ShardingRef sharding,
+      absl::Span<ifrt::ArrayRef> arrays,
       ifrt::ArrayCopySemantics array_copy_semantics,
       ifrt::SingleDeviceShardSemantics single_device_shard_semantics) override;
 
-  absl::StatusOr<std::vector<tsl::RCReference<ifrt::Array>>> CopyArrays(
-      absl::Span<tsl::RCReference<ifrt::Array>> arrays,
+  absl::StatusOr<std::vector<ifrt::ArrayRef>> CopyArrays(
+      absl::Span<ifrt::ArrayRef> arrays,
       std::optional<ifrt::DeviceListRef> devices,
       std::optional<ifrt::MemoryKind> memory_kind,
       ifrt::ArrayCopySemantics semantics) override;
 
-  absl::StatusOr<std::vector<tsl::RCReference<xla::ifrt::Array>>> RemapArrays(
-      const ifrt::RemapPlan& plan,
-      absl::Span<tsl::RCReference<xla::ifrt::Array>> arrays,
+  absl::StatusOr<std::vector<ifrt::ArrayRef>> RemapArrays(
+      const ifrt::RemapPlan& plan, absl::Span<ifrt::ArrayRef> arrays,
       ifrt::ArrayCopySemantics semantics) override;
 
   ifrt::Future<> GetReadyFuture(
-      absl::Span<const tsl::RCReference<ifrt::Value>> values) override;
+      absl::Span<const ifrt::ValueRef> values) override;
 
   absl::StatusOr<tsl::RCReference<ifrt::Tuple>> MakeTuple(
-      absl::Span<tsl::RCReference<ifrt::Value>> values) override;
+      absl::Span<ifrt::ValueRef> values) override;
 
   absl::string_view runtime_type() const override;
 
@@ -156,7 +167,7 @@ class NanoIfrtClient : public llvm::RTTIExtends<NanoIfrtClient, ifrt::Client> {
   absl::Span<ifrt::Device* const> addressable_devices() const override;
   int process_index() const override;
 
-  absl::Span<xla::ifrt::Device* const> GetAllDevices() const override;
+  absl::Span<ifrt::Device* const> GetAllDevices() const override;
 
   absl::StatusOr<ifrt::DeviceAssignment> GetDefaultDeviceAssignment(
       int num_replicas, int num_partitions) const override;
@@ -165,7 +176,7 @@ class NanoIfrtClient : public llvm::RTTIExtends<NanoIfrtClient, ifrt::Client> {
   absl::StatusOr<ifrt::Device*> LookupAddressableDevice(
       int local_hardware_id) const override;
 
-  ifrt::DeviceListRef MakeDeviceList(
+  absl::StatusOr<ifrt::DeviceListRef> MakeDeviceList(
       absl::Span<ifrt::Device* const> devices) const override;
 
   ifrt::Compiler* GetDefaultCompiler() override;
@@ -173,18 +184,18 @@ class NanoIfrtClient : public llvm::RTTIExtends<NanoIfrtClient, ifrt::Client> {
   absl::StatusOr<std::shared_ptr<ifrt::Topology>> GetTopologyForDevices(
       const ifrt::DeviceListRef& devices) const override;
 
-  absl::StatusOr<std::shared_ptr<const PjRtLayout>> GetDefaultLayout(
+  absl::StatusOr<std::shared_ptr<const PjRtLayout>> GetDefaultPjRtLayout(
       ifrt::DType dtype, absl::Span<const int64_t> dims, ifrt::Device* device,
-      xla::ifrt::MemoryKind memory_kind) const override;
+      ifrt::MemoryKind memory_kind) const override;
 
-  tsl::RCReference<xla::ifrt::UserContext> CreateUserContext() override {
-    return tsl::RCReference<xla::ifrt::UserContext>();
+  tsl::RCReference<ifrt::UserContext> CreateUserContext() override {
+    return tsl::RCReference<ifrt::UserContext>();
   }
 
   static char ID;  // NOLINT
 
  private:
-  explicit NanoIfrtClient(int32_t num_devices);
+  NanoIfrtClient(int32_t num_devices, const NanoIfrtOptions& options);
 
   // The underlying NanoRtClient.
   NanoRtClient client_;
@@ -195,13 +206,17 @@ class NanoIfrtClient : public llvm::RTTIExtends<NanoIfrtClient, ifrt::Client> {
   std::unique_ptr<ifrt::Memory> memory_;
   std::vector<std::unique_ptr<ifrt::Device>> owned_devices_;
 
-  // The default sharding for this client. When this sharding is used it
-  // typically means that we can use an array's contents directly.
-  std::shared_ptr<ifrt::Sharding> default_sharding_;
-
   // Some of the ifrt::Client methods return a span of devices, so we need to
   // keep storage for them here.
   std::vector<ifrt::Device*> devices_;
+
+  // Single-device device lists pre-constructed for all `devices_`. We cache it
+  // in the client to avoid constructing them all the time on a hot path.
+  std::vector<ifrt::DeviceListRef> single_device_lists_;
+
+  // Optional intra-op device constructed from the Eigen thread pool passed to
+  // the constructor via NanoIfrtOptions.
+  std::unique_ptr<Eigen::ThreadPoolDevice> intra_op_device_;
 };
 
 }  // namespace xla::cpu

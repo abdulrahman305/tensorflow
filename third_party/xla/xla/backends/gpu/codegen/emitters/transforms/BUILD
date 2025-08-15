@@ -1,5 +1,6 @@
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library")
 load("@local_config_rocm//rocm:build_defs.bzl", "if_rocm_is_configured")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load(
     "//xla/tsl/platform/default:cuda_build_defs.bzl",
     "if_cuda_is_configured",
@@ -36,19 +37,24 @@ cc_library(
         "convert_float_amd.cc",
         "convert_float_nvidia.cc",
         "convert_index_type.cc",
-        "fuse_loops.cc",
+        "lower_xla_shared.cc",
         "optimize_loops.cc",
         "peel_loops.cc",
+        "recover_exp2.cc",
     ],
     hdrs = ["passes.h"],
     copts = if_cuda_is_configured(["-DGOOGLE_CUDA=1"]) + if_rocm_is_configured(["-DTENSORFLOW_USE_ROCM=1"]),
     deps = [
         ":passes_inc_gen",
+        "//xla:shape_util",
         "//xla:util",
         "//xla/backends/gpu/codegen/emitters/ir:xla_gpu",
         "//xla/codegen/emitters/ir:xla",
+        "//xla/codegen/emitters/ir:xla_dialect_inc_gen",
         "//xla/codegen/emitters/transforms:atomic_rmw_utils",
         "//xla/hlo/analysis:indexing_analysis",
+        "//xla/mlir_hlo",
+        "//xla/mlir_hlo:map_mhlo_to_scalar_op",
         "//xla/service/gpu:gpu_fusible",
         "//xla/service/gpu:ir_emission_utils",
         "//xla/stream_executor:device_description",
@@ -69,6 +75,7 @@ cc_library(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:LLVMDialect",
         "@llvm-project//mlir:MathDialect",
+        "@llvm-project//mlir:MathTransforms",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:SCFDialect",
         "@llvm-project//mlir:SCFUtils",

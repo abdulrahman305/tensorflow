@@ -17,18 +17,24 @@ limitations under the License.
 #define XLA_PJRT_PJRT_COMPILER_H_
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "xla/hlo/builder/xla_computation.h"
 #include "xla/pjrt/pjrt_device_description.h"
 #include "xla/pjrt/pjrt_executable.h"
+#include "xla/pjrt/proto/pjrt_partial_program.pb.h"
+#include "xla/pjrt/proto/topology_description.pb.h"
 #include "tsl/platform/fingerprint.h"
 
 namespace xla {
@@ -77,6 +83,9 @@ inline PjRtPlatformId TpuId() {
 }
 
 class PjRtCompiler;
+// Thread-safe. Returns a pointer to the registered compiler for the given
+// platform.
+absl::StatusOr<PjRtCompiler*> GetPjRtCompiler(absl::string_view platform_name);
 class PjRtClient;
 
 // Abstract interface to represent device topology that is used by the compiler.
@@ -149,6 +158,10 @@ class PjRtTopologyDescription {
   // "mhlo.layout_mode" attribute.
   virtual absl::StatusOr<Layout> GetDefaultLayout(
       PrimitiveType element_type, absl::Span<const int64_t> dims) const = 0;
+
+  virtual absl::StatusOr<PjRtTopologyDescriptionProto> ToProto() const {
+    return absl::UnimplementedError("ToProto is unsupported.");
+  }
 };
 
 // Abstract interface that all registered compilers must implement.
@@ -166,6 +179,12 @@ class PjRtCompiler {
   virtual absl::StatusOr<std::unique_ptr<PjRtExecutable>> Compile(
       CompileOptions options, mlir::ModuleOp module,
       const PjRtTopologyDescription& topology, PjRtClient* client) = 0;
+
+  virtual absl::StatusOr<std::unique_ptr<PjRtTopologyDescription>>
+  DeserializePjRtTopologyDescription(const std::string& serialized_topology) {
+    return absl::UnimplementedError(
+        "DeserializePjRtTopologyDescription is not implemented.");
+  }
 };
 
 // Registers a compiler to compile programs for 'platform_name'.
@@ -192,6 +211,93 @@ absl::StatusOr<std::unique_ptr<PjRtExecutable>> PjRtCompile(
 absl::StatusOr<std::unique_ptr<PjRtExecutable>> PjRtCompile(
     CompileOptions options, mlir::ModuleOp module,
     const PjRtTopologyDescription& topology, PjRtClient* client = nullptr);
+
+// Stores a compilation phase's compiler and validator functions.
+// This struct bundles the essential functional components required to define
+// a single phase within a multi-phase compilation pipeline. It is used by
+// PJRT plugins to register their custom compilation stages with the
+// `PjRtPhaseCompiler`.
+struct CompilationPhaseFunctions {
+  // `compiler`: A function that performs the core logic of a compilation phase.
+  // It accepts the global compilation `options`, a vector of
+  // `PjRtPartialProgramProto` representing input programs, and a
+  // `PjRtTopologyDescription` describing the target hardware. It transforms the
+  // input programs based on the phase's logic and returns a vector of
+  // `PjRtPartialProgramProto` or an error status if compilation fails.
+  std::function<absl::StatusOr<std::vector<PjRtPartialProgramProto>>(
+      CompileOptions, const std::vector<PjRtPartialProgramProto>&,
+      const PjRtTopologyDescription&)>
+      compiler;
+
+  // `validator`: A function that performs plugin-specific validation of the
+  // input programs for a given compilation phase. It takes a `std::vector` of
+  // `PjRtPartialProgramProto` as input and returns `absl::OkStatus()` if
+  // validation is successful; otherwise, it returns an `absl::Status`
+  // indicating the reason for failure (e.g., incompatible `program_format`).
+  std::function<absl::Status(const std::vector<PjRtPartialProgramProto>&)>
+      validator;
+};
+
+// PjRtPhaseCompiler is a specialized PjRtCompiler that supports multi-stage,
+// "phased" compilation. It allows plugins to register individual compilation
+// phases (PhaseCompiler and PhaseValidator functions) and manages their
+// execution.
+class PjRtPhaseCompiler : public PjRtCompiler {
+ public:
+  ~PjRtPhaseCompiler() override = default;
+
+  // Returns a vector of strings containing the names of all registered phases
+  // in the order they were registered.
+  absl::StatusOr<std::vector<std::string>> GetPhaseNames();
+
+  // Compiles a set of input programs by running them through a specified
+  // sequence of compilation phases. This function internally calls
+  // `ValidatePhase` to trigger plugin-specific validation of input
+  // compatibility before invoking the appropriate phase compilers. The output
+  // of one phase is passed as input to the next. Returns the vector of
+  // `PjRtPartialProgramProto` objects resulting from the last executed phase,
+  // or an error status if any validation or compilation step fails.
+  absl::StatusOr<std::vector<PjRtPartialProgramProto>> RunPhases(
+      CompileOptions options,
+      const std::vector<PjRtPartialProgramProto>& input_programs,
+      const PjRtTopologyDescription& topology,
+      const std::vector<std::string>& phases_to_run);
+
+  // Registers all compilation phases supported by this `PjRtPhaseCompiler`
+  // instance. Derived classes must override this method to register their
+  // supported compilation phases. This method is expected to be called during
+  // the initialization of the `PjRtPhaseCompiler` instance.
+  //
+  // Implementations of this method typically consist of a series of calls
+  // to the `RegisterPhase` method, where each call registers a specific
+  // compilation stage with its corresponding `compiler` and `validator`
+  // functions.
+  virtual absl::Status RegisterAllPhases() = 0;
+
+  // PhaseCompiler does not support topology deserialization for now.
+  absl::StatusOr<std::unique_ptr<PjRtTopologyDescription>>
+  DeserializePjRtTopologyDescription(
+      const std::string& serialized_topology) override {
+    return absl::UnimplementedError(
+        "DeserializePjRtTopologyDescription is not implemented.");
+  }
+
+ protected:
+  // Registers a new compilation phase with its corresponding compiler and
+  // validator functions encapsulated in a CompilationPhaseFunctions struct.
+  // The `phase_name` must be unique. The `compiler` and `validator` functions
+  // within the struct must not be null. The order of registered phase names is
+  // maintained.
+  absl::Status RegisterPhase(const std::string& phase_name,
+                             CompilationPhaseFunctions phase_functions);
+
+ private:
+  // Maps phase names to their corresponding compiler and validator functions.
+  absl::flat_hash_map<std::string, CompilationPhaseFunctions> phase_map_;
+
+  // The names of all registered phases in the order they were registered.
+  std::vector<std::string> phase_names_;
+};
 
 }  // namespace xla
 

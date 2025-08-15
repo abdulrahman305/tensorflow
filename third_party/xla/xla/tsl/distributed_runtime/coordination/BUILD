@@ -20,6 +20,7 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:cord",
+        "@com_google_absl//absl/strings:string_view",
         "@local_tsl//tsl/platform:regexp",
     ],
 )
@@ -55,9 +56,10 @@ cc_library(
     deps = [
         ":coordination_client",
         ":coordination_service_error_util",
+        ":key_value_store",
         "//xla/tsl/distributed_runtime:call_options",
+        "//xla/tsl/lib/gtl:int_type",
         "//xla/tsl/platform:env",
-        "//xla/tsl/platform:macros",
         "//xla/tsl/platform:status",
         "//xla/tsl/protobuf:coordination_config_proto_cc",
         "//xla/tsl/protobuf:coordination_service_proto_cc",
@@ -66,7 +68,8 @@ cc_library(
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/functional:bind_front",
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/functional:any_invocable",
         "@com_google_absl//absl/hash",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
@@ -77,13 +80,10 @@ cc_library(
         "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/time",
+        "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:random",
     ],
 )
-
-# TODO(mwhittaker): Remove this once tensorflow only relies on the
-# coordination_service BUILD rule.
-cc_library(name = "coordination_service_impl")
 
 tf_proto_library(
     name = "test_device_proto",
@@ -117,6 +117,7 @@ tsl_cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/time",
         "@com_google_googletest//:gtest_main",
@@ -130,6 +131,7 @@ cc_library(
     hdrs = ["coordination_service_agent.h"],
     deps = [
         ":coordination_client",
+        ":coordination_service",
         ":coordination_service_error_util",
         "//xla/tsl/distributed_runtime:call_options",
         "//xla/tsl/framework:cancellation",
@@ -149,11 +151,12 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/time",
         "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:random",
-        "@local_tsl//tsl/platform:thread_annotations",
     ],
 )
 
@@ -197,10 +200,50 @@ cc_library(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/time",
         "@local_tsl//tsl/platform:protobuf",
         "@local_tsl//tsl/platform:thread_annotations",
+    ],
+)
+
+cc_library(
+    name = "key_value_store",
+    srcs = ["key_value_store.cc"],
+    hdrs = ["key_value_store.h"],
+    deps = [
+        "//xla/tsl/protobuf:coordination_service_proto_cc",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/container:btree",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/functional:any_invocable",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/synchronization",
+    ],
+)
+
+tsl_cc_test(
+    name = "key_value_store_test",
+    srcs = ["key_value_store_test.cc"],
+    tags = if_oss([
+        "manual",
+        "no_oss",
+    ]),  # no status matchers in OSS.
+    deps = [
+        ":key_value_store",
+        "//xla/tsl/lib/core:status_test_util",
+        "//xla/tsl/platform:status",
+        "//xla/tsl/platform:status_matchers",
+        "//xla/tsl/platform:test",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
@@ -258,6 +301,7 @@ tsl_cc_test(
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/time",
         "@com_google_googletest//:gtest_main",
@@ -269,5 +313,6 @@ filegroup(
     srcs = [
         "coordination_client.h",
         "coordination_service.h",
+        "key_value_store.h",
     ],
 )

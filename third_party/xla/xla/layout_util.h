@@ -23,6 +23,7 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "absl/base/macros.h"
 #include "absl/status/status.h"
 #include "absl/types/span.h"
 #include "xla/layout.h"
@@ -43,9 +44,6 @@ class LayoutUtil {
   // convenience function for protobuf construction.)
   static Layout MakeLayout(
       absl::Span<const int64_t> minor_to_major,
-      absl::Span<const DimLevelType> dim_level_types = {},
-      absl::Span<const bool> dim_unique = {},
-      absl::Span<const bool> dim_ordered = {},
       absl::Span<const Tile> tiles = {},
       int64_t tail_padding_alignment_in_elements = 1,
       PrimitiveType index_primitive_type = PRIMITIVE_TYPE_INVALID,
@@ -63,9 +61,15 @@ class LayoutUtil {
   // dimensions.
   static Layout MakeDescendingLayout(int64_t num_dims);
 
+  // Returns true if the layout is descending.
+  static bool HasDescendingLayout(const Layout& layout);
+
   // Returns a layout with ascending ((i.e. {0, 1, ... n-1}) minor-to-major
   // dimensions.
   static Layout MakeAscendingLayout(int64_t num_dims);
+
+  // Returns true if the layout is ascending.
+  static bool HasAscendingLayout(const Layout& layout);
 
   // Returns default layout for the given shape.
   static Layout GetDefaultLayoutForShape(const Shape& shape);
@@ -110,41 +114,8 @@ class LayoutUtil {
 
   // Returns whether the given Shape is an array and has a dense in-memory
   // representation.
-  static bool IsDenseArray(const Shape& shape);
-
-  // Returns whether the given Shape is an array and has a sparse in-memory
-  // representation.
-  static bool IsSparseArray(const Shape& shape);
-
-  // Returns whether the given Shape is a sparse array and has a COO (coordinate
-  // matrix) in-memory representation.
-  static bool IsCOOArray(const Shape& shape);
-
-  // Returns whether the given Shape is a sparse array and has a CSR (compressed
-  // sparse row) in-memory representation.
-  static bool IsCSRArray(const Shape& shape);
-
-  // Returns whether the given Shape is a sparse array and has a CSR (compressed
-  // sparse row) in-memory representation.
-  static bool IsCSCArray(const Shape& shape);
-
-  // Returns whether the given Layout has a dense in-memory representation.
-  static bool IsDense(const Layout& layout);
-
-  // Returns whether the given Layout has a sparse in-memory representation.
-  static bool IsSparse(const Layout& layout);
-
-  // Returns whether the given Layout represents a COO (coordinate matrix)
-  // sparse array.
-  static bool IsCOO(const Layout& layout);
-
-  // Returns whether the given Layout represents a CSC (compressed sparse
-  // column) array.
-  static bool IsCSR(const Layout& layout);
-
-  // Returns whether the given Layout represents a CSC (compressed sparse
-  // column) array.
-  static bool IsCSC(const Layout& layout);
+  ABSL_DEPRECATE_AND_INLINE()
+  static bool IsDenseArray(const Shape& shape) { return shape.IsArray(); }
 
   // Returns whether the layout is monotonic and dim 0 is minor in the layout.
   // * R0 and R1: this is always trivially true.
@@ -203,9 +174,9 @@ class LayoutUtil {
   static int64_t Major(const Layout& layout,
                        int64_t physical_dimension_number) {
     DCHECK_LE(0, physical_dimension_number);
-    DCHECK_LT(physical_dimension_number, layout.minor_to_major_size());
-    return Minor(layout,
-                 layout.minor_to_major_size() - 1 - physical_dimension_number);
+    DCHECK_LT(physical_dimension_number, layout.minor_to_major().size());
+    return Minor(
+        layout, layout.minor_to_major().size() - 1 - physical_dimension_number);
   }
 
   // Minor(0) is the most minor logical dimension number, minor(1) is the
@@ -213,7 +184,7 @@ class LayoutUtil {
   static inline int64_t Minor(const Layout& layout,
                               int64_t physical_dimension_number) {
     DCHECK_LE(0, physical_dimension_number);
-    DCHECK_LT(physical_dimension_number, layout.minor_to_major_size());
+    DCHECK_LT(physical_dimension_number, layout.minor_to_major().size());
     return layout.minor_to_major(physical_dimension_number);
   }
 
@@ -275,15 +246,6 @@ class LayoutUtil {
   // If the shape has a layout, returns the contained memory space.  Otherwise,
   // returns Layout::kDefaultMemorySpace.
   static int64_t MemorySpace(const Shape& shape);
-
-  static xla::DimLevelType GetDimLevelType(const Layout& layout, int64_t dim);
-  static bool DimUnique(const Layout& layout, int64_t dim);
-  static bool DimOrdered(const Layout& layout, int64_t dim);
-
-  // Return true iff the given DimLevelType and dim_unique/dim_ordered values
-  // represent a valid encoding.
-  static bool ValidateDimLevel(xla::DimLevelType dim_level_type,
-                               bool dim_unique, bool dim_ordered);
 
   // Returns true if `byte_strides` is major to minor order, i.e. the strides
   // form a cumulative product of the byte size and dimensions in reverse order

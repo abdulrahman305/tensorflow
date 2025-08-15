@@ -25,10 +25,17 @@ limitations under the License.
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/container/inlined_vector.h"
 #include "absl/functional/any_invocable.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/synchronization/mutex.h"
+#include "absl/types/span.h"
 #include "xla/pjrt/abstract_tracked_device_buffer.h"
 #include "xla/pjrt/event_pool.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/pjrt/pjrt_common.h"
 #include "xla/service/executable.h"
 #include "xla/service/maybe_owning_device_memory.h"
 #include "xla/service/shaped_buffer.h"
@@ -37,7 +44,8 @@ limitations under the License.
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/device_memory_allocator.h"
 #include "xla/tsl/concurrency/async_value_ref.h"
-#include "tsl/platform/threadpool.h"
+#include "xla/tsl/concurrency/ref_count.h"
+#include "xla/tsl/platform/threadpool.h"
 
 namespace xla {
 
@@ -66,15 +74,23 @@ namespace xla {
 // The dependency logic caches the set of streams at the tail of which the
 // definition event is known to have occurred; waiting for the same event on the
 // same stream causes no additional waiting.
-class BufferSequencingEvent {
+class BufferSequencingEvent : tsl::AsyncPayload::KeepOnError {
  public:
   explicit BufferSequencingEvent(tsl::thread::ThreadPool* thread_pool)
       : thread_pool_(thread_pool),
         defined_status_(tsl::MakeUnconstructedAsyncValueRef<absl::Status>()) {}
 
+  static tsl::AsyncValueRef<BufferSequencingEvent> Create(
+      tsl::thread::ThreadPool* thread_pool) {
+    return tsl::MakeConstructedAsyncValueRef<BufferSequencingEvent>(
+        thread_pool);
+  }
+
   // Sets the sequencing event to 'event', which is recorded on 'stream'. Must
   // be called at most once. Unblocks any other host threads that are blocked in
   // WaitForEventOnStream.
+  // Do not call directly, use: PjRtStreamExecutorClient::AllocateAndRecordEvent
+  // or PjRtStreamExecutorClient::ThenRecordEvent.
   void SetSequencingEvent(EventPool::Handle event, se::Stream* stream);
 
   // Adds synchronization events to 'stream' that wait for this event to be
@@ -113,40 +129,23 @@ class BufferSequencingEvent {
   }
 
   // Executes the `task` if the event is ready; otherwise adds the `task`
-  // callback to `on_ready_tasks_callback_` that can not be executed until the
-  // the event is ready.
+  // callback to `defined_status_` async value, to be executed when it becomes
+  // available.
   void ExecuteOrAddToFutureTasks(const std::string& task_name,
                                  std::function<void()> task);
 
-  // Executes all the callbacks in `on_ready_tasks_callback_`. Those callbacks
-  // can only proceed until the event is ready.
-  void ExecuteFutureTasks();
+  bool IsDefined() { return defined_status_.IsConcrete(); }
 
-  bool IsDefined() {
-    absl::MutexLock lock(&mu_);
-    return IsDefinedNoLock();
-  }
-
-  bool IsDefinedNoLock() const ABSL_EXCLUSIVE_LOCKS_REQUIRED(mu_);
-
-  void SetDefinedStatus(absl::Status status) {
-    {
-      absl::MutexLock lock(&mu_);
-      defined_status_.emplace(status);
-    }
-
-    this->ExecuteFutureTasks();
-  }
+  // Do not call directly. Use PjRtStreamExecutorClient::SetEventAsError.
+  void SetDefinedStatus(absl::Status status);
 
   absl::Status GetDefinedStatus() {
-    absl::MutexLock lock(&mu_);
     CHECK(defined_status_.IsConcrete());
-    return defined_status_.get();
+    return *defined_status_;
   }
 
   bool IsPredeterminedError() {
-    absl::MutexLock lock(&mu_);
-    return defined_status_.IsConcrete() && !defined_status_.get().ok();
+    return defined_status_.IsConcrete() && !defined_status_->ok();
   }
 
   // Returns true if either:
@@ -155,11 +154,6 @@ class BufferSequencingEvent {
   // 2. The event is known to have occurred by the tail of 'stream'.
   // If SetSequencingEvent and SetDefinedStatus has not yet been called,
   // blocks the calling thread until either of those 2 happens.
-  // This is checking the above 2 conditions with a single lock. This is needed
-  // in case a buffer is set as an error buffer in a different thread after
-  // IsPredeterminedError() check and before DefinedOn() check, in which case
-  // DefinedOn() would indefinitely wait since the event is never recorded when
-  // the buffer is predetermined error.
   bool IsPredeterminedErrorOrDefinedOn(se::Stream* stream);
 
  private:
@@ -183,18 +177,14 @@ class BufferSequencingEvent {
   // at the tail of the queue, i.e., for any newly enqueued command.
   absl::InlinedVector<se::Stream*, 2> streams_defined_on_ ABSL_GUARDED_BY(mu_);
 
-  // A map of the task name and callback to execute when the
-  // TrackedDeviceBuffer's `definition_events_` are all recorded and ready to be
-  // consumed by other tasks.
-  absl::flat_hash_map<std::string, std::function<void()>>
-      on_ready_tasks_callback_ ABSL_GUARDED_BY(mu_);
-
   tsl::thread::ThreadPool* thread_pool_;
 
   // Indicates if the buffer is in an error status. And error status is used to
   // propagate the error to the buffer consumers.
-  tsl::AsyncValueRef<absl::Status> defined_status_ ABSL_GUARDED_BY(mu_);
+  tsl::AsyncValueRef<absl::Status> defined_status_;
 };
+
+using BufferSequencingEventRef = tsl::AsyncValueRef<BufferSequencingEvent>;
 
 // TODO(parkers): Implement PjRtRawBuffer API.
 class RawSEDeviceMemory : public tsl::ReferenceCounted<RawSEDeviceMemory> {
@@ -238,7 +228,7 @@ class TrackedDeviceBuffer : public AbstractTrackedDeviceBuffer {
     se::Stream* stream;
     // An event that is later than the most recent usage of the buffer on
     // stream.
-    std::shared_ptr<BufferSequencingEvent> event;
+    BufferSequencingEventRef event;
     // True if and only if a reference to the buffer is kept live until after
     // the host knows that event is complete.
     bool reference_held;
@@ -274,8 +264,8 @@ class TrackedDeviceBuffer : public AbstractTrackedDeviceBuffer {
     return device_memory_;
   }
 
-  const absl::InlinedVector<std::shared_ptr<BufferSequencingEvent>, 2>&
-  definition_events() const {
+  const absl::InlinedVector<BufferSequencingEventRef, 2>& definition_events()
+      const {
     return definition_events_;
   }
   absl::Span<const StreamAndEvent> usage_events() const {
@@ -298,8 +288,7 @@ class TrackedDeviceBuffer : public AbstractTrackedDeviceBuffer {
   //                   reference to *this to stay live until after the host
   //                   is sure that the usage (transfer or execution) has
   //                   completed.
-  void AddUsageEvent(se::Stream* usage_stream,
-                     std::shared_ptr<BufferSequencingEvent> event,
+  void AddUsageEvent(se::Stream* usage_stream, BufferSequencingEventRef event,
                      bool reference_held);
 
   using StreamAndEventContainer = absl::InlinedVector<StreamAndEvent, 3>;
@@ -309,11 +298,28 @@ class TrackedDeviceBuffer : public AbstractTrackedDeviceBuffer {
   // any stream and, e.g. AddUsageHold will CHECK fail.
   StreamAndEventContainer LockUseAndTransferUsageEvents();
 
-  TrackedDeviceBuffer(PjRtDevice* device,
-                      tsl::RCReference<RawSEDeviceMemory> device_memory,
-                      absl::Span<const std::shared_ptr<BufferSequencingEvent>>
-                          definition_events);
-  ~TrackedDeviceBuffer();
+  TrackedDeviceBuffer(
+      PjRtDevice* device, tsl::RCReference<RawSEDeviceMemory> device_memory,
+      absl::Span<const BufferSequencingEventRef> definition_events);
+  ~TrackedDeviceBuffer() override;
+
+  std::vector<tsl::RCReference<tsl::AsyncValue>> GetAsyncValueDefinitionEvents()
+      override {
+    LOG(FATAL) << "Implement";
+  }
+
+  tsl::RCReference<CommonPjRtRawBuffer> GetRawBuffer(
+      PjRtMemorySpace* memory_space) override {
+    LOG(FATAL) << "Implement";
+  }
+
+  void AddUsageEvent(tsl::RCReference<PjRtDeviceEvent> event) override {
+    LOG(FATAL) << "Implement";
+  }
+
+  void Delete(PjRtMemorySpace* memory_space) override {
+    LOG(FATAL) << "Implement";
+  }
 
  private:
   PjRtDevice* device_;
@@ -326,8 +332,7 @@ class TrackedDeviceBuffer : public AbstractTrackedDeviceBuffer {
   // single-stream execution case where events are not necessary for buffer
   // event sequencing. All events must be triggered before the buffers can be
   // used.
-  absl::InlinedVector<std::shared_ptr<BufferSequencingEvent>, 2>
-      definition_events_;
+  absl::InlinedVector<BufferSequencingEventRef, 2> definition_events_;
 
   // in_use_ starts out true, and is set to false when the buffer is released
   // from its owning PjRtBuffer. Once in_use_ is false, the buffer may no
@@ -350,7 +355,7 @@ void GetDeviceBufferEvents(const TrackedDeviceBuffer& buffer,
 
 // Waits for all of the definition events in a buffer on 'stream'.
 void WaitForBufferDefinitionEventsOnStream(
-    absl::Span<const std::shared_ptr<BufferSequencingEvent>> definition_events,
+    absl::Span<const BufferSequencingEventRef> definition_events,
     se::Stream* stream);
 
 }  // namespace xla

@@ -108,8 +108,9 @@ TEST(RendezvousTest, RepeatRendezvous) {
     absl::BlockingCounter counter(2);
 
     auto task = [&] {
-      TF_ASSERT_OK(
-          Rendezvous<int32_t>("rendezvous_test", i, 2, [] { return 42; }));
+      TF_ASSERT_OK(Rendezvous<int32_t>(
+          "rendezvous_test", /*key=*/0, /*num_threads=*/2, [] { return 42; },
+          Timeout(), Terminate()));
       counter.DecrementCount();
     };
 
@@ -117,6 +118,28 @@ TEST(RendezvousTest, RepeatRendezvous) {
     thread_pool.Schedule(task);
     counter.Wait();
   }
+}
+
+TEST(RendezvousTest, BackToBackRendezvous) {
+  auto thread_pool = CreateThreadPool(2);
+
+  absl::BlockingCounter counter(2);
+
+  // In contrast to the previous test, both task do back to back rendezvous
+  // without synchronization with a main thread. We check that in this case
+  // rendezvous do not step on each other and execute correctly.
+  auto task = [&] {
+    for (int32_t i = 0; i < 10; ++i) {
+      TF_ASSERT_OK(Rendezvous<int32_t>(
+          "rendezvous_test", /*key=*/0, /*num_threads=*/2, [] { return 42; },
+          Timeout(), Terminate()));
+    }
+    counter.DecrementCount();
+  };
+
+  thread_pool.Schedule(task);
+  thread_pool.Schedule(task);
+  counter.Wait();
 }
 
 TEST(RendezvousTest, ReturningStatusOr) {

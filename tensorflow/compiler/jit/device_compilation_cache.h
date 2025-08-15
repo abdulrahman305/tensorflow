@@ -107,14 +107,16 @@ class DeviceCompilationCache {
     const mutex_lock lock(compile_cache_mu_);
     absl::erase_if(
         cache_,
-        [&](std::pair<const Key, absl::Nullable<std::unique_ptr<Entry>>>& kv) {
-          const absl::Nullable<Entry*> entry = kv.second.get();
+        [&](std::pair<const Key, absl_nullable std::unique_ptr<Entry>>& kv) {
+          Entry* absl_nullable const entry = kv.second.get();
           if (entry == nullptr) {
             return true;
           }
 
           const mutex_lock entry_lock(entry->mu);
-          entry->compilation_result->computation.reset();
+          if (entry->compilation_result != nullptr) {
+            entry->compilation_result->computation.reset();
+          }
 
           return false;
         });

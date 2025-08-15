@@ -19,6 +19,7 @@ limitations under the License.
 #include <cstdint>
 #include <string>
 
+#include "absl/log/check.h"
 #include "absl/strings/match.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/Function.h"
@@ -26,6 +27,7 @@ limitations under the License.
 #include "llvm/Target/TargetMachine.h"
 #include "xla/backends/cpu/alignment.h"
 #include "xla/primitive_util.h"
+#include "xla/xla_data.pb.h"
 
 namespace xla::cpu {
 
@@ -38,6 +40,10 @@ TargetMachineFeatures::TargetMachineFeatures(
     has_avx512bf16_ = absl::StrContains(
         target_machine_->getTargetFeatureString().str(), "+avx512bf16");
   }
+}
+
+const llvm::TargetMachine* TargetMachineFeatures::target_machine() const {
+  return target_machine_;
 }
 
 int32_t TargetMachineFeatures::vectorization_factor_in_bytes() const {

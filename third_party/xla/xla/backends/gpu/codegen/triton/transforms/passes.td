@@ -19,23 +19,43 @@ limitations under the License.
 include "mlir/Pass/PassBase.td"
 
 def TritonXLAExtractInsertToTritonPass : Pass<"triton-xla-extract-insert-to-triton", "mlir::ModuleOp"> {
-  let summary = "Convert XLA Triton tile, extract and, insert ops to Triton ops.";
+  let summary = "Convert Triton XLA extract and insert ops to Triton ops.";
   let description = [{
-    This pass converts `triton_xla.extract`, `triton_xla.insert` and
-    `triton_xla.tile` ops to Triton ops. It also rewrites `func` args to
-    `tt.ptr` types and removes function return args.
+    This pass converts `triton_xla.extract` and `triton_xla.insert` ops to
+    Triton ops. It also rewrites `func` args to `tt.ptr` types and removes
+    function return args.
   }];
   let dependentDialects = [
     "triton::TritonDialect",
     "::xla::XlaDialect"
   ];
-  let options = [
-    Option<"gpu_device_info_", "gpu_device_info", "std::string", /*default=*/"",
-           "Serialized stream_executor::GPUDeviceInfo proto">,
-    Option<"tma_enabled_", "tma_enabled", "bool", /*default=*/"false",
-           "Flag to enable/disable TMA">,
-  ];
   let constructor = "CreateTritonXLAExtractInsertToTritonPass()";
+}
+
+def TritonXLASqueezeDimsPass : Pass<"triton-xla-squeeze-dims", "mlir::ModuleOp"> {
+  let summary = "Remove superfluous size-1 dimensions.";
+  let description = [{
+    This pass tries to remove size-1 dimensions from tensors.
+  }];
+  let dependentDialects = [
+    "::mlir::triton::xla::XlaTritonDialect"
+  ];
+  let options = [
+    Option<"finalize_", "finalize", "bool", "true",
+           "Convert squeeze_dims back to reshape. Disable for testing only.">,
+  ];
+  let constructor = "CreateTritonXLASqueezeDimsPass()";
+}
+
+def TritonXLAFoldTransposePass : Pass<"triton-xla-fold-transpose", "mlir::ModuleOp"> {
+  let summary = "Folds transposes into loads.";
+  let description = [{
+    This pass tries to remove transposes by folding them into loads.
+  }];
+  let dependentDialects = [
+    "::mlir::triton::xla::XlaTritonDialect"
+  ];
+  let constructor = "CreateTritonXLAFoldTransposePass()";
 }
 
 def GeneralizeKernelSignaturePass
@@ -48,16 +68,15 @@ def GeneralizeKernelSignaturePass
   let constructor = "CreateGeneralizeKernelSignaturePass()";
 }
 
-def PreventMmaV3LoopUnrollingPass
-    : Pass<"prevent-mmav3-loop-unrolling", "mlir::ModuleOp"> {
-  let summary = "Prevent MMAv3 loop unrolling.";
+def ExtractTmaInfoPass
+    : Pass<"extract-tma-info", "mlir::ModuleOp"> {
+  let summary = "Extract TMA info during Triton lowering.";
   let description = [{
-    This pass is a result of b/344841434:
-    PTX sometimes unrolls wgmma loops that can cause a 1000x slow down in
-    compilation time. Most unrolling has already been done before PTX,
-    this pragma prevents ptxas from doing more.
+    Some information needed from TMA is created mid-pipeline by Triton. This
+    pass extracts the information while it still exists and copies it into XLA's
+    tma_descriptor attribute to be read at the LLVM IR level.
   }];
-  let constructor = "CreatePreventMmaV3LoopUnrollingPass()";
+  let constructor = "CreateExtractTmaInfoPass()";
 }
 
 def LoadInt4RewritePass
@@ -68,7 +87,9 @@ def LoadInt4RewritePass
     the twice smaller size. It also replaces the plain ExtSIOp upcast to the
     int8 tensor with the unpack sequence.
   }];
-  let constructor = "CreateInt4ToPackedInt4RewritePass()";
+  let dependentDialects = [
+    "triton::TritonDialect"
+  ];
 }
 
 def RoundF32ToTF32ForTf32DotRewritePass

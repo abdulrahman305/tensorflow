@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "xla/service/gpu/transforms/explicit_collectives_group_async_wrapper.h"
 
+#include <vector>
+
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
@@ -56,7 +58,7 @@ absl::StatusOr<bool> CreateCollectivesGroupAsyncPair(HloInstruction* instr) {
   HloInstruction* async_start =
       computation->AddInstruction(HloInstruction::CreateAsyncStart(
           ShapeUtil::MakeTupleShape(start_shapes), instr->operands(),
-          new_computation, "explicit"));
+          new_computation, "main"));
   HloInstruction* async_done = computation->AddInstruction(
       HloInstruction::CreateAsyncDone(instr->shape(), async_start));
   // Forward frontend attributes to both async instructions.
@@ -71,7 +73,8 @@ absl::StatusOr<bool> ExplicitCollectivesGroupAsyncWrapper::Run(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
   bool changed = false;
-  for (const HloComputation* comp : module->computations()) {
+  for (const HloComputation* comp :
+       module->MakeNonfusionComputations(execution_threads)) {
     for (HloInstruction* instr : comp->instructions()) {
       TF_ASSIGN_OR_RETURN(bool result, CreateCollectivesGroupAsyncPair(instr));
       changed |= result;

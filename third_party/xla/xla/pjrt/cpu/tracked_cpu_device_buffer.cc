@@ -15,24 +15,32 @@ limitations under the License.
 
 #include "xla/pjrt/cpu/tracked_cpu_device_buffer.h"
 
-#include <atomic>
 #include <cstddef>
-#include <cstdint>
+#include <memory>
 #include <utility>
+#include <vector>
 
-#include "absl/base/casts.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
-#include "absl/synchronization/mutex.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
 #include "absl/types/span.h"
 #include "xla/backends/cpu/alignment.h"
+#include "xla/pjrt/common_pjrt_client.h"
 #include "xla/pjrt/cpu/cpu_event.h"
-#include "xla/shape_util.h"
+#include "xla/pjrt/cpu/raw_buffer.h"
+#include "xla/pjrt/device_event.h"
+#include "xla/pjrt/pjrt_client.h"
+#include "xla/pjrt/pjrt_future.h"
+#include "xla/pjrt/raw_buffer.h"
+#include "xla/tsl/concurrency/async_value.h"
 #include "xla/tsl/concurrency/async_value_ref.h"
-#include "xla/tsl/platform/statusor.h"
+#include "xla/tsl/concurrency/ref_count.h"
+#include "xla/tsl/platform/errors.h"
 #include "xla/util.h"
+#include "tsl/platform/casts.h"
 #include "tsl/platform/mem.h"
 
 namespace xla {
@@ -43,51 +51,42 @@ namespace {
 // propagated through the returned async value.
 tsl::AsyncValueRef<CpuEvent> AfterAll(
     absl::Span<const tsl::AsyncValueRef<CpuEvent>> events) {
-  if (events.empty()) return tsl::MakeAvailableAsyncValueRef<CpuEvent>();
+  if (events.empty()) {
+    return tsl::MakeAvailableAsyncValueRef<CpuEvent>();
+  }
+  if (events.size() == 1) {
+    return events.front();
+  }
 
-  struct State {
-    State(int count, tsl::AsyncValueRef<CpuEvent> after_all)
-        : count(count), after_all(std::move(after_all)) {}
-    std::atomic<int> count;
-    tsl::AsyncValueRef<CpuEvent> after_all;
-
-    absl::Mutex mutex;
-    absl::Status error;
-  };
-
-  auto after_all = tsl::MakeConstructedAsyncValueRef<CpuEvent>();
-  auto* state = new State(events.size(), after_all);
-
+  tsl::CountDownAsyncValueRef<CpuEvent> after_all(events.size());
   for (auto& event : events) {
-    event.AndThen([state, event = event.AsPtr()]() {
-      if (event.IsError()) {
-        absl::MutexLock lock(&state->mutex);
-        state->error = event.GetError();
-      }
-
-      if (state->count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        if (!state->error.ok()) {
-          state->after_all.SetError(state->error);
-        } else {
-          state->after_all.SetStateConcrete();
-        }
-        delete state;
-      }
+    event.AndThen([after_all](absl::Status status) mutable {
+      after_all.CountDown(std::move(status));
     });
   }
 
-  return after_all;
+  return std::move(after_all).AsRef();
 }
-
 }  // namespace
 
-class CpuDeviceMemoryForeign : public CpuDeviceMemory {
+class CpuDeviceMemoryOwned final : public CpuDeviceMemory {
+ public:
+  CpuDeviceMemoryOwned(void* base, size_t size) : CpuDeviceMemory(base, size) {}
+
+  ~CpuDeviceMemoryOwned() final {
+    CHECK_NE(untyped_data(), nullptr);
+    tsl::port::AlignedSizedFree(untyped_data(), cpu::MinAlign(), size_bytes());
+  }
+};
+
+class CpuDeviceMemoryForeign final : public CpuDeviceMemory {
  public:
   CpuDeviceMemoryForeign(void* base, size_t size,
                          absl::AnyInvocable<void() &&> on_delete_callback)
       : CpuDeviceMemory(base, size),
         on_delete_callback_(std::move(on_delete_callback)) {}
-  ~CpuDeviceMemoryForeign() override {
+
+  ~CpuDeviceMemoryForeign() final {
     if (on_delete_callback_) {
       std::move(on_delete_callback_)();
     }
@@ -97,32 +96,30 @@ class CpuDeviceMemoryForeign : public CpuDeviceMemory {
   absl::AnyInvocable<void() &&> on_delete_callback_;
 };
 
+class CpuDeviceMemoryConstant final : public CpuDeviceMemory {
+ public:
+  CpuDeviceMemoryConstant(void* base, size_t size)
+      : CpuDeviceMemory(base, size) {}
+};
+
+tsl::AsyncValueRef<CpuDeviceMemory> CpuDeviceMemory::CreateDelayedMemory() {
+  return tsl::MakeUnconstructedAsyncValueRef<CpuDeviceMemoryOwned>();
+}
+
 tsl::AsyncValueRef<CpuDeviceMemory> CpuDeviceMemory::CreateForeignMemory(
     void* base, size_t size, absl::AnyInvocable<void() &&> on_delete_callback) {
   return tsl::MakeAvailableAsyncValueRef<CpuDeviceMemoryForeign>(
       base, size, std::move(on_delete_callback));
 }
 
-class CpuDeviceMemoryConstant : public CpuDeviceMemory {
- public:
-  CpuDeviceMemoryConstant(void* base, size_t size)
-      : CpuDeviceMemory(base, size) {}
-  using CpuDeviceMemory::CpuDeviceMemory;
-};
-
-tsl::AsyncValueRef<CpuDeviceMemory> CpuDeviceMemory::CreateUnownedConstant(
+tsl::AsyncValueRef<CpuDeviceMemory> CpuDeviceMemory::CreateConstantMemory(
     void* base, size_t size) {
   return tsl::MakeAvailableAsyncValueRef<CpuDeviceMemoryConstant>(base, size);
 }
 
-CpuDeviceMemoryOwned::~CpuDeviceMemoryOwned() {
-  CHECK_NE(untyped_data(), nullptr);
-  tsl::port::AlignedSizedFree(untyped_data(), cpu::MinAlign(), size_bytes());
-}
-
 // Allocates owning memory wrapped in an available `AsyncValueRef`.
-absl::StatusOr<tsl::AsyncValueRef<CpuDeviceMemory>>
-CpuDeviceMemory::AllocateAvailable(size_t size_bytes) {
+absl::StatusOr<tsl::AsyncValueRef<CpuDeviceMemory>> CpuDeviceMemory::Allocate(
+    size_t size_bytes) {
   if (void* data = tsl::port::AlignedMalloc(size_bytes, cpu::MinAlign())) {
     return tsl::MakeAvailableAsyncValueRef<CpuDeviceMemoryOwned>(data,
                                                                  size_bytes);
@@ -130,11 +127,14 @@ CpuDeviceMemory::AllocateAvailable(size_t size_bytes) {
   return ResourceExhausted("Out of memory allocating %d bytes.", size_bytes);
 }
 
-// Allocates raw owning memory. The typical usage is for delayed allocation.
-absl::Status CpuDeviceMemoryOwned::AllocateInto(
-    size_t size_bytes, tsl::AsyncValueRef<CpuDeviceMemoryOwned>& out) {
+absl::Status CpuDeviceMemory::AllocateInto(
+    size_t size_bytes, tsl::AsyncValuePtr<CpuDeviceMemory> delayed_memory) {
+  auto owned_memory = delayed_memory.DynCast<CpuDeviceMemoryOwned>();
+  if (!owned_memory) {
+    return Internal("Delayed memory is not a CpuDeviceMemoryOwned");
+  }
   if (void* data = tsl::port::AlignedMalloc(size_bytes, cpu::MinAlign())) {
-    out.emplace(data, size_bytes);
+    owned_memory.emplace(data, size_bytes);
     return absl::OkStatus();
   }
   return ResourceExhausted("Out of memory allocating %d bytes.", size_bytes);
@@ -174,9 +174,7 @@ TrackedCpuDeviceBuffer::TrackedCpuDeviceBuffer(
   DCHECK(definition_event_);
 }
 
-TrackedCpuDeviceBuffer::~TrackedCpuDeviceBuffer() {
-  ReleaseDeviceMemory();
-}
+TrackedCpuDeviceBuffer::~TrackedCpuDeviceBuffer() { ReleaseDeviceMemory(); }
 
 size_t TrackedCpuDeviceBuffer::BufferSize() { return buffer_size_; }
 
@@ -210,6 +208,87 @@ void TrackedCpuDeviceBuffer::ReleaseDeviceMemory() {
   buffer_ = tsl::AsyncValueRef<CpuDeviceMemory>();
   definition_event_.reset();
   usage_events_.clear();
+}
+
+std::vector<tsl::RCReference<tsl::AsyncValue>>
+TrackedCpuDeviceBuffer::GetAsyncValueDefinitionEvents() {
+  std::vector<tsl::RCReference<tsl::AsyncValue>> result;
+  result.push_back(definition_event_.CopyRCRef());
+  return result;
+}
+
+tsl::RCReference<CommonPjRtRawBuffer> TrackedCpuDeviceBuffer::GetRawBuffer(
+    PjRtMemorySpace* memory_space) {
+  if (!buffer_) {
+    return tsl::RCReference<CommonPjRtRawBuffer>();
+  }
+  return tsl::MakeRef<CpuRawBuffer>(memory_space, buffer_);
+}
+
+void TrackedCpuDeviceBuffer::AddUsageEvent(
+    tsl::RCReference<PjRtDeviceEvent> event) {
+  if (event) {
+    auto cpu_event =
+        tensorflow::down_cast<CpuTrackedDeviceEvent*>(event.get())->event();
+    AddUsageEvents({&cpu_event, 1});
+  }
+}
+
+void TrackedCpuDeviceBuffer::Delete(PjRtMemorySpace* memory_space) {
+  std::unique_ptr<TrackedCpuDeviceBuffer> device_buffer(this);
+  // Now that all holds have completed and no more can be added, we can get
+  // the final set of usage events.
+  absl::InlinedVector<tsl::AsyncValueRef<CpuEvent>, 4> usage_events =
+      device_buffer->LockUseAndTransferUsageEvents();
+
+  std::vector<tsl::AsyncValue*> event_avs;
+  event_avs.reserve(usage_events.size() + 1);
+  for (auto& event : usage_events) {
+    event_avs.push_back(event.GetAsyncValue());
+  }
+
+  // We should also wait for the definition event.
+  event_avs.push_back(device_buffer->definition_event().GetAsyncValue());
+
+  RunWhenReady(event_avs, [device_buffer = std::move(device_buffer)]() mutable {
+    device_buffer.reset();
+  });
+}
+
+PjRtFuture<>::Promise TrackedCpuDeviceBuffer::GetReadyFuturePromise(
+    PjRtMemorySpace* memory_space) {
+  PjRtFuture<>::Promise promise =
+      tensorflow::down_cast<CommonPjRtClient*>(memory_space->client())
+          ->CreateUserPromise(memory_space, "BufferDefinitionEvent");
+  definition_event().AndThen(
+      [definition_event = definition_event().AsPtr(), promise]() mutable {
+        if (definition_event.IsError()) {
+          const absl::Status& s = definition_event.GetError();
+          promise.Set(tsl::errors::CreateWithUpdatedMessage(
+              s, absl::StrCat("Buffer Definition Event: ", s.message())));
+        } else {
+          promise.Set();
+        }
+      });
+  return promise;
+}
+
+absl::Status TrackedCpuDeviceBuffer::BlockForOperationsToComplete(
+    PjRtMemorySpace* memory_space) {
+  // Block the host until all usage events have completed. We do not return
+  // the error of a usage event because it does not matter if these usages
+  // failed.
+  for (const auto& av : usage_events_) {
+    BlockUntilReady(av.GetAsyncValue());
+  }
+
+  // Fetch the error from the definition event (if an error is present).
+  BlockUntilReady(definition_event_.GetAsyncValue());
+  if (auto* error = definition_event_.GetErrorIfPresent()) {
+    return absl::InternalError(
+        absl::StrFormat("Error Execute: %s", error->message()));
+  }
+  return absl::OkStatus();
 }
 
 }  // namespace xla

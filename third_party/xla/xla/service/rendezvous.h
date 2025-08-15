@@ -220,9 +220,13 @@ struct RendezvousState : public RendezvousStateSynchronization {
 // (2) When rendezvous participant joins in-progress rendezvous it gets back
 //     a shared pointer that is copied from a tracking map.
 //
-// (3) When all rendezvous participants complete the rendezvous, shared pointers
-//     are destructed and the tracking map will have an expired weak pointer,
-//     that will be lazily garbage collected by the next rendezvous.
+// (3) When rendezvous completes, the thread that completes it removes a state
+//     from a map, so that the next rendezvous with the same key can start
+//     immediately and create a new state.
+//
+// (4) If rendezvous failed to complete, the weak pointer will expire when all
+//     participants left the rendezvous, and will be lazily garbage collected
+//     in the next call to `Join`.
 //
 // This process guarantees that all completed rendezvous are removed from a map
 // and a map has records only for rendezvous in progress.
@@ -249,6 +253,11 @@ class RendezvousMap {
     return (in_progress = start, start);
   }
 
+  void Complete(const K& key) {
+    absl::MutexLock lock(&mutex_);
+    state_.erase(key);
+  }
+
  private:
   absl::Mutex mutex_;
   absl::flat_hash_map<K, std::weak_ptr<State>> state_ ABSL_GUARDED_BY(mutex_);
@@ -258,6 +267,7 @@ void AwaitAndLogIfStuck(RendezvousStateSynchronization& state, int32_t id,
                         absl::string_view name,
                         absl::Duration warn_stuck_timeout,
                         absl::Duration terminate_timeout);
+
 }  // namespace internal
 
 //===----------------------------------------------------------------------===//
@@ -303,8 +313,8 @@ absl::StatusOr<std::shared_ptr<R>> Rendezvous(
   // rendezvous sharing the same key running concurrently.
   int64_t id = state->ack.fetch_add(1);
   CHECK_LT(id, num_threads)  // NOLINT
-      << "Id can't be larger than the number of participating threads"
-      << "; id=" << id << "; num_threads=" << num_threads;
+      << "Id can't be larger than the number of participating threads: "
+      << "id=" << id << ", num_threads=" << num_threads << ", name=" << name;
 
   tsl::profiler::TraceMe trace([&] {
     return tsl::profiler::TraceMeEncode(
@@ -330,16 +340,21 @@ absl::StatusOr<std::shared_ptr<R>> Rendezvous(
     internal::AwaitAndLogIfStuck(*state, id, name, warn_stuck_timeout,
                                  terminate_timeout);
   } else {
+    // Mark rendezvous as completed, so that we can immediately start a new
+    // rendezvous with the same key.
+    rendezvous.Complete(key);
+
     // Last thread to arrive executes the function and completes rendezvous by
     // making result available to all participants. All other participants will
     // be notified via `state->ready` flag when result is ready, and we rely on
-    // the store to a flag to create a memory barrier that makes access to
-    // `state->result` safe without any extra synchronization.
+    // the mutex to create a memory barrier that makes access to `state->result`
+    // safe without any extra synchronization.
     tsl::profiler::TraceMe trace("InvokeRendezvous");
     absl::Span<const V*> values(state->values.data(), num_threads);
 
     // Check that we have have exactly the number of participants we expect.
-    CHECK_EQ(state.use_count(), num_threads);  // NOLINT
+    CHECK_EQ(state.use_count(), num_threads)
+        << "Unexpected number of participants: " << name;
 
     // Publish rendezvous result to all participants.
     state->result = InvokeRendezvous<R, V>(std::move(fn), values);

@@ -42,6 +42,7 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/ir/hlo_sharding.h"
 #include "xla/hlo/pass/hlo_pass_interface.h"
+#include "xla/hlo/utils/hlo_sharding_util.h"
 #include "xla/literal.h"
 #include "xla/service/call_graph.h"
 #include "xla/service/custom_call_sharding_helper.h"
@@ -53,7 +54,7 @@ namespace xla {
 namespace spmd {
 
 // Enum representing the partitioning methods for gather and scatter.
-enum class PartitioningMethod {
+enum class GatherScatterPartitioningMethod {
   kExplicitBatch,
   kIndexParallel,
   kOperandPassthrough,
@@ -110,18 +111,29 @@ struct SpmdPartitionerOptions {
   // operand as an already rewritten windowed einsum loop.
   bool disable_ag_rewrite_for_multiple_consumers = false;
 
+  // Enables partially windowed einsums with more than one sharded operand
+  // dimension as seen in simultaneous data and tensor parallelism.
+  bool partial_windowed_einsum = false;
+
   // Partitioning method to prioritize for gather operations.
-  PartitioningMethod gather_partition_method =
-      PartitioningMethod::kExplicitBatch;
+  std::vector<GatherScatterPartitioningMethod>
+      preferred_gather_partition_methods = {
+          GatherScatterPartitioningMethod::kExplicitBatch,
+          GatherScatterPartitioningMethod::kIndexParallel};
 
   // Partitioning method to prioritize for scatter operations.
-  PartitioningMethod scatter_partition_method =
-      PartitioningMethod::kExplicitBatch;
+  std::vector<GatherScatterPartitioningMethod>
+      preferred_scatter_partition_methods = {
+          GatherScatterPartitioningMethod::kExplicitBatch,
+          GatherScatterPartitioningMethod::kIndexParallel};
 
   // The minimum size to enable windowed einsum in total bytes.
   // This combines sizes in bytes of both operands.
   // When it's set, it will override threshold_for_windowed_einsum_mib.
   std::optional<int64_t> total_bytes_windowed_einsum_threshold = std::nullopt;
+
+  // The maximum number of iterations for windowed einsum.
+  int64_t max_windowed_einsum_iteration = 32;
 };
 
 // Class to wrap the computation builder to capture information during SPMD
@@ -220,6 +232,15 @@ struct SPMDCollectiveOpsCreator {
       const std::vector<std::vector<int64_t>>& partition_subgroups,
       int64_t channel_id, std::optional<int64_t> split_dimension)>
       create_cross_partition_all_to_all;
+
+  // Function used to create a cross-partition all-to-all HLO using device list
+  // in iota format. This function is optional: if it is a nullptr, use
+  // create_cross_partition_all_to_all.
+  std::function<HloInstruction*(
+      SpmdBuilder*, absl::Span<HloInstruction* const> operands,
+      const IotaReplicaGroupList& partition_group_list, int64_t channel_id,
+      std::optional<int64_t> split_dimension)>
+      create_cross_partition_all_to_all_with_iota_device_list;
 
   // Function used to create a cross-partition all-gather HLO. This is optional:
   // if it is nullptr, the partitioner will use all-reduce instead.
@@ -352,6 +373,9 @@ class SpmdPartitioner : public HloModulePass {
   // sharding information of the module's parameters and outptuts.
   static void RecordInputsOutputsSharding(HloModule* module);
 
+  int64_t num_partitions() const { return num_partitions_; }
+  int64_t num_replicas() const { return num_replicas_; }
+
  protected:
   // This is the internal implementation for AllGatherShards(), returns a pair
   // of hlo instructions whose first element is the result of the all-gather
@@ -375,6 +399,12 @@ class SpmdPartitioner : public HloModulePass {
       HloModule* module,
       const absl::flat_hash_set<absl::string_view>& execution_threads);
 
+  // Replaces unreduced sharding type with replicated type to decouple unreduced
+  // with other sharding types.
+  absl::Status ConvertUnreducedSharding(
+      HloModule* module,
+      const absl::flat_hash_set<absl::string_view>& execution_threads);
+
   // Returns if the given side-effecting instruction is allowed to have
   // replicated sharding.
   virtual bool CanSideEffectingHaveReplicatedSharding(
@@ -395,13 +425,6 @@ class SpmdPartitioner : public HloModulePass {
   absl::Status PreprocessHlos(
       HloModule* module,
       const absl::flat_hash_set<absl::string_view>& execution_threads);
-
-  // A plug for subclasses to alter the IR based on the computation that has the
-  // rotate-right pattern. This is called during `PreprocessHlos`.
-  virtual absl::Status HandleRotateRightWhilePreprocessing(
-      HloComputation* computation) {
-    return absl::OkStatus();
-  };
 
   void set_execution_threads(
       const absl::flat_hash_set<absl::string_view>& execution_threads) {
@@ -463,6 +486,12 @@ class PartitionedHlo {
         << "PartitionedHlo is missing sharding:" << hlo->ToString();
   }
 
+  PartitionedHlo(PartitionedHlo&& other) = default;
+  PartitionedHlo(const PartitionedHlo& other) = default;
+
+  PartitionedHlo& operator=(PartitionedHlo&& other) = default;
+  PartitionedHlo& operator=(const PartitionedHlo& other) = default;
+
   PartitionedHlo CloneWithNewHlo(HloInstruction* hlo) const {
     PartitionedHlo new_phlo = *this;
     new_phlo.hlo_ = hlo;
@@ -512,9 +541,6 @@ class PartitionedHlo {
   // Returns the SPMD instruction's number of dimensions.
   int64_t num_dimensions() const { return base_shape_.dimensions().size(); }
 
-  // Original full shape of the data.
-  const Shape& base_shape() const { return base_shape_; }
-
   int64_t NewChannel() const { return (*state_.next_channel_id)++; }
 
   // Reshards the HLO to a usable partitioned input for a windowed user. Could
@@ -523,8 +549,6 @@ class PartitionedHlo {
       const Window& window, const HloSharding& target,
       HloInstruction* pad_value, bool mask_invalid_region = true,
       bool force_mask_in_compact = false);
-
-  const PartitioningState& state() const { return state_; }
 
   void AddReshardCache(const HloSharding& sharding, const PartitionedHlo& phlo);
 
@@ -535,7 +559,10 @@ class PartitionedHlo {
   // Helper function to replicate the data for partitions along the given dims.
   HloInstruction* ReplicatePartial(absl::Span<const int64_t> dims) const;
 
-  // Set state of the partitoned HLO.
+  const Shape& base_shape() const { return base_shape_; }
+  void set_base_shape(const Shape& base_shape) { base_shape_ = base_shape; }
+
+  const PartitioningState& state() const { return state_; }
   void set_state(PartitioningState state) { state_ = std::move(state); }
 
  private:
@@ -677,7 +704,7 @@ class SpmdPartitioningVisitor : public DfsHloVisitorWithDefault {
 
   // Sets the PartitionedHlo for the original hlo.
   void SetPartitionedHlo(const HloInstruction* hlo,
-                         const PartitionedHlo& partitioned_hlo) {
+                         PartitionedHlo&& partitioned_hlo) {
     CHECK_EQ(partitioned_instructions_.count(hlo), 0);
     partitioned_instructions_.emplace(hlo, partitioned_hlo);
     changed_ = true;
@@ -709,17 +736,20 @@ class SpmdPartitioningVisitor : public DfsHloVisitorWithDefault {
   }
 
   virtual double GetCommunicationTimeInMilliSec(
-      int64_t bytes, absl::Span<const ReplicaGroup> device_groups) {
+      int64_t bytes, const CollectiveDeviceList& collective_device_list) {
     return 0.0;
   }
 
   virtual int GetCommunicationMultiplier(
-      absl::Span<const ReplicaGroup> device_groups) {
+      const CollectiveDeviceList& collective_device_list) {
     return 1;
   }
 
   std::vector<ReplicaGroup> CreateReplicaGroups(
       std::vector<std::vector<int64_t>>& groups);
+
+  std::vector<ReplicaGroup> CreateReplicaGroups(
+      const hlo_sharding_util::DeviceGroupTileAssignment& groups);
 
   const CallGraph& call_graph() { return call_graph_; }
   int64_t num_partitions() const { return num_partitions_; }
@@ -794,7 +824,7 @@ class SpmdPartitioningVisitor : public DfsHloVisitorWithDefault {
   std::optional<SPMDCollectiveOpsCreator> visiting_collective_ops_creator_;
   std::optional<HloInstruction*> visiting_partition_id_;
   std::vector<PartitionedHlo::PartitioningState> visiting_state_;
-  std::vector<std::vector<int64_t>> device_groups_;
+  std::optional<hlo_sharding_util::DeviceGroupTileAssignment> device_groups_;
   const CallGraph& call_graph_;
 };
 

@@ -92,12 +92,17 @@ bool CanUseMakeArrayFromHostBuffer(
 
 }  // namespace
 
-absl::StatusOr<std::vector<tsl::RCReference<Array>>>
-ClientMakeArraysFromHostBufferShards(
+UserContextRef GetUserContext(Client* client) {
+  if (UserContextScope::current() != nullptr) {
+    return UserContextScope::current();
+  }
+  return client->CreateUserContext();
+}
+
+absl::StatusOr<std::vector<ArrayRef>> ClientMakeArraysFromHostBufferShards(
     Client* client,
     absl::Span<Client::MakeArraysFromHostBufferShardsSpec> specs,
-    Client::HostBufferSemantics semantics,
-    tsl::RCReference<UserContext> user_context) {
+    Client::HostBufferSemantics semantics) {
   for (int i = 1; i < specs.size(); ++i) {
     const Client::MakeArraysFromHostBufferShardsSpec& spec = specs[i];
     if (specs[0].array_spec.sharding->devices() !=
@@ -118,7 +123,7 @@ ClientMakeArraysFromHostBufferShards(
     }
   }
 
-  std::vector<tsl::RCReference<Array>> arrays;
+  std::vector<ArrayRef> arrays;
   arrays.reserve(specs.size());
   for (Client::MakeArraysFromHostBufferShardsSpec& spec : specs) {
     std::optional<xla::ifrt::Shape> shard_shape =
@@ -131,12 +136,12 @@ ClientMakeArraysFromHostBufferShards(
       TF_RETURN_IF_ERROR(CheckHostBuffer(spec, host_buffer, shard_shape));
 
       TF_ASSIGN_OR_RETURN(
-          tsl::RCReference<Array> array,
+          ArrayRef array,
           client->MakeArrayFromHostBuffer(
               host_buffer.data, host_buffer.dtype, std::move(host_buffer.shape),
               std::move(host_buffer.byte_strides),
               std::move(spec.array_spec.sharding), semantics,
-              std::move(host_buffer.on_done), user_context));
+              std::move(host_buffer.on_done)));
       arrays.push_back(std::move(array));
       continue;
     }
@@ -144,7 +149,7 @@ ClientMakeArraysFromHostBufferShards(
     absl::Span<xla::ifrt::Device* const> addressable_devices =
         spec.array_spec.sharding->devices()->AddressableDeviceList()->devices();
 
-    std::vector<tsl::RCReference<Array>> addressable_shards;
+    std::vector<ArrayRef> addressable_shards;
     addressable_shards.resize(addressable_devices.size());
     int64_t num_processed_shards = 0;
 
@@ -174,8 +179,7 @@ ClientMakeArraysFromHostBufferShards(
               "Invalid addressable shard index: ", addressable_shard_index,
               "; expected: [0, ", addressable_devices.size(), ")"));
         }
-        tsl::RCReference<Array>& shard =
-            addressable_shards[addressable_shard_index];
+        ArrayRef& shard = addressable_shards[addressable_shard_index];
         if (shard != nullptr) {
           return absl::InvalidArgumentError(absl::StrCat(
               "Duplicate addressable shard index: ", addressable_shard_index));
@@ -187,7 +191,7 @@ ClientMakeArraysFromHostBufferShards(
             shard, client->MakeArrayFromHostBuffer(
                        host_buffer.data, host_buffer.dtype, host_buffer.shape,
                        host_buffer.byte_strides, std::move(sharding), semantics,
-                       on_done_with_host_buffer_per_device, user_context));
+                       on_done_with_host_buffer_per_device));
       }
       num_processed_shards += addressable_shard_indices.size();
     }
@@ -199,7 +203,7 @@ ClientMakeArraysFromHostBufferShards(
     }
 
     TF_ASSIGN_OR_RETURN(
-        tsl::RCReference<Array> array,
+        ArrayRef array,
         client->AssembleArrayFromSingleDeviceArrays(
             spec.array_spec.dtype, std::move(spec.array_spec.shape),
             std::move(spec.array_spec.sharding),

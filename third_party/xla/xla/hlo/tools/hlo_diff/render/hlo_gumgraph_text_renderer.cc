@@ -27,7 +27,6 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
-#include "absl/types/span.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/tools/hlo_diff/hlo_diff_result.h"
@@ -255,16 +254,6 @@ void RenderTextSummary(const DiffResult& diff_result, std::ostringstream& out) {
       << "\n";
   out << "  Unchanged instructions: "
       << diff_result.unchanged_instructions.size() << "\n";
-  out << "\n";
-
-  RenderTextOptions options = {
-      .top_n_opcodes = 5,
-      .max_instructions_per_opcode = 5,
-      .name_only = true,
-      .opcodes_to_ignore = absl::flat_hash_set<HloOpcode>(
-          kIgnoredOpcodes.begin(), kIgnoredOpcodes.end()),
-      .print_unchanged_instructions = false};
-  RenderText(diff_result, out, options);
 }
 
 }  // namespace hlo_diff

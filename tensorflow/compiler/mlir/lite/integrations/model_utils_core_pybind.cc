@@ -31,12 +31,14 @@ limitations under the License.
 #include "mlir/Dialect/Func/Transforms/Passes.h"  // from @llvm-project
 #include "mlir/Dialect/Quant/IR/Quant.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributeInterfaces.h"  // from @llvm-project
+#include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/Location.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
 #include "mlir/IR/Operation.h"  // from @llvm-project
 #include "mlir/InitAllDialects.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
+#include "mlir/Pass/PassRegistry.h"  // from @llvm-project
 #include "mlir/Transforms/Passes.h"  // from @llvm-project
 #include "pybind11/cast.h"  // from @pybind11
 #include "pybind11/pybind11.h"  // from @pybind11
@@ -50,6 +52,8 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
 #include "tensorflow/compiler/mlir/lite/quantization/ir/QuantOps.h"
 #include "tensorflow/compiler/mlir/lite/stablehlo/transforms/stablehlo_passes.h"
+#include "tensorflow/compiler/mlir/lite/transforms/optimize_pass.h"
+#include "tensorflow/compiler/mlir/lite/transforms/passes.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_tensor.h"
 #include "tensorflow/python/lib/core/ndarray_tensor.h"
 
@@ -118,14 +122,22 @@ inline void RegisterDialects(mlir::DialectRegistry& registry) {
                   mlir::stablehlo::StablehloDialect, mlir::vhlo::VhloDialect>();
 }
 
+inline void RegisterPasses() {
+  mlir::registerTransformsPasses();
+  mlir::func::registerFuncPasses();
+  mlir::odml::registerLegalizeStablehloToVhloPass();
+
+  mlir::PassRegistration<mlir::TFL::OptimizePass>(
+      []() { return mlir::TFL::CreateOptimizePass(); });
+}
+
 PYBIND11_MODULE(model_utils_core_pybind, m) {
   Py_Initialize();
 
   m.doc() = "LiteRT ModelUtils Core Pybinds";
+
   // Register passes on load.
-  mlir::registerTransformsPasses();
-  mlir::func::registerFuncPasses();
-  mlir::odml::registerLegalizeStablehloToVhloPass();
+  RegisterPasses();
 
   m.def("mlir_opt_main", [](std::vector<std::string> argv,
                             std::vector<std::string> pass_names,
@@ -193,6 +205,15 @@ PYBIND11_MODULE(model_utils_core_pybind, m) {
 
     std::vector<std::string> attr_names;
     for (auto attr : op->getAttrDictionary()) {
+      attr_names.push_back(attr.getName().str());
+    }
+    return attr_names;
+  });
+
+  m.def("get_dictionary_attr_names", [](MlirAttribute c_attr) {
+    auto attr = mlir::cast<mlir::DictionaryAttr>(unwrap(c_attr));
+    std::vector<std::string> attr_names;
+    for (auto attr : attr) {
       attr_names.push_back(attr.getName().str());
     }
     return attr_names;

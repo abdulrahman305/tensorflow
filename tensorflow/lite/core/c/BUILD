@@ -1,4 +1,5 @@
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("//tensorflow:tensorflow.default.bzl", "get_compatible_with_portable")
 load(
     "//tensorflow/lite:build_def.bzl",
@@ -52,6 +53,10 @@ filegroup(
         "operator.h",
         "//tensorflow/compiler/mlir/lite/core/c:lite_headers_filegroup",
         "//tensorflow/lite/core/async/c:types.h",
+    ],
+    visibility = [
+        # Temporary workaround to make visible to litert in OSS (default vis is not transformed correctly.)
+        "//visibility:public",
     ],
 )
 

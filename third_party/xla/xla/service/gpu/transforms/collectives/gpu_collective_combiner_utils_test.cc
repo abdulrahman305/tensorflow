@@ -16,87 +16,26 @@ limitations under the License.
 #include "xla/service/gpu/transforms/collectives/gpu_collective_combiner_utils.h"
 
 #include <cstdint>
-#include <optional>
 
 #include <gtest/gtest.h>
-#include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/pass/hlo_pass_fix.h"
 #include "xla/hlo/pass/hlo_pass_pipeline.h"
+#include "xla/hlo/testlib/hlo_hardware_independent_test_base.h"
 #include "xla/hlo/transforms/simplifiers/hlo_dce.h"
 #include "xla/hlo/utils/hlo_query.h"
 #include "xla/service/collective_pipeliner.h"
+#include "xla/service/collective_pipeliner_utils.h"
 #include "xla/service/gpu/backend_configs.pb.h"
-#include "xla/service/hlo_module_config.h"
-#include "xla/stream_executor/device_description.h"
-#include "xla/tests/hlo_test_base.h"
 #include "xla/tsl/platform/statusor.h"
 #include "xla/util.h"
 
 namespace xla::gpu {
 namespace {
 
-using CollectiveCombinerUtilsTest = HloTestBase;
-
-TEST_F(CollectiveCombinerUtilsTest,
-       ComputeSuggestedCombinerThresholdReturnsMemoryThresholdForDeviceInfo) {
-  absl::string_view kHloText = R"(
-  HloModule m
-
-  ENTRY ar {
-    p0 = f32[32,32] parameter(0)
-    p1 = f32[32,32] parameter(1)
-
-    ROOT _ = f32[32,32]{1,0} custom-call(p0, p1),
-      custom_call_target="__cublas$gemm"
-  })";
-
-  TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(kHloText));
-  int pointer_size = 4;
-  stream_executor::DeviceDescription device_info;
-  device_info.set_device_memory_size(20000);
-
-  int64_t suggested_threshold = ComputeSuggestedCombinerThreshold(
-      *module, device_info, HloOpcode::kAllReduce, pointer_size);
-
-  // device size = 20000 bytes
-  // slop factor = 0.95
-  // peak memory = parameters + output = (2*32*32 + 32*32) * 4 bytes = 12288
-  // suggested thresholds = device size * slop factor - peak memory
-  EXPECT_EQ(suggested_threshold, 6712);
-}
-
-TEST_F(CollectiveCombinerUtilsTest,
-       ComputeSuggestedCombinerThresholdReturnsMemoryThresholdForModuleConfig) {
-  absl::string_view kHloText = R"(
-  HloModule m
-
-  ENTRY ar {
-    p0 = f32[32,32] parameter(0)
-    p1 = f32[32,32] parameter(1)
-
-    ROOT _ = f32[32,32]{1,0} custom-call(p0, p1),
-      custom_call_target="__cublas$gemm"
-  })";
-
-  HloModuleConfig config = GetModuleConfigForTest();
-  config.set_device_memory_size(20000);
-  TF_ASSERT_OK_AND_ASSIGN(auto module,
-                          ParseAndReturnVerifiedModule(kHloText, config));
-  int pointer_size = 4;
-  stream_executor::DeviceDescription device_info;
-
-  int64_t suggested_threshold = ComputeSuggestedCombinerThreshold(
-      *module, device_info, HloOpcode::kAllReduce, pointer_size);
-
-  // device size = 20000 bytes
-  // slop factor = 0.95
-  // peak memory = parameters + output = (2*32*32 + 32*32) * 4 bytes = 12288
-  // suggested thresholds = device size * slop factor - peak memory
-  EXPECT_EQ(suggested_threshold, 6712);
-}
+using CollectiveCombinerUtilsTest = HloHardwareIndependentTestBase;
 
 TEST_F(CollectiveCombinerUtilsTest,
        AppendPipelinedInstructionAppendsPipelinedInstructionInfoForward) {
@@ -155,7 +94,7 @@ TEST_F(CollectiveCombinerUtilsTest,
       /*pipeline_use_tree=*/false,
       /*process_different_sized_ops=*/true,
       /*pipelining_direction=*/
-      CollectivePipeliner::PipeliningDirection::kForward,
+      collective_pipeliner_utils::PipeliningDirection::kForward,
       /*should_process=*/HloPredicateIsOp<HloOpcode::kAllReduce>,
       /*acceptable_formatting=*/HloPredicateTrue,
       /*reuse_pipelined_op_buffer=*/HloPredicateFalse,
@@ -243,7 +182,7 @@ TEST_F(CollectiveCombinerUtilsTest,
       /*pipeline_use_tree=*/false,
       /*process_different_sized_ops=*/true,
       /*pipelining_direction=*/
-      CollectivePipeliner::PipeliningDirection::kForward,
+      collective_pipeliner_utils::PipeliningDirection::kForward,
       /*should_process=*/HloPredicateIsOp<HloOpcode::kAllReduce>,
       /*acceptable_formatting=*/HloPredicateTrue,
       /*reuse_pipelined_op_buffer=*/HloPredicateFalse,
@@ -326,7 +265,7 @@ TEST_F(CollectiveCombinerUtilsTest,
       /*pipeline_use_tree=*/false,
       /*process_different_sized_ops=*/true,
       /*pipelining_direction=*/
-      CollectivePipeliner::PipeliningDirection::kBackward,
+      collective_pipeliner_utils::PipeliningDirection::kBackward,
       /*should_process=*/HloPredicateIsOp<HloOpcode::kAllGather>,
       /*acceptable_formatting=*/HloPredicateTrue,
       /*reuse_pipelined_op_buffer=*/HloPredicateFalse,
@@ -421,7 +360,7 @@ TEST_F(CollectiveCombinerUtilsTest,
       /*pipeline_use_tree=*/false,
       /*process_different_sized_ops=*/true,
       /*pipelining_direction=*/
-      CollectivePipeliner::PipeliningDirection::kBackward,
+      collective_pipeliner_utils::PipeliningDirection::kBackward,
       /*should_process=*/HloPredicateIsOp<HloOpcode::kAllGather>,
       /*acceptable_formatting=*/HloPredicateTrue,
       /*reuse_pipelined_op_buffer=*/HloPredicateFalse,

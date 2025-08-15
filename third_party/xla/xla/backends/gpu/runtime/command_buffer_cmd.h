@@ -39,12 +39,18 @@ limitations under the License.
 #include "absl/types/span.h"
 #include "xla/backends/gpu/collectives/gpu_clique_key.h"
 #include "xla/backends/gpu/runtime/collective_thunk.h"
+#include "xla/backends/gpu/runtime/copy_thunk.h"
 #include "xla/backends/gpu/runtime/custom_call_thunk.h"
 #include "xla/backends/gpu/runtime/dynamic_slice_thunk.h"
+#include "xla/backends/gpu/runtime/gpublas_lt_matmul_thunk.h"
 #include "xla/backends/gpu/runtime/thunk.h"
 #include "xla/ffi/api/c_api.h"
+#include "xla/ffi/call_frame.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/runtime/buffer_use.h"
+#include "xla/runtime/execution_graph.h"
+#include "xla/runtime/object_pool.h"
+#include "xla/runtime/resource_use.h"
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/collective_ops_utils.h"
 #include "xla/service/gpu/buffer_allocations.h"
@@ -55,9 +61,9 @@ limitations under the License.
 #include "xla/stream_executor/command_buffer.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/dnn.h"
-#include "xla/stream_executor/gpu/gpu_blas_lt.h"
 #include "xla/stream_executor/kernel.h"
 #include "xla/stream_executor/memory_allocation.h"
+#include "xla/stream_executor/platform.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
 #include "xla/tsl/lib/gtl/int_type.h"
@@ -65,28 +71,31 @@ limitations under the License.
 namespace xla::gpu {
 
 // clang-format off
-#define COMMAND_BUFFER_CMD_LIST(V)                       \
-  V(kTracedCommandBufferCmd, "TracedCommandBufferCmd")   \
-  V(kComputationIdCmd, "ComputationIdCmd")               \
-  V(kLaunchCmd, "LaunchCmd")                             \
-  V(kCustomKernelLaunchCmd, "CustomKernelLaunchCmd")     \
-  V(kCublasLtCmd, "CublasLtCmd")                         \
-  V(kCuDnnCmd, "CuDnnCmd")                               \
-  V(kGemmCmd, "GemmCmd")                                 \
-  V(kMemcpyDeviceToDeviceCmd, "MemcpyDeviceToDeviceCmd") \
-  V(kMemzeroCmd, "MemzeroCmd")                           \
-  V(kMemset32Cmd, "Memset32Cmd")                         \
-  V(kCaseCmd, "CaseCmd")                                 \
-  V(kWhileCmd, "WhileCmd")                               \
-  V(kCustomCallCmd, "CustomCallCmd")                     \
-  V(kBarrierCmd, "BarrierCmd")                           \
-  V(kCollectiveCmd, "CollectiveCmd")                     \
-  V(kAllReduceCmd, "AllReduceCmd")                       \
-  V(kReduceScatter, "ReduceScatterCmd")                  \
-  V(kAllToAll, "AllToAllCmd")                            \
-  V(kAllGatherCmd, "AllGatherCmd")                       \
-  V(kCollectiveBroadcastCmd, "CollectiveBroadcastCmd")   \
-  V(kDynamicSliceFusionCmd, "DynamicSliceFusionCmd")     \
+#define COMMAND_BUFFER_CMD_LIST(V)                               \
+  V(kEmptyCmd, "EmptyCmd")                                       \
+  V(kTracedCommandBufferCmd, "TracedCommandBufferCmd")           \
+  V(kComputationIdCmd, "ComputationIdCmd")                       \
+  V(kLaunchCmd, "LaunchCmd")                                     \
+  V(kCustomKernelLaunchCmd, "CustomKernelLaunchCmd")             \
+  V(kCublasLtCmd, "CublasLtCmd")                                 \
+  V(kCuDnnCmd, "CuDnnCmd")                                       \
+  V(kGemmCmd, "GemmCmd")                                         \
+  V(kMemcpyDeviceToDeviceCmd, "MemcpyDeviceToDeviceCmd")         \
+  V(kMemzeroCmd, "MemzeroCmd")                                   \
+  V(kMemset32Cmd, "Memset32Cmd")                                 \
+  V(kCaseCmd, "CaseCmd")                                         \
+  V(kWhileCmd, "WhileCmd")                                       \
+  V(kCustomCallCmd, "CustomCallCmd")                             \
+  V(kBarrierCmd, "BarrierCmd")                                   \
+  V(kCollectiveCmd, "CollectiveCmd")                             \
+  V(kAllReduceCmd, "AllReduceCmd")                               \
+  V(kReduceScatterCmd, "ReduceScatterCmd")                       \
+  V(kAllToAllCmd, "AllToAllCmd")                                 \
+  V(kAllGatherCmd, "AllGatherCmd")                               \
+  V(kCollectiveBroadcastCmd, "CollectiveBroadcastCmd")           \
+  V(kAsyncDone, "AsyncDone")                                     \
+  V(kDynamicSliceFusionCmd, "DynamicSliceFusionCmd")             \
+  V(kDynamicSliceCopyFusionCmd, "DynamicSliceCopyFusionCmd")     \
   V(kUnknownCmd, "UnknownCmd") \
   // clang-format on
 
@@ -111,11 +120,17 @@ std::string CommandBufferCmdString(CommandBufferCmdType type);
 //
 // Commands must be thread safe as they can be recorded into multiple command
 // buffers concurrently on different stream executors.
+
+using ResourceUseVector = absl::InlinedVector<ResourceUse, 1>;
+
 class CommandBufferCmd {
  public:
-  CommandBufferCmd(CommandBufferCmdType cmd_type,
-                   ExecutionStreamId execution_stream_id)
-      : cmd_type_(cmd_type), execution_stream_id_(execution_stream_id) {}
+  CommandBufferCmd(CommandBufferCmdType cmd_type, ResourceUseVector resources,
+                   se::StreamPriority priority = se::StreamPriority::Default)
+      : cmd_type_(cmd_type),
+        resources_(std::move(resources)),
+        priority_(priority) {}
+
   virtual ~CommandBufferCmd() = default;
 
   using BufferUseVector = absl::InlinedVector<BufferUse, 4>;
@@ -198,25 +213,25 @@ class CommandBufferCmd {
     // An external state manager that gives efficient access to per-device state
     // to commands without a need to add expensive synchronization.
     StateManager& state;
-  };
 
-  // A list of commands recorded into the command buffer (or updated).
-  struct RecordedCommands {
-    // Creates a recorded commands from a single se::CommandBuffer command.
-    static absl::StatusOr<RecordedCommands> Create(
-        absl::StatusOr<const se::CommandBuffer::Command*> command);
+    // Buffer allocations that changed since the last call to `Record`. Buffer
+    // allocation indices are sorted. CommandBufferCmdExecutor and individual
+    // commands rely on this information to skip unnecessary updates.
+    std::optional<std::vector<BufferAllocation::Index>> updated_allocs;
 
-    absl::InlinedVector<const se::CommandBuffer::Command*, 2> commands;
+    // A flag indicating whether we record comands at command buffer thunk
+    // initialization time.
+    bool is_initialization = false;
   };
 
   // Create new commands in the command buffer using the given dependencies.
   struct RecordCreate {
-    absl::Span<const se::CommandBuffer::Command*> dependencies;
+    absl::Span<const se::CommandBuffer::Command* const> dependencies;
   };
 
   // Update previously recorded commands in the command buffer.
   struct RecordUpdate {
-    RecordedCommands recorded_commands;
+    const se::CommandBuffer::Command* command;
   };
 
   // When recording a command into the command buffer we can either update
@@ -249,19 +264,34 @@ class CommandBufferCmd {
   // Records commands into the command buffer. Returned commands will be passed
   // back on the next call to `Record` into the same command buffer, so that it
   // can do efficient command buffer updates.
-  virtual absl::StatusOr<RecordedCommands> Record(
+  virtual absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
       const RecordParams& record_params, RecordAction record_action,
-      se::CommandBuffer* command_buffer) = 0;
+      se::CommandBuffer* command_buffer) {
+    return absl::UnimplementedError("Record is not implemented");
+  }
 
-  // For some commands need to force update on Record even the input device
-  // pointers do not change, e.g. command that has state that can be changed by
-  // CPU code.
+  // Returns true if command requires initialization (has to be recorded at
+  // command buffer thunk initialization).
+  //
+  // Today this is only true for collective commands that might use NCCL for
+  // communication. With NCCL, all participating ranks must record collective
+  // commands at the same time, if some ranks will skip command updates (because
+  // they got lucky and got the same buffer allocations), it will lead to
+  // deadlocks. By forcing the command update at thunk initialization time, we
+  // ensure that all ranks execute NCCL command update.
+  virtual bool requires_initialization() { return false; }
+
+  // This is only true for DynamicSliceCopyFusionCmd when offset is dependents
+  // on loop iteration. As the command of slice operation is access the sliced
+  // memory region that varies across loop iterations, so even the original
+  // buffer allocation is the same, it still requires to do update.
   virtual bool force_update() { return false; }
 
   // Returns all buffers used by the cmd. These will be used to track cmd
   // updates, thus they need to be consistent across calls to the function.
-  virtual BufferUseVector buffers() = 0;
+  virtual BufferUseVector buffers() const { return {}; }
+  ResourceUseVector resources() const { return resources_; }
 
   // Returns true if command implemented as a nested command buffer.
   virtual bool IsNestedCommandBuffer() const { return false; }
@@ -272,31 +302,54 @@ class CommandBufferCmd {
   }
 
   CommandBufferCmdType command_type() const { return cmd_type_; }
+  se::StreamPriority priority() const { return priority_; }
+  void set_priority(se::StreamPriority priority) { priority_ = priority; }
 
   virtual std::string ToString() const {
     return CommandBufferCmdString(cmd_type_);
   }
 
-  ExecutionStreamId execution_stream_id() const { return execution_stream_id_; }
-
  private:
   std::string profile_annotation_;
   CommandBufferCmdType cmd_type_;
-  ExecutionStreamId execution_stream_id_;
+  ResourceUseVector resources_;
+
+  // Command priority, currently only support default, lowest and highest
+  // priority.
+  se::StreamPriority priority_ = se::StreamPriority::Default;
+};
+
+// A sequence of commands (corresponds to a ThunkSequence from the Thunk API).
+class CommandBufferCmdSequence
+    : public std::vector<std::unique_ptr<CommandBufferCmd>> {
+ public:
+  template <typename Command, typename... Args>
+  void Emplace(Args&&... args) {
+    this->emplace_back(std::make_unique<Command>(std::forward<Args>(args)...));
+  }
+
+  std::string ToString() const {
+    std::string result;
+    for (const auto& cmd : *this) {
+      result += cmd->ToString() + "\n";
+    }
+    return result;
+  }
 };
 
 //===----------------------------------------------------------------------===//
-// CommandBufferCmdSequence
+// CommandBufferCmdExecutor
 //===----------------------------------------------------------------------===//
 
-// A sequence of command buffer commands that create or update a command buffer.
-// You can think of CommandBufferCmdSequence as a mini interpreter whose sole
-// purpose is to manipulate command buffers at run time.
-class CommandBufferCmdSequence {
+// Command executor is responsible for recording commands sequence into the
+// underlying command buffer and setting up dependencies between commands.
+class CommandBufferCmdExecutor {
  public:
-  CommandBufferCmdSequence() = default;
-  CommandBufferCmdSequence(CommandBufferCmdSequence&&) = default;
-  CommandBufferCmdSequence& operator=(CommandBufferCmdSequence&&) = default;
+  CommandBufferCmdExecutor() = default;
+  CommandBufferCmdExecutor(CommandBufferCmdExecutor&&) = default;
+  CommandBufferCmdExecutor& operator=(CommandBufferCmdExecutor&&) = default;
+
+  using RecordParams = CommandBufferCmd::RecordParams;
 
   // Synchronization mode defines how much concurrency is allowed between
   // commands in the sequence.
@@ -307,40 +360,33 @@ class CommandBufferCmdSequence {
 
     // Relies on execution graph to insert dependencies between commands
     // that have buffer of resource conflicts, and building a DAG of commands.
-    kAutomatic
+    kConcurrent,
+
+    // Uses the same latency hidden scheduling results used in the thunk
+    // scheduling.
+    kLHS,
   };
 
-  // A command buffer cmd sequence builder for lazy command sequence
-  // construction.
-  class Builder {
-   public:
-    void Append(std::unique_ptr<CommandBufferCmd> cmd);
-
-    template <typename T, typename... Args>
-    void Emplace(Args... args) {
-      Append(std::make_unique<T>(std::forward<Args>(args)...));
+  template <typename Sink>
+  friend void AbslStringify(Sink& sink, SynchronizationMode mode) {
+    switch (mode) {
+      case SynchronizationMode::kSerialize:
+        sink.Append("serialize");
+        break;
+      case SynchronizationMode::kConcurrent:
+        sink.Append("concurrent");
+        break;
+      case SynchronizationMode::kLHS:
+        sink.Append("lhs");
+        break;
     }
+  }
 
-    CommandBufferCmdSequence Build(SynchronizationMode synchronization_mode) &&;
-
-   private:
-    std::vector<std::unique_ptr<CommandBufferCmd>> commands_;
-  };
-
-  enum class RecordMode {
-    // In exclusive mode no one else is recording commands into the command
-    // buffer argument, and cmd sequence is responsible for updating command
-    // buffer state: finalizing after all commands recorded, and
-    // switching to update state before recording updates.
-    kExclusive,
-
-    // In conditional mode multiple cmd sequences can be recorded into the
-    // command buffer argument, and with command buffer state managed externally
-    // cmd sequence should not finalize or update it. This mode is used when
-    // command buffer cmd sequence is recorded into conditional command buffers
-    // owned by the parent command buffer.
-    kConditional
-  };
+  // Creates a command executor from a sequence of commands using given
+  // synchronization mode.
+  static absl::StatusOr<CommandBufferCmdExecutor> Create(
+      CommandBufferCmdSequence commands,
+      SynchronizationMode synchronization_mode);
 
   // Prepares all commands added to a sequence.
   absl::Status Prepare(const Thunk::PrepareParams& params,
@@ -350,45 +396,100 @@ class CommandBufferCmdSequence {
   absl::Status Initialize(const Thunk::InitializeParams& params,
                           CommandBufferCmd::StateManager& state);
 
-  // Records all commands added to a sequence into the given command buffer.
+  // Records commands into the command buffer. This method automatically
+  // switches between `RecordCreate` or `RecordUpdate` depending on the command
+  // buffer state. This method assumes that no other command buffer sequence is
+  // recorded into the same command buffer, and doesn't set up initial
+  // dependencies for recorded commands.
   absl::Status Record(const Thunk::ExecuteParams& execute_params,
-                      const CommandBufferCmd::RecordParams& record_params,
-                      se::CommandBuffer* command_buffer,
-                      RecordMode mode = RecordMode::kExclusive);
+                      const RecordParams& record_params,
+                      se::CommandBuffer* command_buffer);
+
+  // Records command creation into the command buffer. Command buffer must be
+  // in create state. The next command sequence recorded into the same command
+  // buffer must use returned commands as dependencies, to guarantee that it is
+  // correctly ordered after this command sequence.
+  absl::StatusOr<std::vector<const se::CommandBuffer::Command*>> RecordCreate(
+      const Thunk::ExecuteParams& execute_params,
+      const RecordParams& record_params, se::CommandBuffer* command_buffer,
+      absl::Span<const se::CommandBuffer::Command* const> dependencies) const;
+
+  // Records command updates into the command buffer. Command buffer must be
+  // in update state.
+  absl::Status RecordUpdate(const Thunk::ExecuteParams& execute_params,
+                            const RecordParams& record_params,
+                            se::CommandBuffer* command_buffer) const;
 
   // Returns buffers referenced by commands in this sequence.
   const absl::flat_hash_set<BufferUse>& buffers() const;
 
   // Returns buffer allocations indices referenced by commands in this sequence.
-  const absl::flat_hash_set<BufferAllocation::Index>& allocs_indices() const;
+  absl::Span<const BufferAllocation::Index> allocs_indices() const;
 
   bool empty() const { return commands_.empty(); }
   size_t size() const { return commands_.size(); }
+
+  bool requires_initialization() const {
+    return absl::c_any_of(commands_, [](const auto& cmd) {
+      return cmd->requires_initialization();
+    });
+  }
 
   bool force_update() const {
     return absl::c_any_of(commands_,
                           [](const auto& cmd) { return cmd->force_update(); });
   }
 
+  // Renders the execution graph using default renderer. Returns url of the
+  // rendered graph, or an error if rendering failed.
+  absl::StatusOr<std::string> RenderExecutionGraph();
+
  private:
+  // We use index into the `commands_` vector as a command id.
+  using CommandId = int64_t;
+
   // A state associated with commands in the sequence. We rely on this state to
   // efficiently update command recorded into the command buffer.
   struct RecordState : public CommandBufferCmd::State {
-    CommandBufferCmd::RecordedCommands recorded_commands;
+    const se::CommandBuffer::Command* command;
   };
 
-  CommandBufferCmdSequence(
-      SynchronizationMode synchronization_mode,
-      std::vector<std::unique_ptr<CommandBufferCmd>> commands);
+  CommandBufferCmdExecutor(SynchronizationMode synchronization_mode,
+                           CommandBufferCmdSequence commands,
+                           std::optional<ExecutionGraph> execution_graph);
+
+  absl::Status CheckCommandBufferState(
+      se::CommandBuffer* command_buffer,
+      se::CommandBuffer::State expected_state) const;
+
+  // Returns true if command has no dependencies.
+  bool IsSource(CommandId id) const;
+
+  // Returns true if command is not a dependency of any other commands.
+  bool IsSink(CommandId id) const;
+
+  // Returns dependencies of the command with the given id.
+  std::vector<const se::CommandBuffer::Command*> Dependencies(
+      const RecordParams& record_params, se::CommandBuffer* command_buffer,
+      CommandId id) const;
 
   SynchronizationMode synchronization_mode_;
-  std::vector<std::unique_ptr<CommandBufferCmd>> commands_;
+  CommandBufferCmdSequence commands_;
+
+  // In automatic synchronization mode we build an execution graph for the
+  // sequence of commands and use it to set up dependencies between commands.
+  std::optional<ExecutionGraph> execution_graph_;
 
   // Buffers referenced by commands in this sequence.
   absl::flat_hash_set<BufferUse> buffers_;
 
-  // Buffer allocations indices referenced by commands in this sequence.
-  absl::flat_hash_set<BufferAllocation::Index> allocs_indices_;
+  // Unique buffer allocations indices referenced by all commands in this
+  // sequence (sorted by the buffer allocation index).
+  std::vector<BufferAllocation::Index> allocs_indices_;
+
+  // A mapping from command id to unique buffer allocations indices referenced
+  // by the command (sorted by the buffer allocation index).
+  std::vector<std::vector<BufferAllocation::Index>> cmd_allocs_indices_;
 };
 
 //===----------------------------------------------------------------------===//
@@ -409,7 +510,8 @@ class TracedCommandBuffer : public CommandBufferCmd::State {
   // traces and caches a new command buffer using user provided callback.
   absl::StatusOr<se::CommandBuffer*> GetOrTraceCommandBuffer(
       const BufferAllocations* buffer_allocation, se::StreamExecutor* executor,
-      se::Stream* stream, absl::FunctionRef<absl::Status(se::Stream*)> trace);
+      se::Stream* stream, absl::FunctionRef<absl::Status(se::Stream*)> trace,
+      se::StreamPriority priority = se::StreamPriority::Default);
 
  private:
   std::vector<BufferAllocation::Index> allocs_indices_;
@@ -431,15 +533,58 @@ class TracedCommandBuffer : public CommandBufferCmd::State {
 class TracedCommandBufferCmd : public CommandBufferCmd {
  protected:
   explicit TracedCommandBufferCmd(CommandBufferCmdType cmd_type,
-                                  ExecutionStreamId execution_stream_id);
+                                  ResourceUseVector resources = {});
 
   // Creates a command buffer by calling a user-provided `trace` function and
   // adds it as a nested command to `command_buffer`. Traced command buffers
   // cached and reused in an instance of `TracedCommandBuffer` kept in `state`.
-  absl::StatusOr<const se::CommandBuffer::Command*> AddTracedCommandBuffer(
+  absl::StatusOr<const se::CommandBuffer::Command*> RecordTracedCommand(
       const Thunk::ExecuteParams& execute_params,
-      const RecordParams& record_params, se::CommandBuffer* command_buffer,
+      const RecordParams& record_params, RecordAction record_action,
+      se::CommandBuffer* command_buffer,
       absl::FunctionRef<absl::Status(se::Stream*)> trace);
+};
+
+//===----------------------------------------------------------------------===//
+// EmptyCmd
+//===----------------------------------------------------------------------===//
+
+class EmptyCmd : public CommandBufferCmd {
+ public:
+  explicit EmptyCmd(ResourceUseVector resources = {});
+
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
+      const Thunk::ExecuteParams& execute_params,
+      const RecordParams& record_params, RecordAction record_action,
+      se::CommandBuffer* command_buffer) override;
+
+  BufferUseVector buffers() const override { return {}; }
+};
+
+//===----------------------------------------------------------------------===//
+// AsyncDoneCmd
+//===----------------------------------------------------------------------===//
+
+class AsyncDoneCmd : public CommandBufferCmd {
+ public:
+  explicit AsyncDoneCmd(
+      std::shared_ptr<CollectiveThunk::AsyncEvents> async_events,
+      ResourceUseVector resources = {});
+
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
+      const Thunk::ExecuteParams& execute_params,
+      const RecordParams& record_params, RecordAction record_action,
+      se::CommandBuffer* command_buffer) override;
+
+  BufferUseVector buffers() const override { return {}; }
+
+  bool IsAsync() const { return async_events_ != nullptr; }
+  std::shared_ptr<CollectiveThunk::AsyncEvents> async_events() const {
+    return async_events_;
+  }
+
+ private:
+  std::shared_ptr<CollectiveThunk::AsyncEvents> async_events_;
 };
 
 //===----------------------------------------------------------------------===//
@@ -450,34 +595,19 @@ class ComputationIdCmd : public CommandBufferCmd {
  public:
   enum class Kind { kReplica, kPartition };
 
-  ComputationIdCmd(ExecutionStreamId execution_stream_id,
-                   BufferAllocation::Slice dest, Kind kind);
+  ComputationIdCmd(BufferAllocation::Slice dest, Kind kind,
+                   ResourceUseVector resources = {});
 
-  absl::Status Initialize(const Thunk::InitializeParams& params,
-                          StateManager& state) override;
-
-  absl::StatusOr<RecordedCommands> Record(
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
       const RecordParams& record_params, RecordAction record_action,
       se::CommandBuffer* command_buffer) override;
 
-  BufferUseVector buffers() override;
+  BufferUseVector buffers() const override;
 
  private:
   BufferAllocation::Slice dest_;
   Kind kind_;
-
-  // Command sequence can be recorded concurrently for multiple command buffers
-  // on different stream executors and we need to synchronize mutable state.
-  absl::Mutex mutex_;
-
-  // TODO(ezhulenev): This is a workaround for CUDA graphs + conditional nodes
-  // bug that will be fixed in CUDA 12.4.1 release: currently it's impossible to
-  // update a memset node inside a conditional graph. Instead of using memset
-  // node we replace it with a kernel launch node of CUDA kernels doing 1D
-  // memset. This should be removed when bug is fixed in CUDA.
-  absl::flat_hash_map<se::StreamExecutor*, std::unique_ptr<se::Kernel>>
-      memset_kernels_ ABSL_GUARDED_BY(mutex_);
 };
 
 //===----------------------------------------------------------------------===//
@@ -486,20 +616,21 @@ class ComputationIdCmd : public CommandBufferCmd {
 
 class LaunchCmd : public CommandBufferCmd {
  public:
-  LaunchCmd(ExecutionStreamId execution_stream_id, std::string kernel_name,
+  LaunchCmd(std::string kernel_name,
             absl::Span<const BufferAllocation::Slice> args,
             absl::Span<const BufferUse::MemoryAccess> args_access,
-            LaunchDimensions dims, int64_t shmem_bytes);
+            LaunchDimensions dims, int64_t shmem_bytes,
+            ResourceUseVector resources = {});
 
   absl::Status Initialize(const Thunk::InitializeParams& params,
                           StateManager& state) override;
 
-  absl::StatusOr<RecordedCommands> Record(
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
       const RecordParams& record_params, RecordAction record_action,
       se::CommandBuffer* command_buffer) override;
 
-  BufferUseVector buffers() override;
+  BufferUseVector buffers() const override;
 
  private:
   std::string kernel_name_;
@@ -521,20 +652,20 @@ class LaunchCmd : public CommandBufferCmd {
 
 class CustomKernelLaunchCmd : public CommandBufferCmd {
  public:
-  CustomKernelLaunchCmd(ExecutionStreamId execution_stream_id,
-                        absl::Span<const BufferAllocation::Slice> args,
+  CustomKernelLaunchCmd(absl::Span<const BufferAllocation::Slice> args,
                         absl::Span<const BufferUse::MemoryAccess> args_access,
-                        CustomKernel custom_kernel);
+                        CustomKernel custom_kernel,
+                        ResourceUseVector resources = {});
 
   absl::Status Initialize(const Thunk::InitializeParams& params,
                           StateManager& state) override;
 
-  absl::StatusOr<RecordedCommands> Record(
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
       const RecordParams& record_params, RecordAction record_action,
       se::CommandBuffer* command_buffer) override;
 
-  BufferUseVector buffers() override;
+  BufferUseVector buffers() const override;
 
  private:
   std::vector<BufferAllocation::Slice> args_;
@@ -554,16 +685,16 @@ class CustomKernelLaunchCmd : public CommandBufferCmd {
 
 class MemcpyDeviceToDeviceCmd : public CommandBufferCmd {
  public:
-  MemcpyDeviceToDeviceCmd(ExecutionStreamId execution_stream_id,
-                          BufferAllocation::Slice dst,
-                          BufferAllocation::Slice src, int64_t num_bytes);
+  MemcpyDeviceToDeviceCmd(BufferAllocation::Slice dst,
+                          BufferAllocation::Slice src, int64_t num_bytes,
+                          ResourceUseVector resources = {});
 
-  absl::StatusOr<RecordedCommands> Record(
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
       const RecordParams& record_params, RecordAction record_action,
       se::CommandBuffer* command_buffer) override;
 
-  BufferUseVector buffers() override;
+  BufferUseVector buffers() const override;
 
  private:
   BufferAllocation::Slice dst_;
@@ -577,15 +708,14 @@ class MemcpyDeviceToDeviceCmd : public CommandBufferCmd {
 
 class MemzeroCmd : public CommandBufferCmd {
  public:
-  MemzeroCmd(ExecutionStreamId execution_stream_id,
-             BufferAllocation::Slice dst);
+  MemzeroCmd(BufferAllocation::Slice dst, ResourceUseVector resources = {});
 
-  absl::StatusOr<RecordedCommands> Record(
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
       const RecordParams& record_params, RecordAction record_action,
       se::CommandBuffer* command_buffer) override;
 
-  BufferUseVector buffers() override;
+  BufferUseVector buffers() const override;
 
  private:
   BufferAllocation::Slice dst_;
@@ -597,15 +727,15 @@ class MemzeroCmd : public CommandBufferCmd {
 
 class Memset32Cmd : public CommandBufferCmd {
  public:
-  Memset32Cmd(ExecutionStreamId execution_stream_id,
-              BufferAllocation::Slice dst, uint32_t bit_pattern);
+  Memset32Cmd(BufferAllocation::Slice dst, uint32_t bit_pattern,
+              ResourceUseVector resources = {});
 
-  absl::StatusOr<RecordedCommands> Record(
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
       const RecordParams& record_params, RecordAction record_action,
       se::CommandBuffer* command_buffer) override;
 
-  BufferUseVector buffers() override;
+  BufferUseVector buffers() const override;
 
  private:
   BufferAllocation::Slice dst_;
@@ -618,26 +748,28 @@ class Memset32Cmd : public CommandBufferCmd {
 
 class CaseCmd : public CommandBufferCmd {
  public:
-  CaseCmd(ExecutionStreamId execution_stream_id, BufferAllocation::Slice index,
-          bool index_is_bool,
-          std::vector<CommandBufferCmdSequence> branches_commands);
+  CaseCmd(BufferAllocation::Slice index, bool index_is_bool,
+          std::vector<CommandBufferCmdExecutor> branches,
+          ResourceUseVector resources = {});
 
   absl::Status Initialize(const Thunk::InitializeParams& params,
                           StateManager& state) override;
 
-  absl::StatusOr<RecordedCommands> Record(
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
       const RecordParams& record_params, RecordAction record_action,
       se::CommandBuffer* command_buffer) override;
 
+  bool requires_initialization() override;
+
   bool force_update() override;
 
-  BufferUseVector buffers() override;
+  BufferUseVector buffers() const override;
 
  private:
   BufferAllocation::Slice index_;
   bool index_is_bool_;
-  std::vector<CommandBufferCmdSequence> branches_commands_;
+  std::vector<CommandBufferCmdExecutor> branches_;
 };
 
 //===----------------------------------------------------------------------===//
@@ -646,26 +778,28 @@ class CaseCmd : public CommandBufferCmd {
 
 class WhileCmd : public CommandBufferCmd {
  public:
-  WhileCmd(ExecutionStreamId execution_stream_id, BufferAllocation::Slice pred,
-           CommandBufferCmdSequence cond_commands,
-           CommandBufferCmdSequence body_commands);
+  WhileCmd(BufferAllocation::Slice pred, CommandBufferCmdExecutor cond_commands,
+           CommandBufferCmdExecutor body_commands,
+           ResourceUseVector resources = {});
 
   absl::Status Initialize(const Thunk::InitializeParams& params,
                           StateManager& state) override;
 
-  absl::StatusOr<RecordedCommands> Record(
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
       const RecordParams& record_params, RecordAction record_action,
       se::CommandBuffer* command_buffer) override;
 
+  bool requires_initialization() override;
+
   bool force_update() override;
 
-  BufferUseVector buffers() override;
+  BufferUseVector buffers() const override;
 
  private:
   BufferAllocation::Slice pred_;
-  CommandBufferCmdSequence cond_commands_;
-  CommandBufferCmdSequence body_commands_;
+  CommandBufferCmdExecutor cond_commands_;
+  CommandBufferCmdExecutor body_commands_;
 };
 
 //===----------------------------------------------------------------------===//
@@ -674,21 +808,21 @@ class WhileCmd : public CommandBufferCmd {
 
 class GemmCmd : public TracedCommandBufferCmd {
  public:
-  GemmCmd(ExecutionStreamId execution_stream_id, GemmConfig config,
-          const BufferAllocation::Slice& lhs_buffer,
+  GemmCmd(GemmConfig config, const BufferAllocation::Slice& lhs_buffer,
           const BufferAllocation::Slice& rhs_buffer,
           const BufferAllocation::Slice& output_buffer,
-          const BufferAllocation::Slice& workspace, bool deterministic);
+          const BufferAllocation::Slice& workspace, bool deterministic,
+          ResourceUseVector resources = {});
 
   absl::Status Initialize(const Thunk::InitializeParams& params,
                           StateManager& state) override;
 
-  absl::StatusOr<RecordedCommands> Record(
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
       const RecordParams& record_params, RecordAction record_action,
       se::CommandBuffer* command_buffer) override;
 
-  BufferUseVector buffers() override;
+  BufferUseVector buffers() const override;
 
   bool IsNestedCommandBuffer() const final { return true; }
 
@@ -706,67 +840,27 @@ class GemmCmd : public TracedCommandBufferCmd {
 // CublasLtCmd
 //===----------------------------------------------------------------------===//
 
-class CublasLtCmd : public TracedCommandBufferCmd {
+class CublasLtCmd : public TracedCommandBufferCmd, public CublasLtMatmulThunk {
  public:
-  CublasLtCmd(ExecutionStreamId execution_stream_id, GemmConfig gemm_config,
-              se::gpu::BlasLt::Epilogue epilogue, int64_t algorithm_idx,
-              BufferAllocation::Slice a_buffer,
-              BufferAllocation::Slice b_buffer,
-              BufferAllocation::Slice c_buffer,
-              BufferAllocation::Slice d_buffer,
-              BufferAllocation::Slice bias_buffer /* may be null */,
-              BufferAllocation::Slice aux_buffer /* may be null */,
-              BufferAllocation::Slice a_scale_buffer /* may be null */,
-              BufferAllocation::Slice b_scale_buffer /* may be null */,
-              BufferAllocation::Slice c_scale_buffer /* may be null */,
-              BufferAllocation::Slice d_scale_buffer /* may be null */,
-              BufferAllocation::Slice d_amax_buffer /* may be null */,
-              BufferAllocation::Slice workspace_buffer);
+  CublasLtCmd(const CublasLtMatmulThunk& matmul_thunk,
+              ResourceUseVector resources = {});
 
   absl::Status Initialize(const Thunk::InitializeParams& params,
                           StateManager& state) override;
 
-  absl::StatusOr<RecordedCommands> Record(
+  // This is needed to avoid compile errors about "shadowed" virtual function
+  absl::Status Initialize(const InitializeParams& params) override {
+    return CublasLtMatmulThunk::Initialize(params);
+  }
+
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
       const RecordParams& record_params, RecordAction record_action,
       se::CommandBuffer* command_buffer) override;
 
-  BufferUseVector buffers() override;
+  BufferUseVector buffers() const override;
 
   bool IsNestedCommandBuffer() const final { return true; }
-
- private:
-  absl::StatusOr<se::gpu::BlasLt::MatmulPlan*> GetMatmulPlan(
-      const se::Stream* stream);
-
-  absl::StatusOr<se::gpu::BlasLt::MatmulAlgorithm> GetMatmulAlgorithm(
-      const se::Stream* stream, const se::gpu::BlasLt::MatmulPlan* plan,
-      int64_t max_workspace);
-
-  absl::Mutex matmul_plans_cache_mutex_;
-  absl::flat_hash_map<const se::Stream*, se::gpu::BlasLt::MatmulPlanPtr>
-      matmul_plans_cache_ ABSL_GUARDED_BY(matmul_plans_cache_mutex_);
-
-  absl::Mutex matmul_algorithm_cache_mutex_;
-  absl::flat_hash_map<const se::gpu::BlasLt::MatmulPlan*,
-                      se::gpu::BlasLt::MatmulAlgorithm>
-      matmul_algorithm_cache_ ABSL_GUARDED_BY(matmul_algorithm_cache_mutex_);
-
-  const GemmConfig gemm_config_;
-  const se::gpu::BlasLt::Epilogue epilogue_;
-  const int64_t algorithm_idx_;
-  const BufferAllocation::Slice a_buffer_;
-  const BufferAllocation::Slice b_buffer_;
-  const BufferAllocation::Slice c_buffer_;
-  const BufferAllocation::Slice d_buffer_;
-  const BufferAllocation::Slice bias_buffer_;
-  const BufferAllocation::Slice aux_buffer_;
-  const BufferAllocation::Slice a_scale_buffer_;
-  const BufferAllocation::Slice b_scale_buffer_;
-  const BufferAllocation::Slice c_scale_buffer_;
-  const BufferAllocation::Slice d_scale_buffer_;
-  const BufferAllocation::Slice d_amax_buffer_;
-  const BufferAllocation::Slice workspace_buffer_;
 };
 
 //===----------------------------------------------------------------------===//
@@ -775,19 +869,19 @@ class CublasLtCmd : public TracedCommandBufferCmd {
 
 class CuDnnCmd : public TracedCommandBufferCmd {
  public:
-  CuDnnCmd(ExecutionStreamId execution_stream_id,
-           absl::Span<const BufferAllocation::Slice> args,
-           std::shared_ptr<se::dnn::LazyDnnGraph> graph);
+  CuDnnCmd(absl::Span<const BufferAllocation::Slice> args,
+           std::shared_ptr<se::dnn::LazyDnnGraph> graph,
+           ResourceUseVector resources = {});
 
   absl::Status Initialize(const Thunk::InitializeParams& params,
                           StateManager& state) override;
 
-  absl::StatusOr<RecordedCommands> Record(
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
       const RecordParams& record_params, RecordAction record_action,
       se::CommandBuffer* command_buffer) override;
 
-  BufferUseVector buffers() override;
+  BufferUseVector buffers() const override;
 
   bool IsNestedCommandBuffer() const final { return true; }
 
@@ -808,49 +902,52 @@ class CustomCallCmd : public CommandBufferCmd {
 
   // This is a legacy custom call API that is discouraged, and will be
   // deprecated once XLA:FFI mechanism is ready.
-  CustomCallCmd(ExecutionStreamId execution_stream_id, std::string target_name,
-                CustomCallTarget call_target,
+  CustomCallCmd(std::string target_name, CustomCallTarget call_target,
                 std::vector<std::optional<Slice>> operands,
                 std::vector<std::optional<Slice>> results,
-                absl::string_view opaque)
+                absl::string_view opaque, ResourceUseVector resources = {})
       : CommandBufferCmd(CommandBufferCmdType::kCustomCallCmd,
-                         execution_stream_id),
+                         std::move(resources)),
         target_name_(std::move(target_name)),
         call_target_(std::move(call_target)),
         opaque_(opaque),
         operands_(std::move(operands)),
         results_(std::move(results)) {}
 
-  CustomCallCmd(ExecutionStreamId execution_stream_id, std::string target_name,
-                XLA_FFI_Handler* handler,
+  CustomCallCmd(std::string target_name, XLA_FFI_Handler* handler,
                 std::vector<std::optional<Slice>> operands,
                 std::vector<std::optional<Slice>> results,
-                AttributesMap attributes,
-                const HloComputation* called_computation)
+                ffi::CallFrame call_frame,
+                const HloComputation* called_computation,
+                ResourceUseVector resources = {})
       : CommandBufferCmd(CommandBufferCmdType::kCustomCallCmd,
-                         execution_stream_id),
+                         std::move(resources)),
         target_name_(std::move(target_name)),
         handler_(handler),
-        attributes_(std::move(attributes)),
+        call_frame_(std::move(call_frame)),
+        call_frames_([this] { return call_frame_->Copy(); }),
         called_computation_(called_computation),
         operands_(std::move(operands)),
         results_(std::move(results)) {}
 
-  absl::StatusOr<RecordedCommands> Record(
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
       const RecordParams& record_params, RecordAction record_action,
       se::CommandBuffer* command_buffer) override;
 
-  BufferUseVector buffers() override;
+  BufferUseVector buffers() const override;
   bool IsNestedCommandBuffer() const final { return true; }
 
  private:
-  absl::StatusOr<RecordedCommands> RecordLegacyCustomCall(
+  absl::StatusOr<const se::CommandBuffer::Command*> RecordLegacyCustomCall(
       const Thunk::ExecuteParams& execute_param,
-      const RecordParams& record_params, se::CommandBuffer* command_buffer);
-  absl::StatusOr<RecordedCommands> RecordXlaFfiCall(
+      const RecordParams& record_params, RecordAction record_action,
+      se::CommandBuffer* command_buffer);
+
+  absl::StatusOr<const se::CommandBuffer::Command*> RecordXlaFfiCall(
       const Thunk::ExecuteParams& execute_param,
-      const RecordParams& record_params, se::CommandBuffer* command_buffer);
+      const RecordParams& record_params, RecordAction record_action,
+      se::CommandBuffer* command_buffer);
 
   std::string target_name_;
 
@@ -863,7 +960,14 @@ class CustomCallCmd : public CommandBufferCmd {
   // functions with XLA runtime. It's under construction, and still misses
   // a lot of features. Long term it will replace legacy custom calls.
   XLA_FFI_Handler* handler_ = nullptr;
-  AttributesMap attributes_;
+
+  // Reference call frame pre-initialized at construction time.
+  std::optional<ffi::CallFrame> call_frame_;
+
+  // A pool of call frames used at run time. Newly created call frames are
+  // copied from the reference call frame and updated with buffer addresses.
+  std::optional<ObjectPool<ffi::CallFrame>> call_frames_;
+
   const HloComputation* called_computation_;
 
   std::vector<std::optional<Slice>> operands_;
@@ -876,44 +980,35 @@ class CustomCallCmd : public CommandBufferCmd {
 
 class CollectiveCmd : public CommandBufferCmd {
  public:
-  CollectiveCmd(CommandBufferCmdType cmd_type,
-                ExecutionStreamId execution_stream_id,
-                ExecutionStreamId async_from_stream_id,
-                CollectiveConfig config);
+  CollectiveCmd(CommandBufferCmdType cmd_type, CollectiveConfig config,
+                std::shared_ptr<CollectiveThunk::AsyncEvents> async_events,
+                ResourceUseVector resources = {});
 
   absl::Status Prepare(
       const Thunk::PrepareParams& params,
       Thunk::ResourceRequestsInterface& resource_requests) final;
 
-  bool force_update() override { return true; }
+  bool requires_initialization() override { return true; }
 
   bool IsNestedCommandBuffer() const final { return true; }
 
-  absl::StatusOr<const se::CommandBuffer::Command*> AddTracedCommandBuffer(
+  absl::StatusOr<const se::CommandBuffer::Command*> RecordTracedCommand(
       const Thunk::ExecuteParams& execute_params,
-      const RecordParams& record_params, se::CommandBuffer* command_buffer,
+      const RecordParams& record_params, RecordAction record_action,
+      se::CommandBuffer* command_buffer,
       absl::FunctionRef<absl::Status(se::Stream*)> trace);
 
-  virtual AsyncStreamKind GetAsyncStreamKind() = 0;
-
-  bool IsAsync() const {
-    return async_from_stream_id_ != execution_stream_id();
-  }
-
-  CollectiveStreamId nccl_stream_id() {
-    return xla::gpu::GetCollectiveStreamId(IsAsync(), GetAsyncStreamKind());
-  }
-
-  ExecutionStreamId async_from_stream_id() const {
-    return async_from_stream_id_;
+  bool IsAsync() const { return async_events_ != nullptr; }
+  std::shared_ptr<CollectiveThunk::AsyncEvents> async_events() const {
+    return async_events_;
   }
 
  protected:
   const CollectiveConfig& config() const { return config_; }
 
  private:
-  ExecutionStreamId async_from_stream_id_;
   CollectiveConfig config_;
+  std::shared_ptr<CollectiveThunk::AsyncEvents> async_events_;
 };
 
 //===----------------------------------------------------------------------===//
@@ -922,21 +1017,17 @@ class CollectiveCmd : public CommandBufferCmd {
 
 class AllReduceCmd : public CollectiveCmd {
  public:
-  AllReduceCmd(ExecutionStreamId execution_stream_id,
-               ExecutionStreamId async_from_stream_id, CollectiveConfig config,
-               ReductionKind reduction_kind,
-               absl::Span<const CollectiveThunk::Buffer> buffers);
+  AllReduceCmd(CollectiveConfig config, ReductionKind reduction_kind,
+               absl::Span<const CollectiveThunk::Buffer> buffers,
+               std::shared_ptr<CollectiveThunk::AsyncEvents> async_events,
+               ResourceUseVector resources = {});
 
-  absl::StatusOr<RecordedCommands> Record(
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
       const RecordParams& record_params, RecordAction record_action,
       se::CommandBuffer* command_buffer) override;
 
-  BufferUseVector buffers() override;
-
-  AsyncStreamKind GetAsyncStreamKind() override {
-    return AsyncStreamKind::kCollective;
-  };
+  BufferUseVector buffers() const override;
 
  private:
   ReductionKind reduction_kind_;
@@ -949,21 +1040,17 @@ class AllReduceCmd : public CollectiveCmd {
 
 class ReduceScatterCmd : public CollectiveCmd {
  public:
-  ReduceScatterCmd(ExecutionStreamId execution_stream_id,
-                   ExecutionStreamId async_from_stream_id,
-                   CollectiveConfig config, ReductionKind reduction_kind,
-                   absl::Span<const CollectiveThunk::Buffer> buffers);
+  ReduceScatterCmd(CollectiveConfig config, ReductionKind reduction_kind,
+                   absl::Span<const CollectiveThunk::Buffer> buffers,
+                   std::shared_ptr<CollectiveThunk::AsyncEvents> async_events,
+                   ResourceUseVector resources = {});
 
-  absl::StatusOr<RecordedCommands> Record(
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
       const RecordParams& record_params, RecordAction record_action,
       se::CommandBuffer* command_buffer) override;
 
-  BufferUseVector buffers() override;
-
-  AsyncStreamKind GetAsyncStreamKind() override {
-    return AsyncStreamKind::kCollective;
-  };
+  BufferUseVector buffers() const override;
 
  private:
   ReductionKind reduction_kind_;
@@ -976,21 +1063,17 @@ class ReduceScatterCmd : public CollectiveCmd {
 
 class AllToAllCmd : public CollectiveCmd {
  public:
-  AllToAllCmd(ExecutionStreamId execution_stream_id,
-              ExecutionStreamId async_from_stream_id, CollectiveConfig config,
-              bool has_split_dimension,
-              absl::Span<const CollectiveThunk::Buffer> buffers);
+  AllToAllCmd(CollectiveConfig config, bool has_split_dimension,
+              absl::Span<const CollectiveThunk::Buffer> buffers,
+              std::shared_ptr<CollectiveThunk::AsyncEvents> async_events,
+              ResourceUseVector resources = {});
 
-  absl::StatusOr<RecordedCommands> Record(
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
       const RecordParams& record_params, RecordAction record_action,
       se::CommandBuffer* command_buffer) override;
 
-  BufferUseVector buffers() override;
-
-  AsyncStreamKind GetAsyncStreamKind() override {
-    return AsyncStreamKind::kCollective;
-  };
+  BufferUseVector buffers() const override;
 
  private:
   bool has_split_dimension_;
@@ -1003,20 +1086,17 @@ class AllToAllCmd : public CollectiveCmd {
 
 class AllGatherCmd : public CollectiveCmd {
  public:
-  AllGatherCmd(ExecutionStreamId execution_stream_id,
-               ExecutionStreamId async_from_stream_id, CollectiveConfig config,
-               absl::Span<const CollectiveThunk::Buffer> buffers);
+  AllGatherCmd(CollectiveConfig config,
+               absl::Span<const CollectiveThunk::Buffer> buffers,
+               std::shared_ptr<CollectiveThunk::AsyncEvents> async_events,
+               ResourceUseVector resources = {});
 
-  absl::StatusOr<RecordedCommands> Record(
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
       const RecordParams& record_params, RecordAction record_action,
       se::CommandBuffer* command_buffer) override;
 
-  BufferUseVector buffers() override;
-
-  AsyncStreamKind GetAsyncStreamKind() override {
-    return AsyncStreamKind::kCollective;
-  };
+  BufferUseVector buffers() const override;
 
  private:
   std::vector<CollectiveThunk::Buffer> buffers_;
@@ -1028,17 +1108,18 @@ class AllGatherCmd : public CollectiveCmd {
 
 class CollectiveBroadcastCmd : public CollectiveCmd {
  public:
-  CollectiveBroadcastCmd(ExecutionStreamId execution_stream_id,
-                         ExecutionStreamId async_from_stream_id,
-                         CollectiveConfig config,
-                         absl::Span<const CollectiveThunk::Buffer> buffers);
+  CollectiveBroadcastCmd(
+      CollectiveConfig config,
+      absl::Span<const CollectiveThunk::Buffer> buffers,
+      std::shared_ptr<CollectiveThunk::AsyncEvents> async_events,
+      ResourceUseVector resources = {});
 
-  absl::StatusOr<RecordedCommands> Record(
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
       const RecordParams& record_params, RecordAction record_action,
       se::CommandBuffer* command_buffer) override;
 
-  BufferUseVector buffers() override;
+  BufferUseVector buffers() const override;
 
  private:
   std::vector<CollectiveThunk::Buffer> buffers_;
@@ -1051,15 +1132,15 @@ class CollectiveBroadcastCmd : public CollectiveCmd {
 class DynamicSliceFusionCmd : public CommandBufferCmd {
  public:
   DynamicSliceFusionCmd(
-      ExecutionStreamId execution_stream_id,
-      CommandBufferCmdSequence embedded_commands,
+      CommandBufferCmdExecutor embedded_commands,
       std::vector<std::optional<BufferAllocation::Slice>> arguments,
       std::vector<std::unique_ptr<BufferAllocation>> fake_allocations_,
       std::vector<std::optional<std::vector<DynamicSliceThunk::Offset>>>
           offsets,
       std::vector<std::optional<Shape>> orig_shapes,
       std::vector<std::optional<Shape>> sliced_shapes,
-      std::vector<std::optional<uint64_t>> offset_byte_sizes);
+      std::vector<std::optional<uint64_t>> offset_byte_sizes,
+      ResourceUseVector resources = {});
 
   absl::Status Initialize(const Thunk::InitializeParams& params,
                           StateManager& state) override;
@@ -1068,19 +1149,19 @@ class DynamicSliceFusionCmd : public CommandBufferCmd {
       const Thunk::PrepareParams& params,
       Thunk::ResourceRequestsInterface& resource_requests) final;
 
-  absl::StatusOr<RecordedCommands> Record(
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
       const RecordParams& record_params, RecordAction record_action,
       se::CommandBuffer* command_buffer) override;
 
-  BufferUseVector buffers() override;
+  BufferUseVector buffers() const override;
 
-  bool force_update() override;
+  bool requires_initialization() override;
 
   bool IsNestedCommandBuffer() const final { return true; }
 
  private:
-  CommandBufferCmdSequence embedded_commands_;
+  CommandBufferCmdExecutor embedded_commands_;
   std::vector<DynamicSliceThunk::SliceDef> slices_;
   std::vector<std::unique_ptr<BufferAllocation>> fake_allocations_;
 
@@ -1100,6 +1181,36 @@ class DynamicSliceFusionCmd : public CommandBufferCmd {
   // command sequences.
   absl::flat_hash_map<int64_t, std::optional<BufferAllocation::Slice>>
       embeded_to_origin_slice_map_;
+};
+
+//===----------------------------------------------------------------------===//
+// DynamicSliceCopyFusionCmd
+//===----------------------------------------------------------------------===//
+
+// DynamicSliceCopyFusionCmd is a command that copies a slice from one
+// buffer to another, it is only supported for static slice.
+class DynamicSliceCopyFusionCmd : public CommandBufferCmd {
+ public:
+  DynamicSliceCopyFusionCmd(const BufferAllocation::Slice& source_buffer,
+                            const BufferAllocation::Slice& destination_buffer,
+                            uint64_t mem_size,
+                            DynamicMemcpyThunk::Offsets offsets,
+                            ResourceUseVector resources = {});
+
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
+      const Thunk::ExecuteParams& execute_params,
+      const RecordParams& record_params, RecordAction record_action,
+      se::CommandBuffer* command_buffer) override;
+
+  bool force_update() override { return offsets_.depends_on_loop; }
+
+  BufferUseVector buffers() const override;
+
+ private:
+  const BufferAllocation::Slice source_buffer_;
+  const BufferAllocation::Slice destination_buffer_;
+  uint64_t mem_size_;
+  DynamicMemcpyThunk::Offsets offsets_;
 };
 
 }  // namespace xla::gpu

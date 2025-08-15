@@ -135,9 +135,11 @@ absl::Status LoadOpenCLOnce() {
       typedef void (*enableOpenCL_t)();
       enableOpenCL_t enableOpenCL =
           reinterpret_cast<enableOpenCL_t>(dlsym(libopencl, "enableOpenCL"));
-      enableOpenCL();
-      LoadOpenCLFunctions(libopencl, true);
-      return absl::OkStatus();
+      if (enableOpenCL != nullptr) {
+        enableOpenCL();
+        LoadOpenCLFunctions(libopencl, true);
+        return absl::OkStatus();
+      }
     }
   }
 #else
@@ -148,7 +150,9 @@ absl::Status LoadOpenCLOnce() {
     LoadOpenCLFunctions(libopencl, false);
     return absl::OkStatus();
   }
-  TFLITE_LOG(INFO) << "Failed to load OpenCL library with dlopen: " << dlerror()
+  const char* dlerror_result = dlerror();
+  TFLITE_LOG(INFO) << "Failed to load OpenCL library with dlopen: "
+                   << (dlerror_result ? dlerror_result : "unknown error")
                    << ". Trying ICD loader.";
   // Check if OpenCL functions are found via OpenCL ICD Loader.
   LoadOpenCLFunctions(libopencl, false);
@@ -162,7 +166,8 @@ absl::Status LoadOpenCLOnce() {
     return absl::UnknownError("OpenCL is not supported.");
   }
   // record error
-  std::string error(dlerror());
+  dlerror_result = dlerror();
+  std::string error(dlerror_result ? dlerror_result : "unknown error");
   return absl::UnknownError(
       absl::StrCat("Can not open OpenCL library on this device - ", error));
 #endif
@@ -185,6 +190,11 @@ void LoadOpenCLFunctionExtensions(cl_platform_id platform_id) {
 
   // cl_arm_import_memory extension
   LoadFunctionExtension(platform_id, clImportMemoryARM);
+
+  // cl_khr_semaphore extension
+  LoadFunctionExtension(platform_id, clCreateSemaphoreWithPropertiesKHR);
+  LoadFunctionExtension(platform_id, clEnqueueWaitSemaphoresKHR);
+  LoadFunctionExtension(platform_id, clEnqueueSignalSemaphoresKHR);
 }
 
 #ifdef __WINDOWS__
@@ -449,6 +459,11 @@ PFN_clGetCommandBufferInfoKHR clGetCommandBufferInfoKHR;
 
 // cl_arm_import_memory extension
 PFN_clImportMemoryARM clImportMemoryARM;
+
+// cl_khr_semaphore extension
+PFN_clCreateSemaphoreWithPropertiesKHR clCreateSemaphoreWithPropertiesKHR;
+PFN_clEnqueueWaitSemaphoresKHR clEnqueueWaitSemaphoresKHR;
+PFN_clEnqueueSignalSemaphoresKHR clEnqueueSignalSemaphoresKHR;
 
 DEFINE_QCOM_FUNCTION_PTRS
 

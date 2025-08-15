@@ -20,10 +20,10 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/strings/string_view.h"
+#include "xla/hlo/testlib/hlo_hardware_independent_test_base.h"
 #include "xla/hlo/testlib/verified_hlo_module.h"
 #include "xla/hlo/tools/hlo_diff/graph/hlo_gumgraph.h"
 #include "xla/hlo/tools/hlo_diff/graph/hlo_gumgraph_node.h"
-#include "xla/tests/hlo_test_base.h"
 #include "xla/tsl/platform/statusor.h"
 
 namespace xla {
@@ -32,7 +32,7 @@ namespace {
 
 using ::testing::ElementsAre;
 
-class HloGumgraphDfsTest : public HloTestBase {};
+class HloGumgraphDfsTest : public HloHardwareIndependentTestBase {};
 
 TEST_F(HloGumgraphDfsTest, DfsPreOrderWorks) {
   // Create a module with entry computation containing the following structure:
@@ -64,7 +64,7 @@ ENTRY entry {
       DfsTraversalOrder::kPreOrder, graph->GetNodeCount());
 
   EXPECT_THAT(visited_nodes,
-              ElementsAre("root", "add_0", "baz", "add_1", "bar", "foo"));
+              ElementsAre("root", "add_0", "add_1", "foo", "bar", "baz"));
 }
 
 TEST_F(HloGumgraphDfsTest, DfsPostOrderWorks) {
@@ -97,7 +97,7 @@ ENTRY entry {
       DfsTraversalOrder::kPostOrder, graph->GetNodeCount());
 
   EXPECT_THAT(visited_nodes,
-              ElementsAre("baz", "bar", "foo", "add_1", "add_0", "root"));
+              ElementsAre("foo", "bar", "add_1", "baz", "add_0", "root"));
 }
 
 TEST_F(HloGumgraphDfsTest, DfsPostOrderWorksForMultiplePathsFromRoot) {
@@ -159,7 +159,7 @@ ENTRY entry {
   }
 
   EXPECT_THAT(string_views,
-              ElementsAre("root", "add_0", "baz", "add_1", "bar", "foo"));
+              ElementsAre("root", "add_0", "add_1", "foo", "bar", "baz"));
 }
 
 TEST_F(HloGumgraphDfsTest, DfsPreOrderStopExpandingWorks) {
@@ -192,7 +192,7 @@ ENTRY entry {
       DfsTraversalOrder::kPreOrder, 6,
       [](const HloInstructionNode& node) { return node.GetName() != "add_1"; });
 
-  EXPECT_THAT(visited_nodes, ElementsAre("root", "add_0", "baz", "add_1"));
+  EXPECT_THAT(visited_nodes, ElementsAre("root", "add_0", "add_1", "baz"));
 }
 
 TEST_F(HloGumgraphDfsTest, DfsPostOrderStopExpandingWorks) {
@@ -225,7 +225,7 @@ ENTRY entry {
       DfsTraversalOrder::kPostOrder, 6,
       [](const HloInstructionNode& node) { return node.GetName() != "add_1"; });
 
-  EXPECT_THAT(visited_nodes, ElementsAre("baz", "add_1", "add_0", "root"));
+  EXPECT_THAT(visited_nodes, ElementsAre("add_1", "baz", "add_0", "root"));
 }
 
 }  // namespace

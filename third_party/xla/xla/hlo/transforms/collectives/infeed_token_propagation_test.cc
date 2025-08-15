@@ -20,6 +20,8 @@ limitations under the License.
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/strings/string_view.h"
 #include "xla/hlo/analysis/hlo_ordering.h"
 #include "xla/hlo/ir/hlo_instruction.h"
@@ -105,17 +107,17 @@ ENTRY main {
 
   // The infeed output token should have propagated through the conditional.
   HloInstruction* cond = FindInstruction(module.get(), "cond.0");
-  EXPECT_EQ(cond->shape().tuple_shapes_size(), 1);
+  EXPECT_EQ(cond->shape().tuple_shapes().size(), 1);
   EXPECT_TRUE(cond->shape().tuple_shapes()[0].IsToken());
 
   // The infeed input token should have propagated through the true tuple.
   HloInstruction* true_tuple = FindInstruction(module.get(), "true_tuple.0");
-  EXPECT_EQ(true_tuple->shape().tuple_shapes_size(), 1);
+  EXPECT_EQ(true_tuple->shape().tuple_shapes().size(), 1);
   EXPECT_TRUE(true_tuple->shape().tuple_shapes()[0].IsToken());
 
   // The infeed input token should not have propagated through the false tuple.
   HloInstruction* false_tuple = FindInstruction(module.get(), "false_tuple.0");
-  EXPECT_EQ(false_tuple->shape().tuple_shapes_size(), 0);
+  EXPECT_EQ(false_tuple->shape().tuple_shapes().size(), 0);
 
   // The infeed output token should have propagated through the true
   // computation's root.
@@ -161,17 +163,17 @@ ENTRY main {
 
   // The outfeed output token should have propagated through the conditional.
   HloInstruction* cond = FindInstruction(module.get(), "cond.0");
-  EXPECT_EQ(cond->shape().tuple_shapes_size(), 1);
+  EXPECT_EQ(cond->shape().tuple_shapes().size(), 1);
   EXPECT_TRUE(cond->shape().tuple_shapes()[0].IsToken());
 
   // The outfeed input token should have propagated through the true tuple.
   HloInstruction* true_tuple = FindInstruction(module.get(), "true_tuple.0");
-  EXPECT_EQ(true_tuple->shape().tuple_shapes_size(), 2);
+  EXPECT_EQ(true_tuple->shape().tuple_shapes().size(), 2);
   EXPECT_TRUE(true_tuple->shape().tuple_shapes()[1].IsToken());
 
   // The outfeed input token should not have propagated through the false tuple.
   HloInstruction* false_tuple = FindInstruction(module.get(), "false_tuple.0");
-  EXPECT_EQ(false_tuple->shape().tuple_shapes_size(), 0);
+  EXPECT_EQ(false_tuple->shape().tuple_shapes().size(), 0);
 
   // The outfeed output token should have propagated through the true
   // computation's root.
@@ -214,17 +216,17 @@ ENTRY main {
 
   // The infeed output token should have propagated through the conditional.
   HloInstruction* cond = FindInstruction(module.get(), "cond.0");
-  EXPECT_EQ(cond->shape().tuple_shapes_size(), 1);
+  EXPECT_EQ(cond->shape().tuple_shapes().size(), 1);
   EXPECT_TRUE(cond->shape().tuple_shapes()[0].IsToken());
 
   // The infeed input token should have propagated through the true tuple.
   const HloInstruction* true_tuple = cond->operand(1);
-  EXPECT_EQ(true_tuple->shape().tuple_shapes_size(), 1);
+  EXPECT_EQ(true_tuple->shape().tuple_shapes().size(), 1);
   EXPECT_TRUE(true_tuple->shape().tuple_shapes()[0].IsToken());
 
   // The infeed input token should not have propagated through the false tuple.
   const HloInstruction* false_tuple = cond->operand(2);
-  EXPECT_EQ(false_tuple->shape().tuple_shapes_size(), 0);
+  EXPECT_EQ(false_tuple->shape().tuple_shapes().size(), 0);
 
   // The infeed output token should have propagated through the true
   // computation's root.
@@ -270,18 +272,18 @@ ENTRY main {
 
   // The outfeed output token should have propagated through the conditional.
   HloInstruction* cond = FindInstruction(module.get(), "cond.0");
-  EXPECT_EQ(cond->shape().tuple_shapes_size(), 1);
+  EXPECT_EQ(cond->shape().tuple_shapes().size(), 1);
   EXPECT_TRUE(cond->shape().tuple_shapes()[0].IsToken());
 
   // The outfeed input token should have propagated through the true tuple.
   HloInstruction* true_tuple = cond->mutable_operand(1);
   EXPECT_TRUE(true_tuple->shape().IsTuple());
-  EXPECT_EQ(true_tuple->shape().tuple_shapes_size(), 2);
+  EXPECT_EQ(true_tuple->shape().tuple_shapes().size(), 2);
   EXPECT_TRUE(true_tuple->shape().tuple_shapes()[1].IsToken());
 
   // The outfeed input token should not have propagated through the false tuple.
   HloInstruction* false_tuple = FindInstruction(module.get(), "false_tuple.0");
-  EXPECT_EQ(false_tuple->shape().tuple_shapes_size(), 0);
+  EXPECT_EQ(false_tuple->shape().tuple_shapes().size(), 0);
 
   // The outfeed output token should have propagated through the true
   // computation's root.
@@ -326,17 +328,17 @@ ENTRY main {
 
   // The outfeed output token should have propagated through the conditional.
   HloInstruction* cond = FindInstruction(module.get(), "cond.0");
-  EXPECT_EQ(cond->shape().tuple_shapes_size(), 1);
+  EXPECT_EQ(cond->shape().tuple_shapes().size(), 1);
   EXPECT_TRUE(cond->shape().tuple_shapes()[0].IsToken());
 
   // The outfeed input token should have propagated through the true tuple.
   HloInstruction* true_tuple = FindInstruction(module.get(), "true_tuple.0");
-  EXPECT_EQ(true_tuple->shape().tuple_shapes_size(), 1);
+  EXPECT_EQ(true_tuple->shape().tuple_shapes().size(), 1);
   EXPECT_TRUE(true_tuple->shape().tuple_shapes()[0].IsToken());
 
   // The outfeed input token should not have propagated through the false tuple.
   HloInstruction* false_tuple = FindInstruction(module.get(), "false_tuple.0");
-  EXPECT_EQ(false_tuple->shape().tuple_shapes_size(), 0);
+  EXPECT_EQ(false_tuple->shape().tuple_shapes().size(), 0);
 
   // The outfeed output token should have propagated through the true
   // computation's root.
@@ -378,12 +380,12 @@ ENTRY main {
 
   // The infeed output token should have propagated through the loop.
   HloInstruction* loop = FindInstruction(module.get(), "while.0");
-  EXPECT_EQ(loop->shape().tuple_shapes_size(), 1);
+  EXPECT_EQ(loop->shape().tuple_shapes().size(), 1);
   EXPECT_TRUE(loop->shape().tuple_shapes()[0].IsToken());
 
   // The infeed input token should have propagated through the loop tuple.
   HloInstruction* loop_tuple = FindInstruction(module.get(), "while_tuple.0");
-  EXPECT_EQ(loop_tuple->shape().tuple_shapes_size(), 1);
+  EXPECT_EQ(loop_tuple->shape().tuple_shapes().size(), 1);
   EXPECT_TRUE(loop_tuple->shape().tuple_shapes()[0].IsToken());
 
   // The infeed output token should have propagated through the while body root.
@@ -393,14 +395,14 @@ ENTRY main {
 
   // The infeed input token should have propagated through the body parameter.
   HloInstruction* body_param = body_comp->parameter_instruction(0);
-  EXPECT_EQ(body_param->shape().tuple_shapes_size(), 1);
+  EXPECT_EQ(body_param->shape().tuple_shapes().size(), 1);
   EXPECT_TRUE(body_param->shape().tuple_shapes()[0].IsToken());
 
   // The infeed input token should have propagated through the condition
   // parameter.
   HloComputation* cond_comp = FindComputation(module.get(), "cond");
   HloInstruction* cond_param = cond_comp->parameter_instruction(0);
-  EXPECT_EQ(cond_param->shape().tuple_shapes_size(), 1);
+  EXPECT_EQ(cond_param->shape().tuple_shapes().size(), 1);
   EXPECT_TRUE(cond_param->shape().tuple_shapes()[0].IsToken());
 }
 
@@ -436,12 +438,12 @@ ENTRY main {
 
   // The outfeed output token should have propagated through the loop.
   HloInstruction* loop = FindInstruction(module.get(), "while.0");
-  EXPECT_EQ(loop->shape().tuple_shapes_size(), 2);
+  EXPECT_EQ(loop->shape().tuple_shapes().size(), 2);
   EXPECT_TRUE(loop->shape().tuple_shapes()[1].IsToken());
 
   // The outfeed input token should have propagated through the loop tuple.
   HloInstruction* loop_tuple = FindInstruction(module.get(), "while_tuple.0");
-  EXPECT_EQ(loop_tuple->shape().tuple_shapes_size(), 2);
+  EXPECT_EQ(loop_tuple->shape().tuple_shapes().size(), 2);
   EXPECT_TRUE(loop_tuple->shape().tuple_shapes()[1].IsToken());
 
   // The outfeed output token should have propagated through the while body
@@ -452,14 +454,14 @@ ENTRY main {
 
   // The outfeed output token should have propagated through the body parameter.
   HloInstruction* body_param = body_comp->parameter_instruction(0);
-  EXPECT_EQ(body_param->shape().tuple_shapes_size(), 2);
+  EXPECT_EQ(body_param->shape().tuple_shapes().size(), 2);
   EXPECT_TRUE(body_param->shape().tuple_shapes()[1].IsToken());
 
   // The outfeed output token should have propagated through the condition
   // parameter.
   HloComputation* cond_comp = FindComputation(module.get(), "cond");
   HloInstruction* cond_param = cond_comp->parameter_instruction(0);
-  EXPECT_EQ(cond_param->shape().tuple_shapes_size(), 2);
+  EXPECT_EQ(cond_param->shape().tuple_shapes().size(), 2);
   EXPECT_TRUE(cond_param->shape().tuple_shapes()[1].IsToken());
 }
 
@@ -494,12 +496,12 @@ ENTRY main {
 
   // The outfeed output token should have propagated through the loop.
   HloInstruction* loop = FindInstruction(module.get(), "while.0");
-  EXPECT_EQ(loop->shape().tuple_shapes_size(), 1);
+  EXPECT_EQ(loop->shape().tuple_shapes().size(), 1);
   EXPECT_TRUE(loop->shape().tuple_shapes()[0].IsToken());
 
   // The outfeed input token should have propagated through the loop tuple.
   HloInstruction* loop_tuple = FindInstruction(module.get(), "while_tuple.0");
-  EXPECT_EQ(loop_tuple->shape().tuple_shapes_size(), 1);
+  EXPECT_EQ(loop_tuple->shape().tuple_shapes().size(), 1);
   EXPECT_TRUE(loop_tuple->shape().tuple_shapes()[0].IsToken());
 
   // The outfeed output token should have propagated through the while body
@@ -509,14 +511,14 @@ ENTRY main {
 
   // The outfeed output token should have propagated through the body parameter.
   HloInstruction* body_param = body_comp->parameter_instruction(0);
-  EXPECT_EQ(body_param->shape().tuple_shapes_size(), 1);
+  EXPECT_EQ(body_param->shape().tuple_shapes().size(), 1);
   EXPECT_TRUE(body_param->shape().tuple_shapes()[0].IsToken());
 
   // The outfeed output token should have propagated through the condition
   // parameter.
   HloComputation* cond_comp = FindComputation(module.get(), "cond");
   HloInstruction* cond_param = cond_comp->parameter_instruction(0);
-  EXPECT_EQ(cond_param->shape().tuple_shapes_size(), 1);
+  EXPECT_EQ(cond_param->shape().tuple_shapes().size(), 1);
   EXPECT_TRUE(cond_param->shape().tuple_shapes()[0].IsToken());
 }
 
@@ -551,7 +553,7 @@ ENTRY main {
   // The outfeed output token should have propagated through the loop.
   HloInstruction* loop = FindInstruction(module.get(), "while.0");
   EXPECT_TRUE(loop->shape().IsTuple());
-  EXPECT_EQ(loop->shape().tuple_shapes_size(), 2);
+  EXPECT_EQ(loop->shape().tuple_shapes().size(), 2);
   EXPECT_TRUE(loop->shape().tuple_shapes()[1].IsToken());
 
   // The outfeed input token should have propagated through the loop tuple.
@@ -565,14 +567,14 @@ ENTRY main {
 
   // The outfeed output token should have propagated through the body parameter.
   HloInstruction* body_param = body_comp->parameter_instruction(0);
-  EXPECT_EQ(body_param->shape().tuple_shapes_size(), 2);
+  EXPECT_EQ(body_param->shape().tuple_shapes().size(), 2);
   EXPECT_TRUE(body_param->shape().tuple_shapes()[1].IsToken());
 
   // The outfeed output token should have propagated through the condition
   // parameter.
   HloComputation* cond_comp = FindComputation(module.get(), "cond");
   HloInstruction* cond_param = cond_comp->parameter_instruction(0);
-  EXPECT_EQ(cond_param->shape().tuple_shapes_size(), 2);
+  EXPECT_EQ(cond_param->shape().tuple_shapes().size(), 2);
   EXPECT_TRUE(cond_param->shape().tuple_shapes()[1].IsToken());
 }
 
@@ -622,14 +624,14 @@ ENTRY main {
   // The infeed and outfeed output tokens should have propagated through the
   // loop.
   HloInstruction* loop = FindInstruction(module.get(), "while.0");
-  EXPECT_EQ(loop->shape().tuple_shapes_size(), 2);
+  EXPECT_EQ(loop->shape().tuple_shapes().size(), 2);
   EXPECT_TRUE(loop->shape().tuple_shapes()[0].IsToken());
   EXPECT_TRUE(loop->shape().tuple_shapes()[1].IsToken());
 
   // The infeed and outfeed input tokens should have propagated through the loop
   // tuple.
   HloInstruction* loop_tuple = FindInstruction(module.get(), "while_tuple.0");
-  EXPECT_EQ(loop_tuple->shape().tuple_shapes_size(), 2);
+  EXPECT_EQ(loop_tuple->shape().tuple_shapes().size(), 2);
   EXPECT_TRUE(loop_tuple->shape().tuple_shapes()[0].IsToken());
   EXPECT_TRUE(loop_tuple->shape().tuple_shapes()[1].IsToken());
 
@@ -642,17 +644,17 @@ ENTRY main {
 
   // The outfeed output token should have propagated through the conditional.
   HloInstruction* cond = FindInstruction(module.get(), "cond.0");
-  EXPECT_EQ(cond->shape().tuple_shapes_size(), 1);
+  EXPECT_EQ(cond->shape().tuple_shapes().size(), 1);
   EXPECT_TRUE(cond->shape().tuple_shapes()[0].IsToken());
 
   // The outfeed input token should have propagated through the true tuple.
   HloInstruction* true_tuple = FindInstruction(module.get(), "true_tuple.0");
-  EXPECT_EQ(true_tuple->shape().tuple_shapes_size(), 2);
+  EXPECT_EQ(true_tuple->shape().tuple_shapes().size(), 2);
   EXPECT_TRUE(true_tuple->shape().tuple_shapes()[1].IsToken());
 
   // The outfeed input token should not have propagated through the false tuple.
   HloInstruction* false_tuple = FindInstruction(module.get(), "false_tuple.0");
-  EXPECT_EQ(false_tuple->shape().tuple_shapes_size(), 0);
+  EXPECT_EQ(false_tuple->shape().tuple_shapes().size(), 0);
 
   // The outfeed output token should have propagated through the true
   // computation's root.
@@ -1084,5 +1086,72 @@ ENTRY main {
   EXPECT_EQ(cond_arg->sharding().tuple_elements().size(), 2);
   EXPECT_TRUE(cond_arg->sharding().tuple_elements()[0].IsReplicated());
 }
+
+TEST_F(InfeedTokenPropagationTest, NonFlatGraph) {
+  constexpr absl::string_view kHlo = R"(
+HloModule main
+
+body {
+  ROOT arg.0 = s32[] parameter(0), sharding={replicated}
+  token.0 = after-all()
+  outfeed.0 = token[] outfeed(arg.0, token.0), outfeed_shape=s32[]
+}
+
+cond {
+  arg.0 = s32[] parameter(0), sharding={replicated}
+  ROOT true.0 = pred[] constant(true)
+}
+
+ENTRY main {
+  arg.0 = s32[] parameter(0)
+  while.0 = s32[] while(arg.0), condition=cond, body=body
+  ROOT while.1 = s32[] while(while.0), condition=cond, body=body
+}
+)";
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifiedHloModule> module,
+                          ParseAndReturnVerifiedModule(kHlo));
+  InfeedTokenPropagation itp;
+  EXPECT_THAT(itp.Run(module.get()),
+              absl_testing::StatusIs(absl::StatusCode::kFailedPrecondition));
+}
+
+TEST_F(InfeedTokenPropagationTest, UnrelatedNonFlatGraph) {
+  constexpr absl::string_view kHlo = R"(
+HloModule main
+
+call_body {
+  ROOT param.0 = s32[] parameter(0)
+}
+
+body {
+  ROOT arg.0 = s32[] parameter(0), sharding={replicated}
+  token.0 = after-all()
+  outfeed.0 = token[] outfeed(arg.0, token.0), outfeed_shape=s32[]
+}
+
+cond {
+  arg.0 = s32[] parameter(0), sharding={replicated}
+  ROOT true.0 = pred[] constant(true)
+}
+
+ENTRY main {
+  arg.0 = s32[] parameter(0)
+  call.0 = s32[] call(arg.0), to_apply=call_body
+  call.1 = s32[] call(call.0), to_apply=call_body
+  ROOT while.0 = s32[] while(call.1), condition=cond, body=body
+}
+)";
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifiedHloModule> module,
+                          ParseAndReturnVerifiedModule(kHlo));
+  InfeedTokenPropagation itp;
+  TF_ASSERT_OK_AND_ASSIGN(bool changed, itp.Run(module.get()));
+  EXPECT_TRUE(changed);
+  EXPECT_THAT(
+      module->entry_computation()->root_instruction(),
+      op::GetTupleElement(op::While(op::Tuple(op::Call(), op::AfterAll())), 0));
+}
+
 }  // namespace
 }  // namespace xla

@@ -32,10 +32,12 @@ limitations under the License.
 #include "absl/types/span.h"
 #include "xla/comparison_util.h"
 #include "xla/debug_options_flags.h"
+#include "xla/hlo/analysis/alias_info.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/ir/hlo_original_value.h"
+#include "xla/hlo/testlib/hlo_hardware_independent_test_base.h"
 #include "xla/hlo/testlib/test.h"
 #include "xla/hlo/testlib/verified_hlo_module.h"
 #include "xla/hlo/transforms/simplifiers/hlo_memory_scheduler.h"
@@ -47,7 +49,6 @@ limitations under the License.
 #include "xla/service/test_compilation_environment.pb.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
-#include "xla/tests/hlo_test_base.h"
 #include "xla/tsl/lib/core/status_test_util.h"
 #include "xla/tsl/lib/strings/proto_serialization.h"
 #include "xla/tsl/platform/statusor.h"
@@ -75,7 +76,7 @@ namespace {
 
 namespace op = ::xla::testing::opcode_matchers;
 
-class HloModuleTest : public HloTestBase {
+class HloModuleTest : public HloHardwareIndependentTestBase {
  protected:
   static void SetUpTestSuite() {
     CompilationEnvironments::RegisterProcessNewEnvFn(
@@ -465,7 +466,8 @@ ENTRY ReduceR3ToR2.v3 {
   auto size_fn = [](const BufferValue& buffer) {
     return ShapeUtil::ByteSizeOf(buffer.shape());
   };
-  HloMemoryScheduler scheduler(size_fn);
+  AliasInfo alias_info;
+  HloMemoryScheduler scheduler(&alias_info, size_fn);
   TF_ASSERT_OK(scheduler.Run(module.get()).status());
   ASSERT_TRUE(module->has_schedule());
 

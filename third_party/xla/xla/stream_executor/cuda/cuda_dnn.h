@@ -24,21 +24,21 @@ limitations under the License.
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "third_party/gpus/cudnn/cudnn_version.h"
-#include "xla/stream_executor/device_description.h"
+#include "third_party/cudnn_frontend/include/cudnn_frontend.h"
+#include "xla/stream_executor/cuda/cudnn_sdpa_score_mod.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/dnn.h"
 #include "xla/stream_executor/numeric_options.h"
+#include "xla/stream_executor/scratch_allocator.h"
 #include "xla/stream_executor/stream_executor.h"
 #include "xla/tsl/protobuf/dnn.pb.h"
-
-#include "third_party/cudnn_frontend/include/cudnn_frontend.h"
 
 namespace stream_executor {
 namespace gpu {
@@ -261,8 +261,8 @@ class CudnnSupport : public dnn::DnnSupport {
                      dnn::ProfileResult* output_profile_result) override;
 
   absl::Status GetConvolveRunners(
-      bool use_cudnn_frontend, dnn::ConvolutionKind kind,
-      dnn::DataType input_type, dnn::DataType output_type, Stream* stream,
+      dnn::ConvolutionKind kind, dnn::DataType input_type,
+      dnn::DataType output_type, Stream* stream,
       const dnn::BatchDescriptor& input_descriptor, DeviceMemoryBase input_data,
       const dnn::FilterDescriptor& filter_descriptor,
       DeviceMemoryBase filter_data,
@@ -304,10 +304,9 @@ class CudnnSupport : public dnn::DnnSupport {
       std::string serialized_graph) override;
 
   absl::Status GetFusedConvolveRunners(
-      bool use_cudnn_frontend, dnn::ConvolutionKind kind,
-      dnn::DataType input_type, dnn::DataType bias_type,
-      dnn::DataType output_type, double conv_scale, double side_input_scale,
-      double leakyrelu_alpha, Stream* stream,
+      dnn::ConvolutionKind kind, dnn::DataType input_type,
+      dnn::DataType bias_type, dnn::DataType output_type, double conv_scale,
+      double side_input_scale, double leakyrelu_alpha, Stream* stream,
       const dnn::BatchDescriptor& input_descriptor,
       const dnn::FilterDescriptor& filter_descriptor,
       const dnn::BatchDescriptor& bias_descriptor,
@@ -319,10 +318,9 @@ class CudnnSupport : public dnn::DnnSupport {
       override;
 
   absl::Status GetFusedMatmulRunners(
-      bool use_cudnn_frontend, dnn::DataType input_type,
-      dnn::DataType bias_type, dnn::DataType output_type, Stream* stream,
-      bool trans_a, bool trans_b, uint64_t m, uint64_t n, uint64_t k,
-      int64_t lda, int64_t ldb, int64_t ldc,
+      dnn::DataType input_type, dnn::DataType bias_type,
+      dnn::DataType output_type, Stream* stream, bool trans_a, bool trans_b,
+      uint64_t m, uint64_t n, uint64_t k, int64_t lda, int64_t ldb, int64_t ldc,
       dnn::ActivationMode activation_mode, bool use_fallback,
       const NumericOptions& numeric_options,
       std::vector<std::unique_ptr<const dnn::FusedMatmulRunner>>*
@@ -709,10 +707,12 @@ absl::StatusOr<CudnnGraph> GetCudnnFlashAttentionOperationGraph(
     const dnn::MatmulTensorDescriptor& v_descriptor,
     const dnn::TensorDescriptor& o_descriptor,
     std::optional<dnn::TensorDescriptor> bias_descriptor,
-    std::optional<dnn::TensorDescriptor> stats_descriptor, double scale,
+    std::optional<dnn::TensorDescriptor> stats_descriptor,
+    std::optional<dnn::TensorDescriptor> page_table_k_descriptor,
+    std::optional<dnn::TensorDescriptor> page_table_v_descriptor, double scale,
     bool use_dropout, std::optional<double> dropout_rate,
     dnn::FMHAMaskKind mask_type, int sliding_window_length,
-    int max_seg_per_batch);
+    int max_seg_per_batch, ScoreModFunc* score_mod);
 
 absl::StatusOr<CudnnGraph> GetCudnnFlashAttentionF8OperationGraph(
     dnn::DnnSupport& dnn_support,
@@ -734,8 +734,10 @@ absl::StatusOr<CudnnGraph> GetCudnnFlashAttentionBackwardOperationGraph(
     const std::optional<dnn::TensorDescriptor> bias_descriptor,
     const std::optional<dnn::TensorDescriptor> dbias_descriptor,
     std::optional<double> dropout_rate, std::optional<int64_t> seed,
-    double scale, bool use_dropout, bool use_bias, dnn::FMHAMaskKind mask_type,
-    bool force_deterministic, int sliding_window_length, int max_seg_per_batch);
+    double scale, bool use_dropout, bool use_bias,
+    const dnn::FMHAMaskKind mask_type, bool force_deterministic,
+    const int sliding_window_length, const int max_seg_per_batch,
+    ScoreModFunc* score_mod);
 
 absl::StatusOr<CudnnGraph> GetCudnnFlashAttentionBackwardF8OperationGraph(
     dnn::DnnSupport& dnn_support, const dnn::MatmulTensorDescriptor& q_desc,

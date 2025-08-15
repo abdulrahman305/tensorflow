@@ -38,6 +38,7 @@ limitations under the License.
 #include "xla/python/ifrt/memory.h"
 #include "xla/python/ifrt/shape.h"
 #include "xla/python/ifrt/sharding.h"
+#include "xla/python/ifrt/user_context.h"
 #include "xla/python/pjrt_ifrt/pjrt_client.h"
 #include "xla/tsl/concurrency/ref_count.h"
 
@@ -70,14 +71,14 @@ class PjRtArray final
   // General array construction (with static shape). pjrt_buffers may be empty.
   static absl::StatusOr<tsl::RCReference<PjRtArray>> Create(
       PjRtCompatibleClient* client, DType dtype, Shape shape,
-      std::shared_ptr<const Sharding> sharding, PjRtBuffers pjrt_buffers,
-      std::shared_ptr<const PjRtLayout> layout);
+      ShardingRef sharding, PjRtBuffers pjrt_buffers,
+      std::shared_ptr<const xla::PjRtLayout> layout);
 
   // General array construction (with dynamic shape). pjrt_buffers may be empty.
   static absl::StatusOr<tsl::RCReference<PjRtArray>> Create(
       PjRtCompatibleClient* client, DType dtype, DynamicShape dynamic_shape,
-      std::shared_ptr<const Sharding> sharding, PjRtBuffers pjrt_buffers,
-      std::shared_ptr<const PjRtLayout> layout);
+      ShardingRef sharding, PjRtBuffers pjrt_buffers,
+      std::shared_ptr<const xla::PjRtLayout> layout);
 
   // Shorthand for a single-shard array construction.
   static absl::StatusOr<tsl::RCReference<PjRtArray>> Create(
@@ -108,7 +109,7 @@ class PjRtArray final
     return absl::MakeSpan(pjrt_buffers_);
   }
 
-  absl::StatusOr<tsl::RCReference<Array>> FullyReplicatedShard(
+  absl::StatusOr<ArrayRef> FullyReplicatedShard(
       ArrayCopySemantics semantics) override;
 
   // Array implementation.
@@ -149,15 +150,17 @@ class PjRtArray final
     DCHECK(this);
     return *sharding_;
   }
-  std::shared_ptr<const Sharding> shared_ptr_sharding() const override {
+  ShardingRef shared_ptr_sharding() const override {
     DCHECK(this);
     return sharding_;
   }
 
-  absl::StatusOr<std::shared_ptr<const PjRtLayout>> layout() const override;
+  absl::StatusOr<std::shared_ptr<const xla::PjRtLayout>> pjrt_layout()
+      const override;
 
-  absl::StatusOr<std::vector<tsl::RCReference<Array>>>
-  DisassembleIntoSingleDeviceArrays(
+  UserContextRef user_context() const override { return user_context_; }
+
+  absl::StatusOr<std::vector<ArrayRef>> DisassembleIntoSingleDeviceArrays(
       ArrayCopySemantics array_copy_semantics,
       SingleDeviceShardSemantics single_device_shard_semantics) override;
 
@@ -166,7 +169,7 @@ class PjRtArray final
       void* data, std::optional<absl::Span<const int64_t>> byte_strides,
       ArrayCopySemantics semantics) override;
 
-  absl::StatusOr<tsl::RCReference<Array>> Copy(
+  absl::StatusOr<ArrayRef> Copy(
       std::optional<xla::ifrt::DeviceListRef> devices,
       std::optional<xla::ifrt::MemoryKind> memory_kind,
       ArrayCopySemantics semantics);
@@ -185,13 +188,13 @@ class PjRtArray final
 
  private:
   PjRtArray(PjRtCompatibleClient* client, DType dtype, Shape shape,
-            std::shared_ptr<const Sharding> sharding, PjRtBuffers pjrt_buffers,
-            std::shared_ptr<const PjRtLayout> layout);
+            ShardingRef sharding, PjRtBuffers pjrt_buffers,
+            std::shared_ptr<const xla::PjRtLayout> layout);
 
   PjRtArray(PjRtCompatibleClient* client, DType dtype,
-            DynamicShape dynamic_shape,
-            std::shared_ptr<const Sharding> sharding, PjRtBuffers pjrt_buffers,
-            std::shared_ptr<const PjRtLayout> layout);
+            DynamicShape dynamic_shape, ShardingRef sharding,
+            PjRtBuffers pjrt_buffers,
+            std::shared_ptr<const xla::PjRtLayout> layout);
 
   template <typename T, typename... Args>
   friend tsl::RCReference<T> tsl::MakeRef(Args&&... args);
@@ -199,9 +202,10 @@ class PjRtArray final
   PjRtCompatibleClient* client_;
   DType dtype_;
   std::variant<Shape, DynamicShape> shape_;
-  std::shared_ptr<const Sharding> sharding_;
+  ShardingRef sharding_;
   PjRtBuffers pjrt_buffers_;
-  std::shared_ptr<const PjRtLayout> layout_;
+  std::shared_ptr<const xla::PjRtLayout> layout_;
+  const xla::ifrt::UserContextRef user_context_;
   bool is_deleted_ = false;
 };
 

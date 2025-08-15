@@ -54,11 +54,11 @@ load(
     "cc_test",
 )
 load(
-    "//third_party/compute_library:build_defs.bzl",
+    "@local_xla//third_party/compute_library:build_defs.bzl",
     "if_enable_acl",
 )
 load(
-    "//third_party/llvm_openmp:openmp.bzl",
+    "@local_xla//third_party/llvm_openmp:openmp.bzl",
     "windows_llvm_openmp_linkopts",
 )
 load(
@@ -72,9 +72,12 @@ load(
     _cc_header_only_library = "cc_header_only_library",
     _custom_op_cc_header_only_library = "custom_op_cc_header_only_library",
     _if_cuda_or_rocm = "if_cuda_or_rocm",
-    _if_cuda_tools = "if_cuda_tools",
     _if_nccl = "if_nccl",
     _transitive_hdrs = "transitive_hdrs",
+)
+load(
+    "@local_xla//xla/tsl:tsl.default.bzl",
+    _if_cuda_tools = "if_cuda_tools",
 )
 load(
     "@local_config_tensorrt//:build_defs.bzl",
@@ -1590,7 +1593,7 @@ def tf_cc_test(
                 "-lpthread",
                 "-lm",
             ],
-            clean_dep("//third_party/compute_library:build_with_acl"): [
+            clean_dep("@local_xla//third_party/compute_library:build_with_acl"): [
                 "-fopenmp",
                 "-lm",
             ],
@@ -1633,7 +1636,7 @@ def tf_cc_shared_test(
                 "-lpthread",
                 "-lm",
             ],
-            clean_dep("//third_party/compute_library:build_with_acl"): [
+            clean_dep("@local_xla//third_party/compute_library:build_with_acl"): [
                 "-fopenmp",
                 "-lm",
             ],
@@ -2104,7 +2107,10 @@ def tf_kernel_library(
 
 register_extension_info(
     extension = tf_kernel_library,
-    label_regex_for_dep = "{extension_name}",
+    label_regex_map = {
+        "deps": "deps:{extension_name}",
+        "gpu_deps": "deps:{extension_name}_gpu",
+    },
 )
 
 def tf_mkl_kernel_library(
@@ -2454,7 +2460,7 @@ def pywrap_tensorflow_macro_opensource(
     """Builds the pywrap_tensorflow_internal shared object."""
 
     if use_pywrap_rules():
-        native.py_library(
+        _plain_py_library(
             name = name,
             srcs = [],
             deps = [],
@@ -3134,9 +3140,10 @@ def pybind_extension_opensource(
         testonly = None,
         visibility = None,
         win_def_file = None,
-        starlark_only = False):
+        starlark_only = False,
+        wrap_py_init = False):
     """Builds a generic Python extension module."""
-    _ignore = [enable_stub_generation, additional_stubgen_deps, module_name, starlark_only]  # buildifier: disable=unused-variable
+    _ignore = [enable_stub_generation, additional_stubgen_deps, module_name, starlark_only, wrap_py_init]  # buildifier: disable=unused-variable
     p = name.rfind("/")
     if p == -1:
         sname = name

@@ -92,6 +92,8 @@ CompileOnlyService::CompileAheadOfTime(
         execution_options.mutable_device_assignment());
   }
   execution_options.set_use_spmd_partitioning(options.use_spmd_partitioning());
+  execution_options.set_use_shardy_partitioner(
+      options.use_shardy_partitioner());
   execution_options.set_use_auto_spmd_partitioning(
       options.use_auto_spmd_partitioning());
   for (auto t : options.auto_spmd_partitioning_mesh_shape()) {
@@ -121,10 +123,12 @@ CompileOnlyService::CompileAheadOfTime(
     }
 
     TF_ASSIGN_OR_RETURN(
+        ProgramShape program_shape,
+        ProgramShape::FromProto(instance.computation.host_program_shape()));
+    TF_ASSIGN_OR_RETURN(
         std::unique_ptr<HloModuleConfig> module_config,
-        CreateModuleConfig(
-            ProgramShape(instance.computation.host_program_shape()),
-            instance.argument_layouts, &execution_options, &options));
+        CreateModuleConfig(program_shape, instance.argument_layouts,
+                           &execution_options, &options));
 
     TF_ASSIGN_OR_RETURN(
         std::unique_ptr<HloModule> hlo_module,

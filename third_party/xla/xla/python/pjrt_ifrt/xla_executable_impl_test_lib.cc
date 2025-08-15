@@ -41,6 +41,7 @@ limitations under the License.
 #include "xla/python/ifrt/shape.h"
 #include "xla/python/ifrt/sharding.h"
 #include "xla/python/ifrt/test_util.h"
+#include "xla/python/ifrt/user_context.h"
 #include "xla/python/pjrt_ifrt/xla_compiler.h"
 #include "xla/tsl/lib/core/status_test_util.h"
 #include "xla/tsl/platform/statusor.h"
@@ -68,19 +69,22 @@ static const char* const module_add_one =
 
 // Compiles an MLIR module on specified devices. If devices is empty, compiles
 // it as a portable executable.
-absl::StatusOr<std::unique_ptr<LoadedExecutable>> CompileOnDevices(
+absl::StatusOr<LoadedExecutableRef> CompileOnDevices(
     Client* client, Compiler* compiler, absl::string_view mlir_module_str,
     absl::Span<Device* const> devices, bool replicated) {
   mlir::MLIRContext context;
   TF_ASSIGN_OR_RETURN(mlir::OwningOpRef<mlir::ModuleOp> module,
                       xla::ParseMlirModuleString(mlir_module_str, context));
 
-  auto compile_options =
-      std::make_unique<XlaCompileOptions>(xla::CompileOptions());
+  xla::CompileOptions compile_options;
   ExecutableBuildOptions& build_options =
-      compile_options->compile_options.executable_build_options;
+      compile_options.executable_build_options;
+  DeviceListRef device_list;
   if (devices.empty()) {
-    compile_options->compile_options.compile_portable_executable = true;
+    compile_options.compile_portable_executable = true;
+    TF_ASSIGN_OR_RETURN(
+        device_list,
+        client->MakeDeviceList({client->addressable_devices().front()}));
   } else {
     build_options.set_device_ordinal(devices.front()->Id().value());
     if (replicated) {
@@ -105,9 +109,12 @@ absl::StatusOr<std::unique_ptr<LoadedExecutable>> CompileOnDevices(
       }
       build_options.set_device_assignment(device_assignment);
     }
+    TF_ASSIGN_OR_RETURN(device_list, client->MakeDeviceList(devices));
   }
-  return compiler->Compile(std::make_unique<HloProgram>(*module),
-                           std::move(compile_options));
+  auto xla_compile_options = std::make_unique<XlaCompileOptions>(
+      compile_options, std::move(device_list));
+  return compiler->CompileAndLoad(std::make_unique<HloProgram>(*module),
+                                  std::move(xla_compile_options));
 }
 
 TEST(LoadedExecutableImplTest, GetDonatableInputIndices) {
@@ -142,7 +149,7 @@ TEST(LoadedExecutableImplTest, GetDonatableInputIndices) {
   }
 
   EXPECT_THAT(donatable_input_indices,
-              IsOkAndHolds(UnorderedElementsAre(0, 2)));
+              absl_testing::IsOkAndHolds(UnorderedElementsAre(0, 2)));
 }
 
 TEST(LoadedExecutableImplTest, CompileAndExecute) {
@@ -150,18 +157,22 @@ TEST(LoadedExecutableImplTest, CompileAndExecute) {
   Compiler* compiler = client->GetDefaultCompiler();
 
   std::vector<Device*> devices = {client->addressable_devices().at(0)};
-  TF_ASSERT_OK_AND_ASSIGN(
-      auto loaded_executable,
-      CompileOnDevices(client.get(), compiler, module_add_one, devices,
-                       /*replicated=*/false));
+  LoadedExecutableRef loaded_executable;
+  {
+    UserContextScope user_context_scope(test_util::MakeUserContext(20));
+    TF_ASSERT_OK_AND_ASSIGN(
+        loaded_executable,
+        CompileOnDevices(client.get(), compiler, module_add_one, devices,
+                         /*replicated=*/false));
+  }
+  EXPECT_EQ(loaded_executable->user_context()->Fingerprint(), 20);
 
   DType dtype(DType::kF32);
   Shape shape({2, 3});
   std::vector<float> data(6);
   std::iota(data.begin(), data.end(), 0);
   Device* device = client->addressable_devices().at(0);
-  std::shared_ptr<const Sharding> sharding =
-      SingleDeviceSharding::Create(device, MemoryKind());
+  ShardingRef sharding = SingleDeviceSharding::Create(device, MemoryKind());
 
   TF_ASSERT_OK_AND_ASSIGN(
       auto array, client->MakeArrayFromHostBuffer(
@@ -172,12 +183,17 @@ TEST(LoadedExecutableImplTest, CompileAndExecute) {
 
   ExecuteOptions execute_options;
   execute_options.fill_status = true;
-  TF_ASSERT_OK_AND_ASSIGN(
-      LoadedExecutable::ExecuteResult result,
-      loaded_executable->Execute(absl::MakeSpan(&array, 1), execute_options,
-                                 /*devices=*/std::nullopt));
+  LoadedExecutable::ExecuteResult result;
+  {
+    UserContextScope user_context_scope(test_util::MakeUserContext(100));
+    TF_ASSERT_OK_AND_ASSIGN(
+        result,
+        loaded_executable->Execute(absl::MakeSpan(&array, 1), execute_options,
+                                   /*devices=*/std::nullopt));
+  }
   TF_ASSERT_OK(result.status.Await());
   EXPECT_THAT(result.outputs, SizeIs(1));
+  EXPECT_EQ(result.outputs[0]->user_context()->Fingerprint(), 100);
 
   std::vector<float> out_data(6);
   auto future = result.outputs[0]->CopyToHostBuffer(
@@ -195,18 +211,22 @@ TEST(LoadedExecutableImplTest, CompileAndExecutePortable) {
   Compiler* compiler = client->GetDefaultCompiler();
 
   std::vector<Device*> devices = {};
-  TF_ASSERT_OK_AND_ASSIGN(
-      auto loaded_executable,
-      CompileOnDevices(client.get(), compiler, module_add_one, devices,
-                       /*replicated=*/false));
+  LoadedExecutableRef loaded_executable;
+  {
+    UserContextScope user_context_scope(test_util::MakeUserContext(20));
+    TF_ASSERT_OK_AND_ASSIGN(
+        loaded_executable,
+        CompileOnDevices(client.get(), compiler, module_add_one, devices,
+                         /*replicated=*/false));
+  }
+  EXPECT_EQ(loaded_executable->user_context()->Fingerprint(), 20);
 
   DType dtype(DType::kF32);
   Shape shape({2, 3});
   std::vector<float> data(6);
   std::iota(data.begin(), data.end(), 0);
   Device* device = client->addressable_devices().at(0);
-  std::shared_ptr<const Sharding> sharding =
-      SingleDeviceSharding::Create(device, MemoryKind());
+  ShardingRef sharding = SingleDeviceSharding::Create(device, MemoryKind());
 
   TF_ASSERT_OK_AND_ASSIGN(
       auto array, client->MakeArrayFromHostBuffer(
@@ -215,14 +235,21 @@ TEST(LoadedExecutableImplTest, CompileAndExecutePortable) {
                       Client::HostBufferSemantics::kImmutableOnlyDuringCall,
                       /*on_done_with_host_buffer=*/{}));
 
+  TF_ASSERT_OK_AND_ASSIGN(DeviceListRef device_list,
+                          client->MakeDeviceList({device}));
   ExecuteOptions execute_options;
   execute_options.fill_status = true;
-  TF_ASSERT_OK_AND_ASSIGN(
-      LoadedExecutable::ExecuteResult result,
-      loaded_executable->Execute(absl::MakeSpan(&array, 1), execute_options,
-                                 /*devices=*/client->MakeDeviceList({device})));
+  LoadedExecutable::ExecuteResult result;
+  {
+    UserContextScope user_context_scope(test_util::MakeUserContext(100));
+    TF_ASSERT_OK_AND_ASSIGN(
+        result,
+        loaded_executable->Execute(absl::MakeSpan(&array, 1), execute_options,
+                                   /*devices=*/std::move(device_list)));
+  }
   TF_ASSERT_OK(result.status.Await());
   EXPECT_THAT(result.outputs, SizeIs(1));
+  EXPECT_EQ(result.outputs[0]->user_context()->Fingerprint(), 100);
 
   std::vector<float> out_data(6);
   auto future = result.outputs[0]->CopyToHostBuffer(
@@ -250,8 +277,7 @@ TEST(LoadedExecutableImplTest, DoNotFillStatus) {
   std::vector<float> data(6);
   std::iota(data.begin(), data.end(), 0);
   Device* device = client->addressable_devices().at(0);
-  std::shared_ptr<const Sharding> sharding =
-      SingleDeviceSharding::Create(device, MemoryKind());
+  ShardingRef sharding = SingleDeviceSharding::Create(device, MemoryKind());
 
   TF_ASSERT_OK_AND_ASSIGN(
       auto array, client->MakeArrayFromHostBuffer(
@@ -262,12 +288,14 @@ TEST(LoadedExecutableImplTest, DoNotFillStatus) {
 
   ExecuteOptions execute_options;
   execute_options.fill_status = false;
+  UserContextScope user_context_scope(test_util::MakeUserContext(100));
   TF_ASSERT_OK_AND_ASSIGN(
       LoadedExecutable::ExecuteResult result,
       loaded_executable->Execute(absl::MakeSpan(&array, 1), execute_options,
                                  /*devices=*/std::nullopt));
   EXPECT_FALSE(result.status.IsValid());
   EXPECT_THAT(result.outputs, SizeIs(1));
+  EXPECT_EQ(result.outputs[0]->user_context()->Fingerprint(), 100);
 
   std::vector<float> out_data(6);
   auto future = result.outputs[0]->CopyToHostBuffer(
@@ -278,33 +306,6 @@ TEST(LoadedExecutableImplTest, DoNotFillStatus) {
   std::vector<float> expected_out_data(6);
   std::iota(expected_out_data.begin(), expected_out_data.end(), 1);
   EXPECT_THAT(out_data, ElementsAreArray(expected_out_data));
-}
-
-TEST(LoadedExecutableImplTest, Delete) {
-  TF_ASSERT_OK_AND_ASSIGN(auto client, test_util::GetClient());
-  Compiler* compiler = client->GetDefaultCompiler();
-
-  std::vector<Device*> devices = {client->addressable_devices().at(0)};
-  TF_ASSERT_OK_AND_ASSIGN(
-      auto loaded_executable,
-      CompileOnDevices(client.get(), compiler, module_add_one, devices,
-                       /*replicated=*/false));
-  TF_EXPECT_OK(loaded_executable->Delete().Await());
-}
-
-TEST(LoadedExecutableImplTest, IsDeleted) {
-  TF_ASSERT_OK_AND_ASSIGN(auto client, test_util::GetClient());
-  Compiler* compiler = client->GetDefaultCompiler();
-
-  std::vector<Device*> devices = {client->addressable_devices().at(0)};
-  TF_ASSERT_OK_AND_ASSIGN(
-      auto loaded_executable,
-      CompileOnDevices(client.get(), compiler, module_add_one, devices,
-                       /*replicated=*/false));
-  EXPECT_FALSE(loaded_executable->IsDeleted());
-  auto future = loaded_executable->Delete();
-  EXPECT_TRUE(loaded_executable->IsDeleted());
-  TF_EXPECT_OK(future.Await());
 }
 
 }  // namespace

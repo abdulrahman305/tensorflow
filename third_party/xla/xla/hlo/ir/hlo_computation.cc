@@ -182,10 +182,6 @@ HloComputation::~HloComputation() {
     CHECK(FusionInstruction()->fused_instructions_computation() == this);
     FusionInstruction()->ClearCalledComputations();
   }
-  if (IsAsyncComputation()) {
-    CHECK(async_start_->async_wrapped_computation() == this);
-    async_start_->ClearCalledComputations();
-  }
   Cleanup();
   ClearCalledComputations();
 
@@ -455,6 +451,7 @@ absl::Status HloComputation::RemoveParameter(int64_t param_no) {
     HloInstruction* new_instr =
         AddInstructionInternal(HloInstruction::CreateParameter(
             param_no, param_instruction->shape(), StrCat("param_", param_no)));
+    param_instruction->SetupDerivedInstruction(new_instr);
     TF_RETURN_IF_ERROR(param_instruction->ReplaceAllUsesWith(new_instr));
     param_instructions_[param_no] = new_instr;
     TF_RETURN_IF_ERROR(ForceRemoveInstruction(param_instruction));
@@ -518,8 +515,11 @@ absl::Status HloComputation::RemoveUnusedParametersImpl(bool allow_non_fusion) {
   return absl::OkStatus();
 }
 
-bool HloComputation::IsSafelyRemovable(const HloInstruction* instruction,
-                                       bool ignore_control_dependency) {
+bool HloComputation::IsSafelyRemovable(
+    const HloInstruction* instruction, bool ignore_control_dependency,
+    std::optional<
+        absl::FunctionRef<std::vector<HloInstruction*>(const HloComputation*)>>
+        computation_callers) const {
   // If the instruction has control predecessors or successors then we cannot
   // remove the instruction without violating ordering constraints (added, for
   // example, to avert interference due to buffer aliasing).
@@ -527,11 +527,42 @@ bool HloComputation::IsSafelyRemovable(const HloInstruction* instruction,
     return false;
   }
 
-  if (instruction->opcode() == HloOpcode::kParameter &&
-      !IsFusionComputation()) {
-    return false;
+  if (instruction->opcode() == HloOpcode::kParameter) {
+    // If there is no parent, it is safe to remove the child.
+    if (instruction->parent() == nullptr) {
+      return true;
+    }
+    // Entry computation parameters can never be removed.
+    if (instruction->parent()->IsEntryComputation()) {
+      return false;
+    }
+    // We generally want to be using the call graph to determine who the caller
+    // is, as this back pointer is very fragile, however its not reasonable to
+    // expect every caller to be passing in the call graph.
+    if (IsFusionComputation()) {
+      return true;
+    }
+    // If we can't fixup the caller, then we can't remove the parameter.
+    if (!computation_callers.has_value()) {
+      return false;
+    }
+    std::vector<HloInstruction*> callers =
+        (*computation_callers)(instruction->parent());
+    if (callers.empty()) {
+      return false;
+    }
+    for (HloInstruction* caller :
+         (*computation_callers)(instruction->parent())) {
+      if (caller->opcode() != HloOpcode::kFusion &&
+          caller->opcode() != HloOpcode::kCall &&
+          caller->opcode() != HloOpcode::kAsyncStart) {
+        // We don't handle callers with non-trivial control flow today.
+        return false;
+      }
+    }
   }
 
+  // All instruction generally are safe to remove.
   return true;
 }
 
@@ -551,12 +582,19 @@ bool HloComputation::IsMarkedAsDead(const HloInstruction* inst) {
 absl::Status HloComputation::RemoveInstructionAndUnusedOperands(
     HloInstruction* instruction,
     std::optional<absl::FunctionRef<void(HloInstruction*)>> cleanup,
-    bool ignore_control_dependencies) {
+    bool ignore_control_dependencies,
+    std::optional<
+        absl::FunctionRef<std::vector<HloInstruction*>(const HloComputation*)>>
+        computation_callers) {
   TF_RET_CHECK(root_instruction() != instruction);
 
   TF_RET_CHECK(instruction->IsDead());
-  TF_RET_CHECK(IsSafelyRemovable(instruction, ignore_control_dependencies))
+  TF_RET_CHECK(IsSafelyRemovable(instruction, ignore_control_dependencies,
+                                 computation_callers))
       << "Cannot remove instruction: " << instruction->ToString();
+  // Remember the parent, in case we lose all references to it, in order to
+  // clean up the callers.
+  HloComputation* parent = instruction->parent();
   absl::flat_hash_set<HloInstruction*> removed;
   std::queue<HloInstruction*> worklist;
   worklist.push(instruction);
@@ -566,7 +604,8 @@ absl::Status HloComputation::RemoveInstructionAndUnusedOperands(
     worklist.pop();
 
     if (removed.contains(item) || !item->IsDead() ||
-        !IsSafelyRemovable(item, ignore_control_dependencies) ||
+        !IsSafelyRemovable(item, ignore_control_dependencies,
+                           computation_callers) ||
         (item->HasSideEffect() && item != instruction)) {
       continue;
     }
@@ -584,10 +623,9 @@ absl::Status HloComputation::RemoveInstructionAndUnusedOperands(
       (*cleanup)(item);
     }
     if (item->opcode() == HloOpcode::kParameter) {
-      // Note that right now, only parameters inside fusion computations are
-      // considered to be safely removable. We cannot remove a parameter
-      // directly, because it may cause a renumbering of other parameters which
-      // may invalidate some of the pointers in the worklist.
+      // We cannot remove a parameter directly, because it may cause a
+      // renumbering of other parameters which may invalidate some of the
+      // pointers in the worklist.
       parameters_to_be_removed.push_back(item);
     } else {
       TF_RETURN_IF_ERROR(RemoveInstruction(item));
@@ -600,18 +638,47 @@ absl::Status HloComputation::RemoveInstructionAndUnusedOperands(
             [](HloInstruction* a, HloInstruction* b) {
               return a->parameter_number() > b->parameter_number();
             });
+  std::vector<HloInstruction*> callers;
+  if (!parameters_to_be_removed.empty()) {
+    if (parent != nullptr && computation_callers.has_value()) {
+      callers = (*computation_callers)(parent);
+    }
+    // We generally want to be using the call graph to determine who the caller
+    // is, as this back pointer is very fragile, however its not reasonable to
+    // expect every caller to be passing in the call graph.
+    if (callers.empty() && FusionInstruction() != nullptr) {
+      callers = {FusionInstruction()};
+    }
+  }
+  // Only attempt to remove parameters if we can fixup the caller.
+  if (callers.empty()) {
+    return absl::OkStatus();
+  }
   for (HloInstruction* param : parameters_to_be_removed) {
     int64_t parameter_number = param->parameter_number();
     TF_RETURN_IF_ERROR(RemoveParameter(parameter_number));
-    if (FusionInstruction() != nullptr) {
-      auto operand = FusionInstruction()->mutable_operand(parameter_number);
-      FusionInstruction()->RemoveOperandAt(parameter_number);
-      FusionInstruction()->DetachFrom(operand);
-      if (operand->IsDead() && operand->parent()->IsSafelyRemovable(
-                                   operand, ignore_control_dependencies)) {
+    for (HloInstruction* caller : callers) {
+      // The caller could have been eagerly removed.
+      if (caller->IsDead()) {
+        continue;
+      }
+      auto operand = caller->mutable_operand(parameter_number);
+      caller->RemoveOperandAt(parameter_number);
+      caller->DetachFrom(operand);
+      // Cleanup operand shape embedded into the async-start shape.
+      if (caller->opcode() == HloOpcode::kAsyncStart) {
+        std::vector<Shape>* operand_shapes = caller->mutable_shape()
+                                                 ->mutable_tuple_shapes(0)
+                                                 ->mutable_tuple_shapes();
+        operand_shapes->erase(operand_shapes->begin() + parameter_number);
+      }
+      if (operand->IsDead() &&
+          operand->parent()->IsSafelyRemovable(
+              operand, ignore_control_dependencies, computation_callers)) {
         TF_RETURN_IF_ERROR(
             operand->parent()->RemoveInstructionAndUnusedOperands(
-                operand, cleanup, ignore_control_dependencies));
+                operand, cleanup, ignore_control_dependencies,
+                computation_callers));
       }
     }
   }
@@ -670,7 +737,9 @@ absl::Status HloComputation::RemoveInstructionImpl(HloInstruction* instruction,
 }
 
 void HloComputation::Cleanup() {
-  if (to_be_deleted_.empty()) return;
+  if (to_be_deleted_.empty()) {
+    return;
+  }
 
   // Given that there are instructions to be deleted, there must be at least one
   // instruction not marked for deletion. Otherwise we have deleted *all*
@@ -686,7 +755,9 @@ void HloComputation::Cleanup() {
   auto marked_it = absl::c_find_if(instructions_, is_marked_for_removal);
   DCHECK(marked_it < instructions_.end());
   for (auto it = marked_it + 1; it < instructions_.end(); ++it) {
-    if (is_marked_for_removal(*it)) continue;
+    if (is_marked_for_removal(*it)) {
+      continue;
+    }
     // Update reverse mapping and overwrite the 'marked' entry.
     HloInstruction* unmarked_instruction = it->inst();
     unmarked_instruction->index_in_parent_ =
@@ -763,7 +834,9 @@ void HloComputation::ForEachInstructionPostOrderImpl(
   // Pushes instruction to dfs stack only if it was not already processed.
   auto dfs_stack_push = [&](HloInstruction* instr) {
     VisitState state = visited.GetState(instr->index_in_parent_);
-    if (state != VisitState::kVisited) dfs_stack->push_back(instr);
+    if (state != VisitState::kVisited) {
+      dfs_stack->push_back(instr);
+    }
   };
 
   dfs_stack_push(root);
@@ -835,9 +908,6 @@ HloComputation::ChannelDependencies HloComputation::ComputeChannelDependencies()
         std::optional<int64_t> channel_id = instruction->channel_id();
         if (channel_id) {
           Instructions& group = channel_groups[*channel_id];
-          for (const HloInstruction* group_inst : group) {
-            dependencies[group_inst].push_back(instruction);
-          }
           dependencies[instruction] = group;
           group.push_back(instruction);
         }
@@ -894,7 +964,7 @@ HloComputation::MakeInstructionPostOrderWithReshapeFirst() const {
   std::vector<HloInstruction*> frontier_std;
   std::vector<HloInstruction*> frontier_reshapes;
   std::vector<HloInstruction*> sorted;
-  absl::flat_hash_map<int, uint32_t> visitations;
+  absl::flat_hash_map<int, uint64_t> visitations;
   sorted.reserve(instruction_count());
   visitations.reserve(instruction_count());
 
@@ -940,8 +1010,8 @@ HloComputation::MakeInstructionPostOrderWithReshapeFirst() const {
     sorted.push_back(inst);
     for (HloInstruction* const child : inst->operands()) {
       // Will increment, or set to 1 if not present
-      visitations[child->unique_id()]++;
-      if (child->user_count() == visitations[child->unique_id()]) {
+      visitations[child->unique_id_64_bits()]++;
+      if (child->user_count() == visitations[child->unique_id_64_bits()]) {
         add_to_frontier(child);
       }
     }
@@ -988,7 +1058,9 @@ std::vector<HloComputation*> HloComputation::MakeEmbeddedComputationsList()
   for (const HloInstructionInfo& instruction : instructions_with_info()) {
     using PtrVec = PtrVec<HloComputation*>;
     auto process_called_computations = [&](const PtrVec& called_computations) {
-      if (called_computations.empty()) return;
+      if (called_computations.empty()) {
+        return;
+      }
       // Put the called computations in reverse order onto the stack.
       // Otherwise we don't match the recursive enumeration of
       // computations, which processes the first called computation first.
@@ -1044,6 +1116,12 @@ void HloComputation::Print(
   const std::string tab(2 * options.indent_amount(), ' ');
 
   printer->Append(tab);
+
+  if (options.print_computation_mode() ==
+          HloPrintOptions::PrintComputationMode::kComputationWithEntryKeyword &&
+      IsEntryComputation()) {
+    printer->Append("ENTRY ");
+  }
 
   if (!options.is_in_nested_computation()) {
     if (options.print_percent()) {
@@ -1144,7 +1222,7 @@ HloComputationProto HloComputation::ToProto() const {
     HloInstructionProto instruction_proto = instruction->ToProto();
     proto.add_instructions()->Swap(&instruction_proto);
   }
-  proto.set_root_id(root_instruction()->unique_id());
+  proto.set_root_id(root_instruction()->unique_id_64_bits());
   *proto.mutable_program_shape() = ComputeProgramShape().ToProto();
   proto.set_is_fusion_computation(IsFusionComputation());
   proto.set_execution_thread(IsMainThread() ? ""
@@ -1382,9 +1460,11 @@ absl::StatusOr<HloInstruction*> HloComputation::DeepCopyHelper(
     return instruction;
   }
 
-  // Array shape.
-  TF_RET_CHECK(instruction->shape().IsArray());
-  return copy_leaf(instruction, *index, this);
+  HloInstruction* copy = copy_leaf(instruction, *index, this);
+  // We shouldn't copy buffers.
+  TF_RET_CHECK(instruction->shape().IsArray() ||
+               (instruction->shape().IsBuffer() && copy == instruction));
+  return copy;
 }
 
 absl::StatusOr<HloInstruction*> HloComputation::DeepCopyInstruction(
@@ -1443,9 +1523,9 @@ ProgramShape HloComputation::ComputeProgramShape(bool include_ids) const {
   ProgramShape program_shape;
 
   for (auto* param_instruction : param_instructions_) {
-    *program_shape.add_parameters() = param_instruction->shape();
-    *program_shape.add_parameter_names() =
-        std::string(PrintName(param_instruction->name(), include_ids));
+    program_shape.AddParameter(
+        param_instruction->shape(),
+        std::string(PrintName(param_instruction->name(), include_ids)));
   }
   *program_shape.mutable_result() = root_instruction_->shape();
 
@@ -1588,7 +1668,8 @@ absl::StatusOr<bool> HloComputation::ReplaceInstructionWithDifferentShape(
     new_instruction->set_frontend_attributes(
         old_instruction->frontend_attributes());
   }
-  CopyOriginalValue(old_instruction, new_instruction);
+
+  new_instruction->CopyOriginalValue(old_instruction, /*clone=*/false);
 
   // Like the metadata above, if the user didn't specify any sharding
   // information on the new instruction we should copy the old sharding
@@ -1809,7 +1890,9 @@ std::unique_ptr<HloComputation> HloComputation::CloneInContext(
   // Note: This can return null, indicating that instr should not be present in
   // the new computation.
   auto replace = [&](const HloInstruction* instr) {
-    if (!replacements) return instr;
+    if (!replacements) {
+      return instr;
+    }
     auto it = replacements->find(instr);
     return it != replacements->end() ? it->second.get() : instr;
   };

@@ -89,6 +89,8 @@ extern const char kXlaMultiRecvCountAttr[];
 
 // XLA frontend attribute for specifying the scheduling group id annotations.
 extern const char kXlaSchedulingGroupIdAttr[];
+// XLA frontend attribute value for a group that will not actually be scheduled.
+extern const char kXlaNoOpSchedulingGroup[];
 
 // XLA frontend attributes for specifying fusion directives.
 // MUST_FUSE: all ops labeled so should form as single fusion,
@@ -100,10 +102,14 @@ extern const char kXlaSchedulingGroupIdAttr[];
 // are added.
 extern const char kMustFuseAttr[];
 extern const char kMaximalFuseAttr[];
+extern const char kFuseLimitAttr[];
 
 // XLA frontend attribute for specifying groups of collectives that should be
 // launched together.
 extern const char kCollectivesGroupAttr[];
+
+extern const char kNumSlotVariables[];
+extern const char kNumHyperparameters[];
 }  // namespace xla
 
 #endif  // XLA_SIDE_EFFECT_UTIL_H_

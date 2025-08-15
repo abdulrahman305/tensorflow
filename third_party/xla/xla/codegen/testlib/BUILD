@@ -57,6 +57,12 @@ tsl_pybind_extension(
         "//xla/codegen:kernel_emitter",
         "//xla/codegen:kernel_source",
         "//xla/codegen:kernel_spec",
+        "//xla/codegen:llvm_ir_kernel_source",
+        "//xla/codegen:llvm_kernel_definition",
+        "//xla/codegen:llvm_kernel_emitter",
+        "//xla/codegen:mlir_kernel_definition",
+        "//xla/codegen:mlir_kernel_emitter",
+        "//xla/codegen:mlir_kernel_source",
         "//xla/hlo/ir:hlo",
         "//xla/hlo/parser:hlo_parser",
         "//xla/python:nb_absl_inlined_vector",
@@ -89,7 +95,7 @@ py_strict_test(
         "no_oss",
     ],
     deps = [
-        ":_extension",
+        ":_extension",  # buildcleaner: keep
         ":testlib",
         "//third_party/py/numpy",
         "//xla/python:xla_extension",

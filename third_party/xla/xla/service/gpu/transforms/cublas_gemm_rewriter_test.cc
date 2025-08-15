@@ -16,6 +16,7 @@ limitations under the License.
 #include <memory>
 #include <optional>
 #include <tuple>
+#include <vector>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/strings/str_replace.h"
@@ -32,6 +33,7 @@ limitations under the License.
 #include "xla/stream_executor/device_description.h"
 #include "xla/stream_executor/semantic_version.h"
 #include "xla/xla.pb.h"
+#include "xla/xla_data.pb.h"
 #include "tsl/platform/statusor.h"
 
 namespace xla {
@@ -97,25 +99,6 @@ ENTRY e {
 ; CHECK:  %[[P1:.+]] = f32[10,10,2048,16384]{3,2,1,0} parameter(1)
 ; CHECK:  %[[CUSTOM_CALL:.+]] = (f32[10,10,16384]{2,1,0}, s8[4194304]{0}) custom-call(%[[P0]], %[[P1]]), custom_call_target="__cublas$gemm"
 )");
-}
-
-TEST_F(LegacyCublasGemmRewriteTest, SparseDotNotSupported) {
-  const char* hlo_text = R"(
-HloModule test
-
-ENTRY main {
-  lhs = f16[5,16] parameter(0)
-  rhs = f16[32,10] parameter(1)
-  meta = u16[5,2] parameter(2)
-  ROOT dot = f32[5,10] dot(lhs, rhs, meta),
-      lhs_contracting_dims={1}, rhs_contracting_dims={0}, sparsity=L.1@2:4
-})";
-  auto hlo_pass = GemmRewriter(
-      se::CudaComputeCapability{se::CudaComputeCapability::kAmpere, 0},
-      /*toolkit_version=*/stream_executor::SemanticVersion{12, 4, 0});
-  TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(hlo_text));
-  TF_ASSERT_OK_AND_ASSIGN(bool changed, RunHloPass(&hlo_pass, module.get()));
-  EXPECT_FALSE(changed);
 }
 
 // Test that the alpha and beta fields of the GemmBackendConfig are updated.
@@ -2162,6 +2145,59 @@ ENTRY test {
                     R"(
 
 ; CHECK-NOT: GELU
+      )");
+}
+
+TEST_F(CublasLtGemmRewriteTest, MatrixBiasSwishActivation) {
+  auto runtime_version = GetRuntimeVersion();
+  bool rocm_gelu_available =
+      IsRocm() &&
+      (runtime_version >= stream_executor::SemanticVersion(7, 0, 0));
+  if (!rocm_gelu_available) {
+    GTEST_SKIP() << "TODO: Unsupported blas-lt epilogue on ROCM";
+  }
+  const char* hlo_text = R"(
+HloModule test
+
+ENTRY test {
+  x = f32[2,3] parameter(0)
+  y = f32[3,4] parameter(1)
+  dot = f32[2,4] dot(x, y), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+  neg = f32[2,4] negate(dot)
+  exp = f32[2,4] exponential(neg)
+  one = f32[] constant(1)
+  one_bcast = f32[2,4] broadcast(one), dimensions={}
+  denom = f32[2,4] add(one_bcast, exp)
+  sigmoid = f32[2,4] divide(one_bcast, denom)
+  ROOT swish = f32[2,4] multiply(dot, sigmoid)
+}
+
+)";
+
+  EXPECT_TRUE(RunAndCompare(hlo_text, ErrorSpec{1e-3, 1e-3}));
+  MatchOptimizedHlo(hlo_text,
+                    R"(
+
+; CHECK-LABEL: ENTRY %test ({{.*}}: f32[2,3], {{.*}}: f32[3,4]) -> f32[2,4] {
+; CHECK-NEXT:    [[P0:%[^ ]+]] = f32[2,3]{1,0} parameter(0)
+; CHECK-NEXT:    [[P1:%[^ ]+]] = f32[3,4]{1,0} parameter(1)
+; CHECK-NEXT:    [[OUT:%[^ ]+]] = (f32[2,4]{1,0}, s8[{{[0-9]+}}]{0}) custom-call([[P0]], [[P1]]),
+; CHECK:           custom_call_target="__cublas$lt$matmul",
+; CHECK:           backend_config={
+; CHECK-DAG:         "alpha_real":1
+; CHECK-DAG:         "alpha_imag":0
+; CHECK-DAG:         "beta":0
+; CHECK-DAG:         "dot_dimension_numbers":{
+; CHECK-DAG:           "lhs_contracting_dimensions":["1"]
+; CHECK-DAG:           "rhs_contracting_dimensions":["0"]
+; CHECK-DAG:           "lhs_batch_dimensions":[]
+; CHECK-DAG:           "rhs_batch_dimensions":[]
+; CHECK-DAG:         }
+; CHECK-DAG:         "precision_config":{
+; CHECK-DAG:           "operand_precision":["DEFAULT","DEFAULT"]
+; CHECK-DAG:         }
+; CHECK-DAG:         "epilogue":"SILU"
+; CHECK:           }
       )");
 }
 

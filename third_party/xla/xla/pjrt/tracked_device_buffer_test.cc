@@ -37,6 +37,7 @@ limitations under the License.
 #include "xla/stream_executor/device_memory_allocator.h"
 #include "xla/tsl/concurrency/ref_count.h"
 #include "xla/util.h"
+#include "xla/xla_data.pb.h"
 #include "tsl/platform/statusor.h"
 
 namespace xla {
@@ -98,8 +99,7 @@ absl::StatusOr<std::shared_ptr<TrackedDeviceBuffer>> MakeArray(
         return absl::OkStatus();
       }));
   return std::make_shared<TrackedDeviceBuffer>(
-      device, device_buffers[0],
-      absl::Span<const std::shared_ptr<BufferSequencingEvent>>());
+      device, device_buffers[0], absl::Span<const BufferSequencingEventRef>());
 }
 
 TEST(TrackedDeviceBufferTest, AsShapedBuffer) {

@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 #include "xla/service/gpu/gpu_fusible.h"
 
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -21,11 +22,9 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/parser/hlo_parser.h"
-#include "xla/service/hlo_runner.h"
+#include "xla/hlo/testlib/hlo_hardware_independent_test_base.h"
 #include "xla/service/instruction_fusion.h"
-#include "xla/service/platform_util.h"
 #include "xla/stream_executor/device_description.h"
-#include "xla/tests/hlo_runner_agnostic_test_base.h"
 #include "xla/tsl/platform/statusor.h"
 #include "xla/tsl/platform/test.h"
 
@@ -43,12 +42,9 @@ auto MakeDeviceDescription() {
   return device_description;
 }
 
-class GpuFusibleTest : public HloRunnerAgnosticTestBase {
+class GpuFusibleTest : public HloHardwareIndependentTestBase {
  public:
-  GpuFusibleTest()
-      : HloRunnerAgnosticTestBase(std::make_unique<HloRunner>(
-            PlatformUtil::GetDefaultPlatform().value())),
-        device_description_(MakeDeviceDescription()) {}
+  GpuFusibleTest() : device_description_(MakeDeviceDescription()) {}
 
   bool IsReduceInputFusion(const HloInstruction& instr) const {
     return ::xla::gpu::IsReduceInputFusion(instr, device_description_);
@@ -1548,6 +1544,22 @@ TEST_F(GpuFusibleTest, GetSharedMemoryUsage) {
   FusionInfoCache cache(device_description());
   auto fusion = module->entry_computation()->root_instruction();
   EXPECT_EQ(cache.GetSharedMemoryUsage(*fusion), 32 * 33 * 2 * 4);
+}
+
+TEST_F(GpuFusibleTest, GetSharedMemoryUsageForPackedTranspose) {
+  auto module = ParseAndReturnVerifiedModule(absl::StrCat(kModulePrefix, R"(
+    wrapped_transpose {
+      p0 = s8[128,64,10,6] parameter(0)
+      ROOT transpose = s8[128,6,10,64] transpose(p0), dimensions={0,3,2,1}
+    }
+    ENTRY main {
+      p0 = s8[128,64,10,6] parameter(0)
+      ROOT res = s8[128,6,10,64] fusion(p0), kind=kInput, calls=wrapped_transpose
+    })"))
+                    .value();
+  FusionInfoCache cache(device_description());
+  auto fusion = module->entry_computation()->root_instruction();
+  EXPECT_EQ(cache.GetSharedMemoryUsage(*fusion), 32 * 32 * 4 * 4);
 }
 
 TEST_F(GpuFusibleTest, GetSharedMemoryUsageVariadicReduction) {

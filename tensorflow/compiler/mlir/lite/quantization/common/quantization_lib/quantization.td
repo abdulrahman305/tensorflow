@@ -31,12 +31,12 @@ include "mlir/Dialect/Quant/IR/QuantBase.td"
 // explicit signedness check to differentiate the signed/unsigned constraints
 // predicates from one another at the TD level.
 class QuantizedType<string n, list<int> params, bit signed>
-  : Type<And<[CPred<"$_self.isa<mlir::TFL::QuantizedType>()">,
-              CPred<"$_self.cast<mlir::TFL::QuantizedType>()" #
+  : Type<And<[CPred<"llvm::isa<mlir::quant::QuantizedType>($_self)">,
+              CPred<"llvm::cast<mlir::quant::QuantizedType>($_self)" #
                     ".getStorageTypeIntegralWidth() == " # !head(params)>,
-              Or<[CPred<"$_self.cast<mlir::TFL::QuantizedType>()" #
+              Or<[CPred<"llvm::cast<mlir::quant::QuantizedType>($_self)" #
                     ".getStorageType().isSignlessInteger()">,
-                  CPred<"$_self.cast<mlir::TFL::QuantizedType>()" #
+                  CPred<"llvm::cast<mlir::quant::QuantizedType>($_self)" #
                     ".getStorageType().isSignedInteger() == " # signed>]>]>,
     "Q" # !if (signed, "I", "UI") # !head(params) # " type"> {
   string name = n;
@@ -137,9 +137,28 @@ def SameOperandsAndResultsScale : OpInterface<"SameScalesOpInterface"> {
   ];
 
   let verify = [{
-    return TFL::VerifySameScales($_op);
+    return mlir::TFL::VerifySameScales($_op);
   }];
 }
+
+def RequiresQuantizedBiasInterface : OpInterface<"RequiresQuantizedBiasInterface"> {
+  let description = [{
+    Interface for ops that require the converter to quantize their bias based on
+    the scales of the other operands.
+  }];
+
+  let methods = [
+    InterfaceMethod<
+      [{Returns the bias operand index.}],
+      "int", "GetBiasOperandIndex",
+      (ins), [{}], [{return -1;}]>,
+    InterfaceMethod<
+      [{Returns the non-bias operand indices.}],
+      "std::vector<int>", "GetNonBiasOperandIndices",
+      (ins), [{}], [{return {};}]>,
+  ];
+}
+
 
 def DynamicRangeQuantizedOpInterface : OpInterface<
   "DynamicRangeQuantizedOpInterface"> {

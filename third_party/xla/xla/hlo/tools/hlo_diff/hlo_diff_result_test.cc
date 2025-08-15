@@ -21,12 +21,13 @@
 #include "absl/strings/string_view.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/parser/hlo_parser.h"
+#include "xla/hlo/testlib/hlo_hardware_independent_test_base.h"
 #include "xla/hlo/testlib/verified_hlo_module.h"
 #include "xla/hlo/tools/hlo_diff/graph/hlo_gumgraph.h"
 #include "xla/hlo/tools/hlo_diff/hlo_gumgraph_mappings.h"
+#include "xla/hlo/tools/hlo_diff/proto/diff_result.pb.h"
 #include "xla/hlo/tools/hlo_diff/utils/test_util.h"
 #include "xla/service/hlo_module_config.h"
-#include "xla/tests/hlo_test_base.h"
 #include "xla/tsl/platform/statusor.h"
 
 namespace xla {
@@ -38,7 +39,7 @@ using ::testing::Pointee;
 using ::testing::Property;
 using ::testing::UnorderedElementsAre;
 
-class HloDiffTest : public HloTestBase {};
+class HloDiffTest : public HloHardwareIndependentTestBase {};
 
 TEST_F(HloDiffTest, MatchedDifferentShapeMarkAsChanged) {
   // Create left module with entry computation containing the following
@@ -114,9 +115,9 @@ TEST_F(HloDiffTest, MatchedDifferentFingerprintMarkAsChanged) {
 HloModule module, is_scheduled=true
 
 ENTRY entry {
-  parameter.0 = f32[] parameter(0)
-  parameter.1 = f32[] parameter(1)
-  add.0 = f32[] add(parameter.0, parameter.1)
+  parameter.0 = bf16[32,22,32]{0,2,1:T(8,128)(2,1)S(1)} parameter(0)
+  parameter.1 = bf16[32,22,32]{0,2,1:T(8,128)(2,1)} parameter(1)
+  add.0 = bf16[32,22,32]{0,2,1:T(8,128)(2,1)} add(parameter.0, parameter.1)
 }
 )"));
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<const HloGumgraph> graph_l,
@@ -133,9 +134,9 @@ ENTRY entry {
 HloModule module, is_scheduled=true
 
 ENTRY entry {
-  parameter.0 = f32[] parameter(0)
-  parameter.1 = f32[] parameter(1)
-  add.0 = f32[] add(parameter.1, parameter.0)
+  parameter.0 = bf16[32,22,32]{0,2,1:T(8,128)(2,1)S(1)} parameter(0)
+  parameter.1 = bf16[32,22,32]{0,2,1:T(8,128)(2,1)} parameter(1)
+  add.0 = bf16[32,22,32]{0,2,1:T(8,128)(2,1)} add(parameter.1, parameter.0)
 }
 )"));
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<const HloGumgraph> graph_r,
@@ -154,17 +155,20 @@ ENTRY entry {
                                *mappings, /*position_unchanged=*/true));
   auto diff_result = ConstructDiffResult(*graph_l, *graph_r, *mappings);
 
-  EXPECT_THAT(
-      diff_result->changed_instructions,
-      UnorderedElementsAre(
-          Pair(Pointee(Property(&HloInstruction::name, "parameter.0")),
-               Pointee(Property(&HloInstruction::name, "parameter.1"))),
-          Pair(Pointee(Property(&HloInstruction::name, "parameter.1")),
-               Pointee(Property(&HloInstruction::name, "parameter.0")))));
-  EXPECT_THAT(diff_result->unchanged_instructions,
+  EXPECT_THAT(diff_result->changed_instructions,
               UnorderedElementsAre(
+                  Pair(Pointee(Property(&HloInstruction::name, "parameter.0")),
+                       Pointee(Property(&HloInstruction::name, "parameter.1"))),
+                  Pair(Pointee(Property(&HloInstruction::name, "parameter.1")),
+                       Pointee(Property(&HloInstruction::name, "parameter.0"))),
                   Pair(Pointee(Property(&HloInstruction::name, "add.0")),
                        Pointee(Property(&HloInstruction::name, "add.0")))));
+  // TODO(b/428249958): Should not mark as changed if the operands order has
+  // changed.
+  // EXPECT_THAT(diff_result->unchanged_instructions,
+  //             UnorderedElementsAre(
+  //                 Pair(Pointee(Property(&HloInstruction::name, "add.0")),
+  //                      Pointee(Property(&HloInstruction::name, "add.0")))));
 }
 
 TEST_F(HloDiffTest, UnmatchedInstructionsMarkAsUnmatched) {
@@ -294,6 +298,141 @@ ENTRY entry {
                Pointee(Property(&HloInstruction::name, "parameter.0"))),
           Pair(Pointee(Property(&HloInstruction::name, "add.0")),
                Pointee(Property(&HloInstruction::name, "add.0")))));
+}
+
+TEST_F(HloDiffTest, DiffResultToAndFromProtoWorks) {
+  DiffResult diff_result;
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xla::VerifiedHloModule> module_l,
+                          ParseAndReturnVerifiedModule(R"(
+HloModule module, is_scheduled=true
+
+ENTRY entry {
+  parameter.0 = f32[] parameter(0)
+  parameter.1 = f32[] parameter(1)
+  add.0 = f32[] add(parameter.0, parameter.1)
+}
+)"));
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xla::VerifiedHloModule> module_r,
+                          ParseAndReturnVerifiedModule(R"(
+HloModule module, is_scheduled=true
+
+ENTRY entry {
+  parameter.0 = f32[] parameter(0)
+  parameter.1 = f32[] parameter(1)
+  add.0 = f32[] add(parameter.1, parameter.0)
+}
+)"));
+  diff_result.unchanged_instructions.insert(
+      {module_l->entry_computation()->root_instruction(),
+       module_r->entry_computation()->root_instruction()});
+  diff_result.changed_instructions.insert(
+      {module_l->entry_computation()->parameter_instruction(0),
+       module_r->entry_computation()->parameter_instruction(1)});
+  diff_result.left_module_unmatched_instructions.insert(
+      module_l->entry_computation()->parameter_instruction(1));
+  diff_result.right_module_unmatched_instructions.insert(
+      module_r->entry_computation()->parameter_instruction(0));
+
+  DiffResultProto proto = diff_result.ToProto();
+
+  EXPECT_EQ(proto.unchanged_instructions_size(), 1);
+  EXPECT_EQ(proto.unchanged_instructions(0).left(), "add.0");
+  EXPECT_EQ(proto.unchanged_instructions(0).right(), "add.0");
+  EXPECT_EQ(proto.changed_instructions_size(), 1);
+  EXPECT_EQ(proto.changed_instructions(0).left(), "parameter.0");
+  EXPECT_EQ(proto.changed_instructions(0).right(), "parameter.1");
+  EXPECT_EQ(proto.left_unmatched_instructions_size(), 1);
+  EXPECT_EQ(proto.left_unmatched_instructions(0), "parameter.1");
+  EXPECT_EQ(proto.right_unmatched_instructions_size(), 1);
+  EXPECT_EQ(proto.right_unmatched_instructions(0), "parameter.0");
+
+  DiffResult diff_result_from_proto =
+      DiffResult::FromProto(proto, *module_l, *module_r);
+  EXPECT_EQ(diff_result_from_proto.unchanged_instructions.size(), 1);
+  EXPECT_EQ(diff_result_from_proto.changed_instructions.size(), 1);
+  EXPECT_EQ(diff_result_from_proto.left_module_unmatched_instructions.size(),
+            1);
+  EXPECT_EQ(diff_result_from_proto.right_module_unmatched_instructions.size(),
+            1);
+}
+
+TEST_F(HloDiffTest, DebugInfoIsAttached) {
+  // Create left module with entry computation containing the following
+  // structure:
+  // [Param 0] ---> ┌-------┐
+  //                | add_0 |
+  // [Param 1] ---> └-------┘
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xla::VerifiedHloModule> module_l,
+                          ParseAndReturnVerifiedModule(R"(
+HloModule module, is_scheduled=true
+
+ENTRY entry {
+  parameter.0 = f32[] parameter(0)
+  parameter.1 = f32[] parameter(1)
+  add.0 = f32[] add(parameter.0, parameter.1)
+}
+)"));
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<const HloGumgraph> graph_l,
+                          HloGumgraph::Create(module_l.get()));
+
+  // Create right module with entry computation containing the following
+  // structure:
+  // [Param 0] ---> ┌-------┐
+  //                | add_0 |
+  // [Param 1] ---> └-------┘
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xla::VerifiedHloModule> module_r,
+                          ParseAndReturnVerifiedModule(R"(
+HloModule module, is_scheduled=true
+
+ENTRY entry {
+  parameter.0 = f64[] parameter(0)
+  parameter.1 = f32[] parameter(1)
+  add.0 = f32[] add(parameter.0, parameter.1)
+}
+)"));
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<const HloGumgraph> graph_r,
+                          HloGumgraph::Create(module_r.get()));
+  auto mappings = std::make_unique<HloGumgraphMappings>();
+  ASSERT_NO_FATAL_FAILURE(OverwriteMapInstructions(
+      GetNodeByName(*graph_l, "add.0"), GetNodeByName(*graph_r, "add.0"),
+      *mappings, /*position_unchanged=*/true,
+      /*matcher_debug_info=*/"debug_info_add"));
+  ASSERT_NO_FATAL_FAILURE(OverwriteMapInstructions(
+      GetNodeByName(*graph_l, "parameter.0"),
+      GetNodeByName(*graph_r, "parameter.0"), *mappings,
+      /*position_unchanged=*/true, /*matcher_debug_info=*/"debug_info_param0"));
+  ASSERT_NO_FATAL_FAILURE(OverwriteMapInstructions(
+      GetNodeByName(*graph_l, "parameter.1"),
+      GetNodeByName(*graph_r, "parameter.1"), *mappings,
+      /*position_unchanged=*/true, /*matcher_debug_info=*/"debug_info_param1"));
+  auto diff_result = ConstructDiffResult(*graph_l, *graph_r, *mappings);
+
+  EXPECT_THAT(
+      diff_result->map_by,
+      UnorderedElementsAre(
+          Pair(Pair(Pointee(Property(&HloInstruction::name, "parameter.0")),
+                    Pointee(Property(&HloInstruction::name, "parameter.0"))),
+               MatcherType::kManual),
+          Pair(Pair(Pointee(Property(&HloInstruction::name, "add.0")),
+                    Pointee(Property(&HloInstruction::name, "add.0"))),
+               MatcherType::kManual),
+          Pair(Pair(Pointee(Property(&HloInstruction::name, "parameter.1")),
+                    Pointee(Property(&HloInstruction::name, "parameter.1"))),
+               MatcherType::kManual)));
+
+  EXPECT_THAT(
+      diff_result->matcher_debug_info,
+      UnorderedElementsAre(
+          Pair(Pair(Pointee(Property(&HloInstruction::name, "parameter.0")),
+                    Pointee(Property(&HloInstruction::name, "parameter.0"))),
+               "debug_info_param0"),
+          Pair(Pair(Pointee(Property(&HloInstruction::name, "add.0")),
+                    Pointee(Property(&HloInstruction::name, "add.0"))),
+               "debug_info_add"),
+          Pair(Pair(Pointee(Property(&HloInstruction::name, "parameter.1")),
+                    Pointee(Property(&HloInstruction::name, "parameter.1"))),
+               "debug_info_param1")));
 }
 
 }  // namespace

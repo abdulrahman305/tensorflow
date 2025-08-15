@@ -1,5 +1,6 @@
 load("@local_xla//xla/tsl:tsl.bzl", "if_macos", "internal_visibility")
 load("@local_xla//xla/tsl:tsl.default.bzl", "tsl_pybind_extension")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("//tensorflow:strict.default.bzl", "py_strict_library", "py_strict_test")
 load("//tensorflow:tensorflow.default.bzl", "cuda_py_strict_test", "get_compatible_with_portable", "tf_python_pybind_extension")
 load("//tensorflow/core/profiler/builds:build_config.bzl", "tf_profiler_copts")
@@ -129,12 +130,12 @@ tf_python_pybind_extension(
     ],
     deps = [
         ":profiler_pywrap_impl",
-        "//tensorflow/core/profiler/convert:repository",
-        "//tensorflow/core/profiler/convert:tool_options",
-        "//tensorflow/core/profiler/convert:xplane_to_tools_data",
         "//tensorflow/core/profiler/rpc:profiler_server_for_pybind",
         "//tensorflow/python/lib/core:pybind11_status",
         "@com_google_absl//absl/status",
+        "@org_xprof//xprof/convert:repository",
+        "@org_xprof//xprof/convert:tool_options",
+        "@org_xprof//xprof/convert:xplane_to_tools_data",
         "@pybind11",
     ],
 )
@@ -165,14 +166,13 @@ cc_library(
     deps = [
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
-        "//tensorflow/core/profiler/convert:xplane_to_tools_data",
         "//tensorflow/core/profiler/lib:profiler_session_for_pybind",
         "//tensorflow/core/profiler/rpc:profiler_server_for_pybind",
-        "//tensorflow/core/profiler/rpc/client:save_profile",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:variant",
+        "@local_tsl//tsl/profiler/lib:profiler_session",
         "@local_tsl//tsl/profiler/protobuf:xplane_proto_cc",
         "@local_xla//xla/tsl/profiler/convert:xplane_to_trace_events",
         "@local_xla//xla/tsl/profiler/rpc/client:capture_profile",
@@ -196,9 +196,6 @@ tsl_pybind_extension(
         "//tensorflow/core/framework:attr_value_proto_cc_impl",
         "//tensorflow/core/framework:op",
         "//tensorflow/core/framework:tensor",
-        "//tensorflow/core/profiler/convert:repository",
-        "//tensorflow/core/profiler/convert:tool_options",
-        "//tensorflow/core/profiler/convert:xplane_to_tools_data",
         "//tensorflow/python/lib/core:py_exception_registry",
         "//tensorflow/python/lib/core:pybind11_status",
         "@com_google_absl//absl/container:flat_hash_map",
@@ -239,6 +236,7 @@ tsl_pybind_extension(
         "@local_xla//xla/tsl/protobuf:histogram_proto_cc_impl",
         "@local_xla//xla/tsl/protobuf:rpc_options_proto_cc_impl",
         "@local_xla//xla/tsl/protobuf:test_log_proto_cc_impl",
+        "@org_xprof//xprof/convert:tool_options",
         "@org_xprof//xprof/pywrap:profiler_plugin_impl",
         "@pybind11",
     ] + if_macos([

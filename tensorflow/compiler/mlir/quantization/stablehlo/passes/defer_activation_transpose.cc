@@ -17,7 +17,6 @@ limitations under the License.
 #include <utility>
 
 #include "absl/base/nullability.h"
-#include "llvm/Support/LogicalResult.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
@@ -48,7 +47,7 @@ using ::mlir::stablehlo::TransposeOp;
 
 // Returns `success()` if `op` is a `TransposeOp` with permutation attribute
 // equivalent to `permuation`.
-LogicalResult IsTransposeOpWithPermuation(absl::Nullable<Operation*> op,
+LogicalResult IsTransposeOpWithPermuation(Operation* absl_nullable op,
                                           const ArrayRef<int64_t> permutation) {
   auto transpose_op = dyn_cast_or_null<TransposeOp>(op);
   return success(transpose_op != nullptr && transpose_op.getPermutation() ==
@@ -90,8 +89,8 @@ void DeferRhsTransposeForBinaryOp(OpT op, PatternRewriter& rewriter) {
 // "Climbs up" the `op` if `op` is a `BraodcastInDimOp` and returns the defining
 // op of its operand. Returns `op` otherwise. May return `nullptr` when the
 // `BroadcastInDimOp`'s operand is a block argument.
-absl::Nullable<Operation*> SkipUpwardsOptionalBroadcastInDimOp(
-    absl::Nonnull<Operation*> op) {
+Operation* absl_nullable SkipUpwardsOptionalBroadcastInDimOp(
+    Operation* absl_nonnull op) {
   if (auto broadcast_in_dim_op = dyn_cast_or_null<BroadcastInDimOp>(op);
       broadcast_in_dim_op != nullptr) {
     return broadcast_in_dim_op.getOperand().getDefiningOp();
@@ -160,7 +159,7 @@ class DeferActivationTransposeForMaxPoolReduceWindowOp
 
     const auto result_type = mlir::cast<TensorType>(op.getResult(0).getType());
     const SmallVector<int64_t> new_result_shape =
-        Permute<int64_t>(result_type.getShape(), kNchwToNhwcPermutation);
+        quant::Permute<int64_t>(result_type.getShape(), kNchwToNhwcPermutation);
 
     const TensorType new_result_type =
         result_type.cloneWith(new_result_shape, result_type.getElementType());
@@ -209,7 +208,7 @@ class DeferActivationTransposeForMaxPoolReduceWindowOp
     if (!array_attr.has_value()) return DenseI64ArrayAttr(nullptr);
 
     return rewriter.getDenseI64ArrayAttr(
-        Permute<int64_t>(array_attr.value(), permutation));
+        quant::Permute<int64_t>(array_attr.value(), permutation));
   }
 
   LogicalResult MatchMaxPoolReduceWindowOp(

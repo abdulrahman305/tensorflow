@@ -101,7 +101,7 @@ int64_t GetAlignmentOfRemainder(mlir::AffineExpr expr,
 
     std::optional<int64_t> rhs_cst = std::nullopt;
     if (binop.getRHS().getKind() == mlir::AffineExprKind::Constant) {
-      rhs_cst = binop.getRHS().cast<mlir::AffineConstantExpr>().getValue();
+      rhs_cst = mlir::cast<mlir::AffineConstantExpr>(binop.getRHS()).getValue();
     }
 
     switch (binop.getKind()) {
@@ -288,7 +288,8 @@ struct VectorizeLoad : mlir::OpRewritePattern<mlir::tensor::ExtractOp> {
           op, "the instruction does not access contiguous elements");
     }
     auto loaded_vector = b.create<mlir::vector::TransferReadOp>(
-        vector_type, op.getTensor(), *vector_index, llvm::ArrayRef<bool>{true});
+        vector_type, op.getTensor(), *vector_index, /*padding=*/std::nullopt,
+        llvm::ArrayRef<bool>{true});
     rewriter.replaceOpWithNewOp<mlir::vector::ExtractOp>(
         op, loaded_vector, loop.getInductionVar());
     return mlir::success();
@@ -507,7 +508,7 @@ struct FoldVectorInsertExtractPairs
     int64_t result_index = bbarg.getArgNumber() - 1;
     if (auto transfer_read =
             extract.getVector().getDefiningOp<mlir::vector::TransferReadOp>()) {
-      if (transfer_read.getSource().getType().getNumElements() ==
+      if (transfer_read.getBase().getType().getNumElements() ==
           vector_type.getNumElements()) {
         return rewriter.notifyMatchFailure(
             insert,

@@ -1372,6 +1372,21 @@ func.func @op_recv(%arg0: !mhlo.token) -> (tensor<f32>, !mhlo.token) {
   func.return %0#0, %0#1 : tensor<f32>, !mhlo.token
 }
 
+// CHECK-LABEL: "op_recv_d2d"
+func.func @op_recv_d2d(%arg0: !mhlo.token) -> (tensor<f32>, !mhlo.token) {
+  //      CHECK: "stablehlo.recv"([[ARG0:%arg[0-9]+]]) <{
+  // CHECK-SAME:   channel_handle = #stablehlo.channel_handle<handle = 0, type = 1>,
+  // CHECK-SAME:   is_host_transfer = false
+  // CHECK-SAME{LITERAL}:   source_target_pairs = dense<[[0, 1], [1, 2]]> : tensor<2x2xi64>
+  // CHECK-SAME: }> : (!stablehlo.token) -> (tensor<f32>, !stablehlo.token)
+  %0:2 = "mhlo.recv"(%arg0) {
+    channel_handle = #mhlo.channel_handle<handle = 0, type = 1>,
+    is_host_transfer = false,
+    source_target_pairs = dense<[[0, 1], [1, 2]]> : tensor<2x2xi64>
+  } : (!mhlo.token) -> (tensor<f32>, !mhlo.token)
+  func.return %0#0, %0#1 : tensor<f32>, !mhlo.token
+}
+
 // CHECK-LABEL: "op_reduce"
 func.func @op_reduce(%arg0: tensor<16xf32>, %arg1: tensor<f32>) -> tensor<f32> {
   %0 = "mhlo.reduce"(%arg0, %arg1) ({
@@ -1619,6 +1634,21 @@ func.func @op_send(%arg0: tensor<f32>, %arg1: !mhlo.token) -> !mhlo.token {
   func.return %0 : !mhlo.token
 }
 
+// CHECK-LABEL: "op_send_d2d"
+func.func @op_send_d2d(%arg0: tensor<f32>, %arg1: !mhlo.token) -> !mhlo.token {
+  //      CHECK: "stablehlo.send"([[ARG0:%arg[0-9]+]], [[ARG1:%arg[0-9]+]]) <{
+  // CHECK-SAME:   channel_handle = #stablehlo.channel_handle<handle = 0, type = 1>,
+  // CHECK-SAME:   is_host_transfer = false
+  // CHECK-SAME{LITERAL}:   source_target_pairs = dense<[[0, 1], [1, 2]]> : tensor<2x2xi64>
+  // CHECK-SAME: }> : (tensor<f32>, !stablehlo.token) -> !stablehlo.token
+  %0 = "mhlo.send"(%arg0, %arg1) {
+    channel_handle = #mhlo.channel_handle<handle = 0, type = 1>,
+    is_host_transfer = false,
+    source_target_pairs = dense<[[0, 1], [1, 2]]> : tensor<2x2xi64>
+  } : (tensor<f32>, !mhlo.token) -> !mhlo.token
+  func.return %0 : !mhlo.token
+}
+
 // CHECK-LABEL: "op_set_dimension_size"
 func.func @op_set_dimension_size(%arg0: tensor<?xf32>, %arg1: tensor<i32>) -> tensor<16xf32> {
   //      CHECK: "stablehlo.set_dimension_size"([[ARG0:%arg[0-9]+]], [[ARG1:%arg[0-9]+]]) <{
@@ -1836,6 +1866,14 @@ func.func @bounded_dynamism_broadcast_in_dim(%arg0: tensor<1x?xf32, #mhlo.type_e
   // CHECK: stablehlo.broadcast_in_dim{{.*}}tensor<2x1x?xf32, #stablehlo.bounds<?, ?, 5>>
   %0 = "mhlo.broadcast_in_dim"(%arg0) <{broadcast_dimensions = dense<[0, 1]> : tensor<2xi64>}> : (tensor<1x?xf32, #mhlo.type_extensions<bounds = [?, 5]>>) -> tensor<2x1x?xf32, #mhlo.type_extensions<bounds = [?, ?, 5]>>
   return %0 : tensor<2x1x?xf32, #mhlo.type_extensions<bounds = [?, ?, 5]>>
+}
+
+// CHECK-LABEL: bounded_dynamism_with_unknown_op
+func.func @bounded_dynamism_with_unknown_op(%arg0: tensor<1x4xi32>, %arg1: tensor<i32>) -> tensor<1x4xi32> {
+  %0 = "mhlo.set_dimension_size"(%arg0, %arg1) <{dimension = 1 : i64}> : (tensor<1x4xi32>, tensor<i32>) -> tensor<1x?xi32, #mhlo.type_extensions<bounds = [?, 4]>>
+  // CHECK: "tensor.cast"({{.*}}) : (tensor<1x?xi32, #stablehlo.bounds<?, 4>>) -> tensor<1x4xi32> 
+  %cast = tensor.cast %0 : tensor<1x?xi32, #mhlo.type_extensions<bounds = [?, 4]>> to tensor<1x4xi32>
+  return %cast : tensor<1x4xi32>
 }
 
 // ============ TYPES ============

@@ -18,11 +18,11 @@ limitations under the License.
 
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <vector>
 
 #include "absl/container/inlined_vector.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
@@ -30,12 +30,12 @@ limitations under the License.
 #include "xla/stream_executor/bit_pattern.h"
 #include "xla/stream_executor/command_buffer.h"
 #include "xla/stream_executor/device_memory.h"
-#include "xla/stream_executor/gpu/scoped_update_mode.h"
+#include "xla/stream_executor/dnn.h"
 #include "xla/stream_executor/kernel.h"
 #include "xla/stream_executor/launch_dim.h"
+#include "xla/stream_executor/platform.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
-#include "tsl/platform/casts.h"
 
 namespace stream_executor::gpu {
 
@@ -89,22 +89,6 @@ class GpuCommandBuffer : public CommandBuffer {
     GraphNodeHandle handle = nullptr;
   };
 
-  // A GPU command recorded for the If operation.
-  struct GpuIfCommand : public CommandBuffer::Command {
-    GraphConditionalHandle then_conditional;
-    GraphNodeHandle set_condition_node;
-    GraphConditionalNodeHandle then_conditional_node;
-  };
-
-  // A GPU command recorded for the IfElse operation.
-  struct GpuIfElseCommand : public CommandBuffer::Command {
-    GraphConditionalHandle then_conditional;
-    GraphConditionalHandle else_conditional;
-    GraphNodeHandle set_condition_node;
-    GraphConditionalNodeHandle then_conditional_node;
-    GraphConditionalNodeHandle else_conditional_node;
-  };
-
   // A GPU command recorded for the Case operation.
   struct GpuCaseCommand : public CommandBuffer::Command {
     std::vector<GraphConditionalHandle> conditionals;
@@ -121,70 +105,78 @@ class GpuCommandBuffer : public CommandBuffer {
     GraphConditionalNodeHandle conditional_node;
   };
 
-  GpuCommandBuffer(Mode mode, StreamExecutor* parent);
+  GpuCommandBuffer(Mode mode, StreamExecutor* executor);
 
-  using CommandBuffer::Launch;
+  // Bring CreateLaunch and UpdateLaunch template functions into scope.
+  using CommandBuffer::CreateLaunch;
+  using CommandBuffer::UpdateLaunch;
 
-  absl::StatusOr<const Command*> Launch(
+  absl::StatusOr<const Command*> CreateEmptyCmd(
+      absl::Span<const Command* const> dependencies,
+      StreamPriority priority = StreamPriority::Default) override;
+
+  absl::StatusOr<const Command*> CreateLaunch(
       const ThreadDim& threads, const BlockDim& blocks, const Kernel& kernel,
-      const KernelArgs& args,
+      const KernelArgs& args, absl::Span<const Command* const> dependencies,
+      StreamPriority priority = StreamPriority::Default) override;
+
+  absl::Status UpdateLaunch(const Command* command, const ThreadDim& threads,
+                            const BlockDim& blocks, const Kernel& kernel,
+                            const KernelArgs& args) override;
+
+  absl::StatusOr<const Command*> CreateNestedCommand(
+      CommandBuffer& nested,
       absl::Span<const Command* const> dependencies) override;
 
-  absl::Status Launch(const Command* command, const ThreadDim& threads,
-                      const BlockDim& blocks, const Kernel& kernel,
-                      const KernelArgs& args) override;
+  absl::Status UpdateNestedCommand(const Command* command,
+                                   const CommandBuffer& nested) override;
 
-  absl::StatusOr<const Command*> AddNestedCommandBuffer(
-      const CommandBuffer& nested,
-      absl::Span<const Command* const> dependencies) override;
-
-  absl::Status AddNestedCommandBuffer(const Command* command,
-                                      const CommandBuffer& nested) override;
-
-  absl::StatusOr<const Command*> MemcpyDeviceToDevice(
+  absl::StatusOr<const Command*> CreateMemcpyD2D(
       DeviceMemoryBase* dst, const DeviceMemoryBase& src, uint64_t size,
       absl::Span<const Command* const> dependencies) override;
 
-  absl::Status MemcpyDeviceToDevice(const Command* command,
-                                    DeviceMemoryBase* dst,
-                                    const DeviceMemoryBase& src,
-                                    uint64_t size) override;
+  absl::Status UpdateMemcpyD2D(const Command* command, DeviceMemoryBase* dst,
+                               const DeviceMemoryBase& src,
+                               uint64_t size) override;
 
-  absl::StatusOr<const Command*> Memset(
+  absl::StatusOr<const Command*> CreateMemset(
       DeviceMemoryBase* dst, BitPattern bit_pattern, size_t num_elements,
       absl::Span<const Command* const> dependencies) override;
 
-  absl::Status Memset(const Command* command, DeviceMemoryBase* dst,
-                      const BitPattern& bit_pattern,
-                      size_t num_elements) override;
+  absl::Status UpdateMemset(const Command* command, DeviceMemoryBase* dst,
+                            const BitPattern& bit_pattern,
+                            size_t num_elements) override;
 
-  absl::StatusOr<const Command*> Case(
-      DeviceMemory<int32_t> index, std::vector<Builder> branches,
-      absl::Span<const Command* const> dependencies) override;
-
-  absl::StatusOr<const Command*> DnnGraph(
+  absl::StatusOr<const Command*> CreateDnnGraphCommand(
       dnn::DnnGraph&, Stream&, absl::Span<DeviceMemoryBase> operands,
       absl::Span<const Command* const> dependencies) override;
 
-  absl::Status DnnGraph(const Command*, dnn::DnnGraph&, Stream&,
-                        absl::Span<DeviceMemoryBase> operands) override;
+  absl::Status UpdateDnnGraphCommand(
+      const Command*, dnn::DnnGraph&, Stream&,
+      absl::Span<DeviceMemoryBase> operands) override;
 
-  absl::StatusOr<const Command*> Case(
-      DeviceMemory<bool> index, std::vector<Builder> branches,
+  absl::StatusOr<const Command*> CreateCase(
+      DeviceMemory<int32_t> index, std::vector<CreateCommands> create_branches,
       absl::Span<const Command* const> dependencies) override;
 
-  absl::Status Case(const Command* command, DeviceMemory<int32_t> index,
-                    std::vector<Builder> branches) override;
-
-  absl::Status Case(const Command* command, DeviceMemory<bool> index,
-                    std::vector<Builder> branches) override;
-
-  absl::StatusOr<const Command*> While(
-      DeviceMemory<bool> pred, Builder cond_builder, Builder body_builder,
+  absl::StatusOr<const Command*> CreateCase(
+      DeviceMemory<bool> index, std::vector<CreateCommands> create_branches,
       absl::Span<const Command* const> dependencies) override;
 
-  absl::Status While(const Command* command, DeviceMemory<bool> pred,
-                     Builder cond_builder, Builder body_builder) override;
+  absl::Status UpdateCase(const Command* command, DeviceMemory<int32_t> index,
+                          std::vector<UpdateCommands> update_branches) override;
+
+  absl::Status UpdateCase(const Command* command, DeviceMemory<bool> index,
+                          std::vector<UpdateCommands> update_branches) override;
+
+  absl::StatusOr<const Command*> CreateWhile(
+      DeviceMemory<bool> pred, CreateCommands create_cond,
+      CreateCommands create_body,
+      absl::Span<const Command* const> dependencies) override;
+
+  absl::Status UpdateWhile(const Command* command, DeviceMemory<bool> pred,
+                           UpdateCommands update_cond,
+                           UpdateCommands update_body) override;
 
   absl::Status Finalize() override;
   absl::Status Update() override;
@@ -194,12 +186,6 @@ class GpuCommandBuffer : public CommandBuffer {
   State state() const override { return state_; }
 
   absl::Span<const std::unique_ptr<Command>> commands() const;
-
-  // Returns the list of dependencies for a given node. `node` must be a node
-  // added to the current command buffer. The returned node pointer's lifetimes
-  // are bound to the current command buffer.
-  virtual absl::StatusOr<std::vector<GraphNodeHandle>> GetNodeDependencies(
-      GraphNodeHandle node) = 0;
 
  protected:
   // We track the total number of allocated and alive executable graphs in the
@@ -214,17 +200,8 @@ class GpuCommandBuffer : public CommandBuffer {
   using Dependencies = absl::InlinedVector<GraphNodeHandle, 1>;
 
  private:
-  // Prepares a nested command buffer for an update of the graph.
-  // It's a prerequisite to a call to `Update` on a nested command buffer.
-  // The return value needs to be kept alive until the update is finished. An
-  // update finishes by a call to `Finalize`.
-  virtual std::unique_ptr<ScopedUpdateMode> ActivateUpdateMode(
-      GpuCommandBuffer* nested_cmd_buffer) = 0;
-
   absl::StatusOr<std::vector<GraphConditionalHandle>> CreateConditionalHandles(
       size_t num_handles);
-
-  Dependencies GetAutoDependencies() const;
 
   //===--------------------------------------------------------------------===//
   // APIs for launching kernels to update conditional handles.
@@ -260,13 +237,14 @@ class GpuCommandBuffer : public CommandBuffer {
   //===--------------------------------------------------------------------===//
 
   // Launches CUDA kernels with packed arguments.
-  absl::StatusOr<const Command*> LaunchWithPackedArgs(
+  absl::StatusOr<const Command*> CreateLaunchWithPackedArgs(
       const ThreadDim& threads, const BlockDim& blocks, const Kernel& kernel,
       const KernelArgsPackedArrayBase& packed_args,
-      absl::Span<const Command* const> dependencies);
+      absl::Span<const Command* const> dependencies,
+      StreamPriority priority = StreamPriority::Default);
 
   // Updates a kernel launch command with packed arguments.
-  absl::Status LaunchWithPackedArgs(
+  absl::Status UpdateLaunchWithPackedArgs(
       const Command* command, const ThreadDim& threads, const BlockDim& blocks,
       const Kernel& kernel, const KernelArgsPackedArrayBase& packed_args);
 
@@ -275,46 +253,43 @@ class GpuCommandBuffer : public CommandBuffer {
   // possible to add new commands to it, otherwise returns internal error.
   absl::Status CheckNotFinalized();
 
+  // Return OK status if command buffer is in the given state, otherwise returns
+  // an error.
+  absl::Status CheckInState(State state);
+
   // Returns OK status if the command buffer can be updated.
   virtual absl::Status CheckCanBeUpdated() = 0;
 
  private:
-  absl::StatusOr<const Command*> Case(
+  absl::StatusOr<const Command*> CreateCase(
       DeviceMemory<uint8_t> index, bool index_is_bool,
-      std::vector<Builder> branches,
+      std::vector<CreateCommands> create_branches,
       absl::Span<const Command* const> dependencies);
 
-  absl::Status Case(const Command* command, DeviceMemory<uint8_t> index,
-                    bool index_is_bool, std::vector<Builder> branches);
-
-  // Constructs a new command for the given graph node handle and appends it to
-  // the command buffer.
-  const Command* AppendCommand(GraphNodeHandle handle) {
-    commands_.push_back(std::make_unique<GpuCommand>(handle));
-    return commands_.back().get();
-  }
+  absl::Status UpdateCase(const Command* command, DeviceMemory<uint8_t> index,
+                          bool index_is_bool,
+                          std::vector<UpdateCommands> update_branches);
 
   // Appends a new command to the command buffer.
   template <typename T>
   const Command* AppendCommand(T command) {
     commands_.push_back(std::make_unique<T>(std::move(command)));
+    VLOG(5) << "AppendCommand: "
+            << reinterpret_cast<const void*>(commands_.back().get());
     return commands_.back().get();
   }
 
   // Converts a list of command dependencies to a list of graph node handles.
-  Dependencies ToGraphNodeDependencies(
-      absl::Span<const Command* const> dependencies) {
-    Dependencies handles;
-    for (const Command* dependency : dependencies) {
-      auto* gpu_command = tsl::down_cast<const GpuCommand*>(dependency);
-      handles.push_back(gpu_command->handle);
-    }
-    return handles;
-  }
+  std::vector<GraphNodeHandle> ToGraphNodeDependencies(
+      absl::Span<const Command* const> dependencies);
 
   //===--------------------------------------------------------------------===//
   // APIs for creating and updating underlying GPU graph nodes.
   //===--------------------------------------------------------------------===//
+
+  // Adds a new empty node to the underlying graph.
+  virtual absl::StatusOr<GraphNodeHandle> CreateEmptyNode(
+      absl::Span<const GraphNodeHandle> dependencies) = 0;
 
   // Adds a new conditional node to the graph and creates a corresponding nested
   // command buffer.
@@ -355,7 +330,7 @@ class GpuCommandBuffer : public CommandBuffer {
   // Adds a new nested command buffer node to the graph.
   virtual absl::StatusOr<GraphNodeHandle> CreateChildNode(
       absl::Span<const GraphNodeHandle> dependencies,
-      const CommandBuffer& nested) = 0;
+      CommandBuffer& nested) = 0;
 
   // Associate another command buffer with this child node. Will return an
   // error if the given node has not been created as a child node.
@@ -364,8 +339,8 @@ class GpuCommandBuffer : public CommandBuffer {
 
   // Adds a new kernel launch node to the graph.
   virtual absl::StatusOr<GraphNodeHandle> CreateKernelNode(
-      absl::Span<const GraphNodeHandle> dependencies, const ThreadDim& threads,
-      const BlockDim& blocks, const Kernel& kernel,
+      absl::Span<const GraphNodeHandle> dependencies, StreamPriority priority,
+      const ThreadDim& threads, const BlockDim& blocks, const Kernel& kernel,
       const KernelArgsPackedArrayBase& args) = 0;
 
   // Updates the kernel launch node with the given parameters. Will return an
@@ -376,14 +351,6 @@ class GpuCommandBuffer : public CommandBuffer {
       const KernelArgsPackedArrayBase& args) = 0;
 
   //===--------------------------------------------------------------------===//
-
-  // Creates a new no-op node acting as a barrier and adds it to the graph.
-  virtual absl::StatusOr<GraphNodeHandle> CreateBarrierNode(
-      absl::Span<const GraphNodeHandle> dependencies) = 0;
-
-  // Enables or disables the execution of the given node in the graph.
-  virtual absl::Status SetNodeExecutionEnabled(GraphNodeHandle node_handle,
-                                               bool enabled) = 0;
 
   // Launches an instantiated graph. Only supported on primary command buffers.
   virtual absl::Status LaunchGraph(Stream* stream) = 0;
@@ -408,21 +375,13 @@ class GpuCommandBuffer : public CommandBuffer {
   Mode mode_;
   State state_ = State::kCreate;
 
-  StreamExecutor* parent_;  // not owned, must outlive *this
+  StreamExecutor* executor_;  // not owned, must outlive *this
 
   // Track the number of command buffer updates for debugging.
   int64_t num_updates_ = 0;
 
   // Gpu commands recorded into the command buffer.
   std::vector<std::unique_ptr<Command>> commands_;
-
-  // Tracks indices into data structures during command buffer updates.
-  struct UpdateState {
-    int64_t command_idx = 0;
-  };
-
-  // Tracks execution scope update state.
-  UpdateState update_state_;
 };
 
 }  // namespace stream_executor::gpu

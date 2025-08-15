@@ -128,7 +128,7 @@ filegroup(
     }) + if_cuda([
         "@local_config_nccl//:LICENSE",
     ]) + if_mkl([
-        "//third_party/mkl_dnn:LICENSE",
+        "@local_xla//third_party/mkl_dnn:LICENSE",
     ]) + if_enable_mkl(["@local_xla//xla/tsl/mkl:LICENSE"]) + if_not_system_lib(
         "absl_py",
         [
@@ -363,7 +363,9 @@ py_test(
         "cpu",
         "manual",
     ],
-    deps = if_wheel_dependency(tf_wheel_dep()),
+    deps = if_wheel_dependency(tf_wheel_dep()) + [
+        "@pypi_absl_py//:pkg",
+    ],
 )
 
 py_test(
@@ -381,7 +383,9 @@ py_test(
         "gpu",
         "manual",
     ],
-    deps = if_wheel_dependency(tf_wheel_dep()),
+    deps = if_wheel_dependency(tf_wheel_dep()) + [
+        "@pypi_absl_py//:pkg",
+    ],
 )
 
 py_test(
@@ -422,24 +426,25 @@ verify_manylinux_compliance_test(
         "manual",
     ],
     wheel = ":wheel",
-    x86_64_compliance_tag = "manylinux_2_17_x86_64",
+    x86_64_compliance_tag = "manylinux_2_27_x86_64",
 )
 
 py_import(
     name = "tf_py_import",
     wheel = ":wheel",
     wheel_deps = if_cuda([
-        "@pypi_nvidia_cublas_cu12//:whl",
-        "@pypi_nvidia_cuda_cupti_cu12//:whl",
-        "@pypi_nvidia_cuda_nvrtc_cu12//:whl",
-        "@pypi_nvidia_cuda_runtime_cu12//:whl",
-        "@pypi_nvidia_cudnn_cu12//:whl",
-        "@pypi_nvidia_cufft_cu12//:whl",
-        "@pypi_nvidia_curand_cu12//:whl",
-        "@pypi_nvidia_cusolver_cu12//:whl",
-        "@pypi_nvidia_cusparse_cu12//:whl",
-        "@pypi_nvidia_nccl_cu12//:whl",
-        "@pypi_nvidia_nvjitlink_cu12//:whl",
+        "@pypi_nvidia_cublas_cu12//:pkg",
+        "@pypi_nvidia_cuda_cupti_cu12//:pkg",
+        "@pypi_nvidia_cuda_nvrtc_cu12//:pkg",
+        "@pypi_nvidia_cuda_runtime_cu12//:pkg",
+        "@pypi_nvidia_cudnn_cu12//:pkg",
+        "@pypi_nvidia_cufft_cu12//:pkg",
+        "@pypi_nvidia_curand_cu12//:pkg",
+        "@pypi_nvidia_cusolver_cu12//:pkg",
+        "@pypi_nvidia_cusparse_cu12//:pkg",
+        "@pypi_nvidia_nccl_cu12//:pkg",
+        "@pypi_nvidia_nvjitlink_cu12//:pkg",
+        "@pypi_nvidia_nvshmem_cu12//:pkg",
     ]),
     deps = [
         "@pypi_absl_py//:pkg",

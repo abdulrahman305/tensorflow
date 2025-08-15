@@ -35,11 +35,13 @@ limitations under the License.
 #include "absl/strings/str_replace.h"
 #include "absl/strings/string_view.h"
 #include "re2/re2.h"
+#include "xla/hlo/analysis/alias_info.h"
 #include "xla/hlo/analysis/hlo_alias_analysis.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/testlib/hlo_hardware_independent_test_base.h"
 #include "xla/hlo/testlib/verified_hlo_module.h"
 #include "xla/hlo/utils/hlo_live_range.h"
 #include "xla/service/buffer_value.h"
@@ -56,7 +58,6 @@ limitations under the License.
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
-#include "xla/tests/hlo_test_base.h"
 #include "xla/tsl/lib/core/status_test_util.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
@@ -261,7 +262,7 @@ TEST_F(LoopOptimizerBestFitHeapTest, TestRemoveChunk) {
   EXPECT_EQ(heap_.LastMemoryOffsetOccupied(), 0);
 }
 
-class MemoryBoundLoopOptimizerTest : public HloTestBase {
+class MemoryBoundLoopOptimizerTest : public HloHardwareIndependentTestBase {
  public:
   MemoryBoundLoopOptimizerTest() = default;
 
@@ -297,10 +298,12 @@ class MemoryBoundLoopOptimizerTest : public HloTestBase {
             "HloCostAnalysis",
             CreateHloCostAnalysisCalculator(*hlo_cost_analysis_wrapper_),
             /*enable_cache=*/false));
-    TF_ASSIGN_OR_RETURN(cost_analysis_,
-                        CostAnalysis::Create(*op_cost_manager_,
-                                             cost_analysis_options_, *module));
-    TF_ASSIGN_OR_RETURN(alias_analysis_, HloAliasAnalysis::Run(module));
+    TF_ASSIGN_OR_RETURN(
+        cost_analysis_,
+        CostAnalysis::Create(*op_cost_manager_, cost_analysis_options_,
+                             &alias_info_, *module));
+    TF_ASSIGN_OR_RETURN(alias_analysis_,
+                        HloAliasAnalysis::Run(module, &alias_info_));
     TF_ASSIGN_OR_RETURN(live_range_,
                         HloLiveRange::Run(module->schedule(), *alias_analysis_,
                                           module->entry_computation()));
@@ -554,7 +557,7 @@ ENTRY Entry {
 
     std::unique_ptr<PresetAssignments> preset_assignments =
         MemorySpaceAssignment::Run(module, *live_range_, *alias_analysis_,
-                                   options_)
+                                   &alias_info_, options_)
             .value();
     return preset_assignments;
   }
@@ -597,7 +600,7 @@ ENTRY Entry {
     };
 
     TF_ASSIGN_OR_RETURN(std::unique_ptr<HloAliasAnalysis> alias_analysis,
-                        HloAliasAnalysis::Run(module));
+                        HloAliasAnalysis::Run(module, &alias_info_));
     TF_ASSIGN_OR_RETURN(std::unique_ptr<HloLiveRange> live_range,
                         HloLiveRange::Run(module->schedule(), *alias_analysis,
                                           module->entry_computation()));
@@ -687,6 +690,8 @@ ENTRY Entry {
     }
     return absl::OkStatus();
   }
+
+  AliasInfo alias_info_;
 
  private:
   Options options_;
@@ -1578,7 +1583,7 @@ ENTRY entry {
   // We expect operand 0 of prev_op4, op4, and next_op4 to all be prefetches of
   // same distance from the user.
   TF_ASSERT_OK_AND_ASSIGN(auto alias_analysis,
-                          HloAliasAnalysis::Run(module.get()));
+                          HloAliasAnalysis::Run(module.get(), &alias_info_));
   TF_ASSERT_OK_AND_ASSIGN(auto hlo_live_range,
                           HloLiveRange::Run(module->schedule(), *alias_analysis,
                                             module->entry_computation()));

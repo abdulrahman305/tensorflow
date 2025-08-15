@@ -21,6 +21,7 @@ package(
     default_visibility = [
         "//tensorflow/compiler/tf2xla:internal",
         "//third_party/cloud_tpu/inference_converter:__subpackages__",
+        "//third_party/py/orbax:__subpackages__",
     ],
     licenses = ["notice"],
 )
@@ -37,6 +38,7 @@ check_deps(
 cc_library(
     name = "xla_ops",
     tags = ["optonly"],
+    visibility = ["//visibility:public"],
     deps = [
         ":aggregate_ops",
         ":all_reduce_op",
@@ -352,6 +354,7 @@ cc_library(
         "//tensorflow/compiler/mlir/tensorflow:dump_mlir_util",
         "//tensorflow/compiler/mlir/tensorflow:error_util",
         "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -366,12 +369,16 @@ cc_library(
         "@local_xla//xla:shape_util",
         "@local_xla//xla/hlo/builder:xla_computation",
         "@local_xla//xla/hlo/translate:stablehlo",
+        "@local_xla//xla/mlir/utils:error_util",
         "@local_xla//xla/mlir/utils:type_util",
         "@local_xla//xla/mlir_hlo:mhlo_passes",
         "@local_xla//xla/python:refine_polymorphic_shapes",
         "@local_xla//xla/service:hlo_proto_cc",
+        "@local_xla//xla/service/spmd/shardy/sdy_round_trip:pipelines",
         "@local_xla//xla/tsl/platform:errors",
         "@local_xla//xla/tsl/platform:statusor",
+        "@shardy//shardy/dialect/sdy/ir:dialect",
+        "@shardy//shardy/dialect/sdy/transforms/import:passes",
         "@stablehlo//:chlo_ops",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//:stablehlo_passes",
@@ -414,6 +421,8 @@ tf_kernel_library(
         "@local_xla//xla/hlo/translate:stablehlo",
         "@local_xla//xla/hlo/translate/mhlo_to_hlo:type_to_shape",
         "@local_xla//xla/service:hlo_module_config",
+        "@local_xla//xla/service/spmd/shardy/stablehlo_round_trip:stablehlo_import",
+        "@local_xla//xla/tsl/framework/mlir:status_scoped_diagnostic_handler",
         "@local_xla//xla/tsl/platform:errors",
         "@local_xla//xla/tsl/platform:statusor",
         "@stablehlo//:stablehlo_ops",
@@ -1572,6 +1581,7 @@ tf_kernel_library(
     name = "sharding_op",
     srcs = ["sharding_op.cc"],
     deps = [
+        "//tensorflow/compiler/tf2xla:sharding_util",
         "//tensorflow/compiler/tf2xla:xla_compilation_device",
         "//tensorflow/compiler/tf2xla:xla_compiler",
         "//tensorflow/compiler/tf2xla:xla_context",

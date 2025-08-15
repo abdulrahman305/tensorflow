@@ -17,15 +17,15 @@
 #include <memory>
 
 #include <gtest/gtest.h>
+#include "xla/hlo/testlib/hlo_hardware_independent_test_base.h"
 #include "xla/hlo/testlib/verified_hlo_module.h"
-#include "xla/tests/hlo_test_base.h"
 #include "xla/tsl/platform/statusor.h"
 
 namespace xla {
 namespace hlo_diff {
 namespace {
 
-class HloDiffTest : public HloTestBase {};
+class HloDiffTest : public HloHardwareIndependentTestBase {};
 
 TEST_F(HloDiffTest, ComputeDiffWorksWithoutEval) {
   // Create a module with entry computation containing the following structure:
@@ -45,9 +45,10 @@ ENTRY entry {
                           ParseAndReturnVerifiedModule(hlo_string));
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xla::VerifiedHloModule> module_r,
                           ParseAndReturnVerifiedModule(hlo_string));
-  TF_ASSERT_OK_AND_ASSIGN(
-      auto diff_result,
-      ComputeDiff(*module_l, *module_r, {}, /*run_eval=*/false));
+  DiffOptions options;
+  options.run_eval = false;
+  TF_ASSERT_OK_AND_ASSIGN(auto diff_result,
+                          ComputeDiff(*module_l, *module_r, options));
 
   EXPECT_NE(diff_result.diff_result, nullptr);
   EXPECT_NE(diff_result.diff_summary, nullptr);
@@ -72,8 +73,10 @@ ENTRY entry {
                           ParseAndReturnVerifiedModule(hlo_string));
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xla::VerifiedHloModule> module_r,
                           ParseAndReturnVerifiedModule(hlo_string));
-  TF_ASSERT_OK_AND_ASSIGN(auto diff_result, ComputeDiff(*module_l, *module_r,
-                                                        {}, /*run_eval=*/true));
+  DiffOptions options;
+  options.run_eval = true;
+  TF_ASSERT_OK_AND_ASSIGN(auto diff_result,
+                          ComputeDiff(*module_l, *module_r, options));
 
   EXPECT_NE(diff_result.diff_result, nullptr);
   EXPECT_NE(diff_result.diff_summary, nullptr);

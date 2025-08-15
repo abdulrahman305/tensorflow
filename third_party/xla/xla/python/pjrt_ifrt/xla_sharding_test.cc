@@ -49,7 +49,18 @@ using ::testing::SizeIs;
 using ::tsl::testing::IsOkAndHolds;
 using ::tsl::testing::StatusIs;
 
-class HloShardingTest : public test_util::DeviceTest {};
+class HloShardingTest
+    : public testing::TestWithParam<test_util::DeviceTestParam> {
+ public:
+  HloShardingTest() : fixture_(GetParam()) {}
+
+  DeviceListRef GetDevices(absl::Span<const int> device_indices) {
+    return fixture_.GetDevices(device_indices);
+  }
+
+ private:
+  test_util::DeviceTestFixture fixture_;
+};
 
 TEST_P(HloShardingTest, CreateWithBadDeviceList) {
   auto xla_hlo_sharding = xla::HloSharding::Replicate();
@@ -105,7 +116,15 @@ TEST_P(HloShardingTest, IsFullyReplicated) {
     EXPECT_FALSE(sharding->IsFullyReplicated());
   }
   {
-    // Maximal HloSharding is not fully replicated.
+    // Maximal HloSharding with a single device is fully replicated.
+    auto device_list = GetDevices({0});  // This sharding uses 1 device.
+    auto xla_hlo_sharding = xla::HloSharding::AssignDevice(/*device_id=*/0);
+    std::shared_ptr<const HloSharding> sharding =
+        HloSharding::Create(device_list, MemoryKind(), xla_hlo_sharding);
+    EXPECT_TRUE(sharding->IsFullyReplicated());
+  }
+  {
+    // Maximal HloSharding with more than one device is not fully replicated.
     auto xla_hlo_sharding = xla::HloSharding::AssignDevice(/*device_id=*/0);
     std::shared_ptr<const HloSharding> sharding =
         HloSharding::Create(device_list, MemoryKind(), xla_hlo_sharding);
@@ -133,11 +152,12 @@ TEST_P(HloShardingTest, GetShardShape) {
   std::shared_ptr<const HloSharding> sharding =
       HloSharding::Create(device_list, MemoryKind(), xla_hlo_sharding);
   EXPECT_THAT(sharding->GetShardShape(Shape({6, 6})),
-              IsOkAndHolds(Shape({3, 2})));
+              absl_testing::IsOkAndHolds(Shape({3, 2})));
   EXPECT_THAT(sharding->GetShardShape(Shape({6, 6, 6})),
-              StatusIs(tsl::error::INVALID_ARGUMENT,
-                       HasSubstr("Numbers of dimensions don't match. From "
-                                 "Shape 3 vs from HloSharding 2")));
+              absl_testing::StatusIs(
+                  tsl::error::INVALID_ARGUMENT,
+                  HasSubstr("Numbers of dimensions don't match. From "
+                            "Shape 3 vs from HloSharding 2")));
 }
 
 TEST_P(HloShardingTest, HasSamePartitioning) {
@@ -203,10 +223,11 @@ TEST_P(HloShardingTest, WithDeviceAssignment) {
     EXPECT_THAT(
         sharding0->WithDeviceAssignment(device_list1,
                                         /*memory_kind=*/std::nullopt),
-        StatusIs(tsl::error::INVALID_ARGUMENT,
-                 HasSubstr("HloSharding should have the same number of "
-                           "devices as the current sharding, but was asked to "
-                           "have 3 devices")));
+        absl_testing::StatusIs(
+            tsl::error::INVALID_ARGUMENT,
+            HasSubstr("HloSharding should have the same number of "
+                      "devices as the current sharding, but was asked to "
+                      "have 3 devices")));
   }
 }
 
@@ -821,6 +842,23 @@ TEST_P(HloShardingTest, DisassembleWithSubgroupMaximalSlowPath) {
   }
 }
 
+TEST_P(HloShardingTest, IndexDomainsWithTileTranspose) {
+  auto device_list = GetDevices({0, 1, 2, 3});
+  auto xla_hlo_sharding =
+      xla::HloSharding::IotaTile(/*tile_assignment_dims=*/{2, 2},
+                                 /*reshape_dims=*/{2, 2},
+                                 /*transpose_perm=*/{1, 0});
+  std::shared_ptr<const HloSharding> sharding =
+      HloSharding::Create(device_list, MemoryKind(), xla_hlo_sharding);
+  Shape shape({4, 4});
+  {
+    TF_ASSERT_OK_AND_ASSIGN(auto index_domains, sharding->IndexDomains(shape));
+    EXPECT_THAT(index_domains,
+                ElementsAreArray(TEST_HloShardingIndexDomainsSlowPath(
+                    *sharding, shape, SingleDeviceShardSemantics::kAllShards)));
+  }
+}
+
 TEST_P(HloShardingTest, IndexDomainsWithManual) {
   auto device_list = GetDevices({0, 1, 2, 3, 4, 5});
   auto xla_hlo_sharding = xla::HloSharding::Manual();
@@ -828,10 +866,10 @@ TEST_P(HloShardingTest, IndexDomainsWithManual) {
       HloSharding::Create(device_list, MemoryKind(), xla_hlo_sharding);
 
   Shape shape({10, 20});
-  EXPECT_THAT(
-      sharding->IndexDomains(shape).status(),
-      StatusIs(tsl::error::INVALID_ARGUMENT,
-               HasSubstr("Manual sharding does not support IndexDomains")));
+  EXPECT_THAT(sharding->IndexDomains(shape).status(),
+              absl_testing::StatusIs(
+                  tsl::error::INVALID_ARGUMENT,
+                  HasSubstr("Manual sharding does not support IndexDomains")));
 }
 
 TEST_P(HloShardingTest, DisassembleWithManual) {
@@ -889,7 +927,7 @@ TEST_P(HloShardingTest, DisassembleFailsWithInvalidDeviceCount) {
   Shape shape({10, 20});
   EXPECT_THAT(
       sharding->Disassemble(shape),
-      StatusIs(
+      absl_testing::StatusIs(
           tsl::error::INVALID_ARGUMENT,
           HasSubstr("sharding's tile count and device count does not match")));
 }
@@ -904,7 +942,7 @@ TEST_P(HloShardingTest, DisassembleFailsWithMismatchingShapeDimsSize) {
   Shape shape({10});
   EXPECT_THAT(
       sharding->Disassemble(shape),
-      StatusIs(
+      absl_testing::StatusIs(
           tsl::error::INVALID_ARGUMENT,
           HasSubstr("shape must have 2 dimensions, but has 1 dimensions")));
 }
@@ -918,9 +956,10 @@ TEST_P(HloShardingTest, DisassembleFailsWithDynamicShape) {
   TF_ASSERT_OK_AND_ASSIGN(
       DynamicShape dynamic_shape,
       DynamicShape::Create(Shape({10}), BoundedDynamicShapeTag({true})));
-  EXPECT_THAT(sharding->Disassemble(dynamic_shape),
-              StatusIs(tsl::error::INVALID_ARGUMENT,
-                       HasSubstr("can only disassemble static shape")));
+  EXPECT_THAT(
+      sharding->Disassemble(dynamic_shape),
+      absl_testing::StatusIs(tsl::error::INVALID_ARGUMENT,
+                             HasSubstr("can only disassemble static shape")));
 }
 
 TEST_P(HloShardingTest, Hash) {

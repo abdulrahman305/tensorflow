@@ -77,6 +77,11 @@ class AotCompilationResult {
     return Unimplemented("LoadExecutable unimplemented.");
   }
 
+  virtual absl::StatusOr<std::unique_ptr<BufferAssignment>> buffer_assignment()
+      const {
+    return Unimplemented("buffer_assignment unimplemented.");
+  }
+
   // Returns the optimized HLO module if one was computed and the implementation
   // supports it.
   virtual const HloModule* optimized_module() const = 0;
@@ -159,6 +164,9 @@ class Compiler {
     std::optional<TargetConfig> target_config;
 
     MultiProcessKeyValueStore key_value_store;
+
+    // The number of devices in a fast-interconnect domain.
+    int64_t slice_size = 0;
   };
 
   virtual ~Compiler() = default;
@@ -282,7 +290,8 @@ class Compiler {
   // The Compiler class also serves as a point to register compiler objects
   // for the various platforms.
 
-  using CompilerFactory = std::function<std::unique_ptr<Compiler>()>;
+  using CompilerFactory =
+      std::function<absl::StatusOr<std::unique_ptr<Compiler>>()>;
 
   // Registers the compiler singleton for the platform. This is assumed to
   // be a singleton, so no ownership is transferred.
@@ -322,7 +331,8 @@ class Compiler {
   // Returns a MetricsHookInterface object used to instrument Compiler's
   // compilation stages.
   virtual std::unique_ptr<MetricsHookInterface> CreateMetricsHook(
-      absl::string_view filename_prefix) const;
+      absl::string_view filename_prefix,
+      absl::string_view hlo_module_name) const;
 
   virtual absl::StatusOr<std::unique_ptr<Executable>> DeserializeExecutable(
       const absl::string_view serialized) const {
@@ -359,6 +369,7 @@ class AotCompilationOptions {
   virtual int64_t replica_count() const { return 0; }
   virtual int64_t num_cores() const { return 0; }
   virtual bool use_spmd_partitioning() const { return false; }
+  virtual bool use_shardy_partitioner() const { return false; }
   virtual bool use_auto_spmd_partitioning() const { return false; }
   virtual std::vector<int64_t> auto_spmd_partitioning_mesh_shape() const {
     return {};

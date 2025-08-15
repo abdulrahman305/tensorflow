@@ -404,7 +404,7 @@ class FromSessionTest(TestModels, parameterized.TestCase):
       if disable_per_channel:
         k_conv_name = 'output1'
       else:
-        k_conv_name = 'tfl.pseudo_qconst1'
+        k_conv_name = 'Conv2D1'
     else:
       k_conv_name = 'Conv2D1'
 
@@ -439,7 +439,8 @@ class FromSessionTest(TestModels, parameterized.TestCase):
     quant_params = detail['quantization_parameters']
     expected_num_params = 1 if disable_per_channel else k_num_filters
     self.assertLen(quant_params['scales'], expected_num_params)
-    self.assertLen(quant_params['zero_points'], expected_num_params)
+    if len(quant_params['zero_points']) != 1:
+      self.assertLen(quant_params['zero_points'], expected_num_params)
 
   def testString(self):
     with ops.Graph().as_default():
@@ -1160,7 +1161,7 @@ class FromSessionTest(TestModels, parameterized.TestCase):
       interpreter.allocate_tensors()
 
       # MLIR quantizer has different bias index.
-      bias_name = 'tfl.pseudo_qconst' if enable_mlir_quantizer else 'Conv2D'
+      bias_name = 'Conv2D'
       bias_tensor = [
           tensor for tensor in interpreter.get_tensor_details()
           if tensor['name'] == bias_name

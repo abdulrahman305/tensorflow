@@ -101,6 +101,16 @@ TEST(SafeReinterpretCast, CanCastPointerToFromStdIntptrT) {
   EXPECT_EQ(safe_reinterpret_cast<const int*>(intptr_t_p), &x);
 }
 
+TEST(SafeReinterpretCast, CanCastNullptrToStdUintptrT) {
+  const std::uintptr_t n = safe_reinterpret_cast<std::uintptr_t>(nullptr);
+  EXPECT_EQ(safe_reinterpret_cast<const void*>(n), nullptr);
+}
+
+TEST(SafeReinterpretCast, CanCastNullptrToStdIntptrT) {
+  const std::intptr_t n = safe_reinterpret_cast<std::intptr_t>(nullptr);
+  EXPECT_EQ(safe_reinterpret_cast<const void*>(n), nullptr);
+}
+
 TEST(SafeReinterpretCast, CanCastPointerToFromSameType) {
   const int x = 42;
   const int* const int_p = safe_reinterpret_cast<const int*>(&x);
@@ -141,13 +151,13 @@ TEST(SafeReinterpretCast, CanCastRestrictPointerToRestrictPointer) {
 
 void Dummy() {}
 
-TEST(SafeReinterepretCast, CanCastFuncPointerToFromVoidPointer) {
+TEST(SafeReinterpretCast, CanCastFuncPointerToFromVoidPointer) {
   void* const void_p = safe_reinterpret_cast<void*>(&Dummy);
   void (*func_p)() = safe_reinterpret_cast<void (*)()>(void_p);
   EXPECT_EQ(func_p, &Dummy);
 }
 
-TEST(SafeReinterepretCast, CanCastDataPointerToFromVoidPointer) {
+TEST(SafeReinterpretCast, CanCastDataPointerToFromVoidPointer) {
   int x = 42;
   void* const void_p = safe_reinterpret_cast<void*>(&x);
   int* const int_p = safe_reinterpret_cast<int*>(void_p);

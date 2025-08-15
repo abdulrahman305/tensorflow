@@ -24,7 +24,7 @@ limitations under the License.
 #include "xla/pjrt/status_casters.h"
 #include "xla/tsl/platform/types.h"
 #include "xla/tsl/profiler/rpc/client/capture_profile.h"
-#include "tensorflow/core/profiler/convert/tool_options.h"
+#include "xprof/convert/tool_options.h"  // from @org_xprof
 #include "xprof/pywrap/profiler_plugin_impl.h"  // from @org_xprof
 
 namespace py = ::pybind11;
@@ -40,14 +40,18 @@ using ::tensorflow::profiler::ToolOptions;
 ToolOptions ToolOptionsFromPythonDict(const py::dict& dictionary) {
   ToolOptions map;
   for (const auto& item : dictionary) {
-    std::variant<int, std::string> value;
+    std::variant<bool, int, std::string> value;
     try {
-      value = item.second.cast<int>();
+      value = item.second.cast<bool>();
     } catch (...) {
       try {
-        value = item.second.cast<std::string>();
+        value = item.second.cast<int>();
       } catch (...) {
-        continue;
+        try {
+          value = item.second.cast<std::string>();
+        } catch (...) {
+          continue;
+        }
       }
     }
     map.emplace(item.first.cast<std::string>(), value);

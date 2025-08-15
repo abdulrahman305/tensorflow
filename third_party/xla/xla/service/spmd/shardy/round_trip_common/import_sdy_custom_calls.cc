@@ -75,7 +75,14 @@ mlir::LogicalResult rewriteShardingCustomCall(
   }
   TensorShardingAttr sharding = mlir::sdy::getSharding(op->getResult(0));
   if (!sharding) {
-    op.emitError() << "expected CustomCallOp with a sharding attribute";
+    op.emitError()
+        << "expected CustomCallOp with a sharding attribute. "
+        // TODO: b/432201708 - Remove this once Shardy is stable in JAX.
+        << "If you are a JAX user hitting this, please file a bug against the "
+        << "OpenXLA Shardy team. This shouldn't happen to you. One of the "
+        << "possible bugs is the model has been lowered targeting GSPMD, but "
+        << "Shardy was then enabled in XLA.";
+
     return mlir::failure();
   }
 
@@ -185,6 +192,10 @@ class ImportSdyCustomCallsPass
     return "Converts a CustomCall with target name Sharding into a "
            "ShardingConstraintOp and with target name ShardingGroup into a "
            "ShardingGroupOp.";
+  }
+
+  void getDependentDialects(mlir::DialectRegistry& registry) const final {
+    registry.insert<mlir::sdy::SdyDialect>();
   }
 };
 

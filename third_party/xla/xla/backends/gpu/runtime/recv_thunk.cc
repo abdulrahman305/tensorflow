@@ -36,6 +36,7 @@ limitations under the License.
 #include "xla/status_macros.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/stream.h"
+#include "xla/tsl/concurrency/async_value_ref.h"
 #include "xla/tsl/platform/errors.h"
 #include "xla/tsl/platform/statusor.h"
 
@@ -65,9 +66,9 @@ absl::Status RecvThunk::Initialize(const InitializeParams& params) {
   return absl::OkStatus();
 }
 
-absl::Status RecvThunk::RunCollective(const ExecuteParams& params,
-                                      se::Stream& stream,
-                                      CommunicatorHandle comm_handle) {
+absl::StatusOr<bool> RecvThunk::RunCollective(const ExecuteParams& params,
+                                              se::Stream& stream,
+                                              CommunicatorHandle comm_handle) {
   TF_ASSIGN_OR_RETURN(
       std::vector<DeviceBufferPair> device_buffers,
       ConvertToDeviceBuffers(params, {buffer_},
@@ -98,9 +99,8 @@ absl::Status RecvThunk::RunCollective(const ExecuteParams& params,
           << CollectiveOpGroupModeToString(config_.config.group_mode) << " ("
           << hlo_name_ << ")";
 
-  TF_ASSIGN_OR_RETURN(GpuCollectives * collectives, GetGpuCollectives(params));
-  TF_RETURN_IF_ERROR(MaybeRegisterBuffers(collectives, stream.parent(),
-                                          {buffer}, comm_handle.comm));
+  TF_RETURN_IF_ERROR(
+      MaybeRegisterBuffers(stream.parent(), {buffer}, comm_handle.comm));
 
   const std::optional<int64_t> source_id = source_target.source;
   se::DeviceMemoryBase dest_addr = buffer.destination_buffer;
@@ -130,9 +130,14 @@ absl::Status RecvThunk::RunCollective(const ExecuteParams& params,
       ++(*counter);
     }
     if (should_run) {
-      TF_RETURN_IF_ERROR(comm_handle.comm->Recv(
+      auto event = comm_handle.comm->Recv(
           dest_addr, buffer.element_type, buffer.element_count,
-          RankId(*source_id), GpuCollectives::On(stream)));
+          RankId(*source_id), GpuCollectives::On(stream));
+
+      tsl::BlockUntilReady(event);
+      if (event.IsError()) {
+        return event.GetError();
+      }
     } else {
       VLOG(3) << "Skipping Recv";
     }
@@ -143,7 +148,7 @@ absl::Status RecvThunk::RunCollective(const ExecuteParams& params,
     VLOG(3) << absl::StreamFormat("%s : Recv: Issuing MemZero", device_string);
     TF_RETURN_IF_ERROR(stream.MemZero(&dest_addr, dest_addr.size()));
   }
-  return absl::OkStatus();
+  return false;
 }
 
 }  // namespace gpu

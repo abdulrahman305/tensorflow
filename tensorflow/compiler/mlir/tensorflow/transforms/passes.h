@@ -33,6 +33,7 @@ limitations under the License.
 #include "mlir/Pass/PassOptions.h"  // from @llvm-project
 #include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
+#include "shardy/dialect/sdy/ir/dialect.h"  // from @shardy  // IWYU pragma: keep
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_device.h"
 
 namespace mlir {
@@ -279,6 +280,9 @@ std::unique_ptr<OperationPass<ModuleOp>> CreateConstantOpDeviceAssignmentPass();
 // tf_executor.graph and each tf_executor.island in tf_executor.graph only has a
 // single op.
 std::unique_ptr<OperationPass<ModuleOp>> CreateVerifySuitableForExportPass();
+
+// Creates an op ordering favorable for the EmbeddingProgramKey pass.
+std::unique_ptr<OperationPass<ModuleOp>> CreateOrderForProgramKeyPass();
 
 // Returns pass that prepares TPU computation to be legal for export to
 // TensorFlow.

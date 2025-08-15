@@ -28,6 +28,7 @@ limitations under the License.
 #include "third_party/cudnn_frontend/include/cudnn_frontend_utils.h"
 #include "xla/service/platform_util.h"
 #include "xla/stream_executor/command_buffer.h"
+#include "xla/stream_executor/cuda/cuda_compute_capability.h"
 #include "xla/stream_executor/cuda/cuda_dnn.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/dnn.h"
@@ -66,6 +67,11 @@ TEST(CudaCommandBufferTest, CuDnnExplicitConstructionAndUpdateWork) {
     GTEST_SKIP() << "Requires cuDNN 9.7.0 or later.";
   }
 
+  if (executor->GetDeviceDescription().cuda_compute_capability() <
+      CudaComputeCapability::Ampere()) {
+    GTEST_SKIP() << "Requires at least an Ampere GPU.";
+  }
+
   constexpr int kDimSize = 32;
   constexpr int kTotalElements = kDimSize * kDimSize;
 
@@ -90,7 +96,7 @@ TEST(CudaCommandBufferTest, CuDnnExplicitConstructionAndUpdateWork) {
   TF_ASSERT_OK(graph.Prepare(dnn_support, NumericOptions{}));
   TF_ASSERT_OK(graph.Build(dnn_support, /*plan_id=*/std::nullopt));
   EXPECT_THAT(graph.SupportsExplicitCommandBufferConstruction(),
-              IsOkAndHolds(true));
+              absl_testing::IsOkAndHolds(true));
 
   DeviceMemory<int8_t> input = executor->AllocateArray<int8_t>(kTotalElements);
   TF_ASSERT_OK(stream->MemZero(&input, input.size()));
@@ -108,10 +114,10 @@ TEST(CudaCommandBufferTest, CuDnnExplicitConstructionAndUpdateWork) {
   }
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommandBuffer> cmd_buffer,
                           executor->CreateCommandBuffer(primary));
-  TF_ASSERT_OK(
-      cmd_buffer
-          ->DnnGraph(graph, *stream, absl::Span<DeviceMemoryBase>(operands), {})
-          .status());
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto* dnn_command,
+      cmd_buffer->CreateDnnGraphCommand(
+          graph, *stream, absl::Span<DeviceMemoryBase>(operands), {}));
   TF_ASSERT_OK(cmd_buffer->Finalize());
 
   std::vector<int32_t> host_buffer(output0.ElementCount());
@@ -144,10 +150,8 @@ TEST(CudaCommandBufferTest, CuDnnExplicitConstructionAndUpdateWork) {
 
   // Update the command buffer to write into the new output buffer.
   TF_ASSERT_OK(cmd_buffer->Update());
-  TF_ASSERT_OK(
-      cmd_buffer
-          ->DnnGraph(graph, *stream, absl::Span<DeviceMemoryBase>(operands), {})
-          .status());
+  TF_ASSERT_OK(cmd_buffer->UpdateDnnGraphCommand(
+      dnn_command, graph, *stream, absl::Span<DeviceMemoryBase>(operands)));
   TF_ASSERT_OK(cmd_buffer->Finalize());
 
   // Run the computation.

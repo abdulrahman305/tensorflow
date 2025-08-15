@@ -19,6 +19,7 @@ limitations under the License.
 
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/LogicalResult.h"
@@ -39,6 +40,7 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/parser/hlo_parser.h"
 #include "xla/hlo/translate/hlo_to_mhlo/hlo_to_mlir_hlo.h"
+#include "xla/hlo/translate/register.h"
 #include "xla/hlo/translate/stablehlo.h"
 #include "xla/mlir_hlo/mhlo/transforms/passes.h"
 #include "xla/service/hlo.pb.h"
@@ -81,7 +83,8 @@ llvm::cl::opt<bool> print_sugar(
 // Error collector that simply ignores errors reported.
 class NoOpErrorCollector : public tsl::protobuf::io::ErrorCollector {
  public:
-  void AddError(int line, int column, const std::string& message) override {}
+  void RecordError(int line, tsl::protobuf::io::ColumnNumber column,
+                   absl::string_view message) override {}
 };
 
 bool LoadHloProto(const std::string& contents, xla::HloProto* hlo_proto) {
@@ -100,7 +103,10 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> GetModuleFromHLOText(
     absl::string_view content, mlir::MLIRContext* context, bool emit_mhlo) {
   auto hlo_text = xla::ParseAndReturnUnverifiedModule(
       content, {}, xla::HloParserOptions().set_keep_module_auto_layouts(true));
-  if (!hlo_text.ok()) return absl::InvalidArgumentError(kLoadHloError);
+  if (!hlo_text.ok()) {
+    return absl::InvalidArgumentError(
+        absl::StrCat(kLoadHloError, hlo_text.status().message()));
+  }
 
   auto hlo_module = std::move(hlo_text.value());
 
@@ -159,7 +165,7 @@ mlir::OwningOpRef<mlir::ModuleOp> GetModuleFromHloInput(
   // Try HLO Text
   auto module_from_text = GetModuleFromHLOText(content, context, emit_mhlo);
   if (module_from_text.ok()) return std::move(module_from_text).value();
-  if (module_from_text.status().message() != kLoadHloError) {
+  if (module_from_text.status().message().rfind(kLoadHloError, 0) != 0) {
     emitError() << "Failed to convert HLO to MLIR: "
                 << module_from_text.status().message();
     return nullptr;
@@ -169,14 +175,15 @@ mlir::OwningOpRef<mlir::ModuleOp> GetModuleFromHloInput(
   auto module_from_proto =
       GetModuleFromHLOProto(std::string(content), context, emit_mhlo);
   if (module_from_proto.ok()) return std::move(module_from_proto).value();
-  if (module_from_proto.status().message() != kLoadHloError) {
+  if (module_from_text.status().message().rfind(kLoadHloError, 0) != 0) {
     emitError() << "Failed to convert HLO to MLIR: "
                 << module_from_proto.status().message();
     return nullptr;
   }
 
   // Failed to parse
-  emitError() << "Failed to parse input as HLO text or proto.";
+  emitError() << "Failed to parse input as HLO text or proto.\n"
+              << module_from_text.status().message();
   return nullptr;
 }
 
