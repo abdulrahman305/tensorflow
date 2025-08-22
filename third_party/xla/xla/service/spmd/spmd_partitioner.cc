@@ -5595,8 +5595,9 @@ absl::StatusOr<bool> SpmdPartitioner::Run(
 absl::Status SpmdPartitioner::PreprocessSharding(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
-  for (HloComputation* computation : module->computations(execution_threads)) {
-    for (HloInstruction* hlo : computation->instructions()) {
+  for (HloComputation* computation :
+       module->MakeComputationPostOrder(execution_threads)) {
+    for (HloInstruction* hlo : computation->MakeInstructionPostOrder()) {
       if (hlo->HasSideEffectNoRecurse() && hlo->opcode() != HloOpcode::kRng &&
           (hlo->opcode() != HloOpcode::kCustomCall ||
            GetCustomCallPartitioner(hlo->custom_call_target()) == nullptr)) {
