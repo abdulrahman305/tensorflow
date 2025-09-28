@@ -105,11 +105,31 @@ absl::flat_hash_set<HloOpcode> TritonSupportedUnaryElementwiseOps(
       element_type == PrimitiveType::F32 ||
       element_type == PrimitiveType::F64) {
     absl::flat_hash_set<HloOpcode> additional_opcodes{
-        HloOpcode::kCos,   HloOpcode::kExp,   HloOpcode::kExpm1,
-        HloOpcode::kFloor, HloOpcode::kCeil,  HloOpcode::kLog,
-        HloOpcode::kLog1p, HloOpcode::kRsqrt, HloOpcode::kSin,
-        HloOpcode::kSqrt,  HloOpcode::kCbrt,  HloOpcode::kTan,
-        HloOpcode::kTanh,  HloOpcode::kErf};
+        // clang-format off
+        // go/keep-sorted start
+        HloOpcode::kAcos,
+        HloOpcode::kAcosh,
+        HloOpcode::kAsin,
+        HloOpcode::kAtanh,
+        HloOpcode::kCbrt,
+        HloOpcode::kCeil,
+        HloOpcode::kCos,
+        HloOpcode::kCosh,
+        HloOpcode::kErf,
+        HloOpcode::kExp,
+        HloOpcode::kExpm1,
+        HloOpcode::kFloor,
+        HloOpcode::kLog,
+        HloOpcode::kLog1p,
+        HloOpcode::kRsqrt,
+        HloOpcode::kSin,
+        HloOpcode::kSinh,
+        HloOpcode::kSqrt,
+        HloOpcode::kTan,
+        HloOpcode::kTanh,
+        // go/keep-sorted end
+        // clang-format on
+    };
     ret.insert(additional_opcodes.begin(), additional_opcodes.end());
   }
 
@@ -496,8 +516,9 @@ CodegenDecision IsTritonSupportedDot(
 // - of kind `__triton_nested_gemm_fusion`;
 // - to have a single user that is either a `dot` or a `concatenate`;
 // - calls a supported computation.
-CodegenDecision IsSupportedFusion(const HloFusionInstruction& hlo,
-                                  const se::GpuComputeCapability& capability) {
+CodegenDecision IsTritonSupportedFusion(
+    const HloFusionInstruction& hlo,
+    const se::GpuComputeCapability& capability) {
   // TODO(b/393299275): test cases when there are multiple dot users of the
   // same fusion.
   if (hlo.user_count() != 1) {
@@ -659,8 +680,8 @@ CodegenDecision IsTritonSupportedInstructionImpl(
       return IsTritonSupportedDot(*Cast<HloDotInstruction>(&instr),
                                   gpu_version);
     case HloOpcode::kFusion:
-      return IsSupportedFusion(*Cast<HloFusionInstruction>(&instr),
-                               gpu_version);
+      return IsTritonSupportedFusion(*Cast<HloFusionInstruction>(&instr),
+                                     gpu_version);
     default:
       // Not all instructions have a special handling.
       break;
@@ -688,10 +709,12 @@ namespace internal {
 bool IsTritonUnsupportedOpcode(HloOpcode opcode) {
   switch (opcode) {
     case HloOpcode::kDynamicReshape:
+    case HloOpcode::kDynamicSlice:
     case HloOpcode::kDynamicUpdateSlice:
     case HloOpcode::kGather:
     case HloOpcode::kRaggedDot:
     case HloOpcode::kReduceWindow:
+    case HloOpcode::kScaledDot:
     case HloOpcode::kScatter:
     case HloOpcode::kSelectAndScatter:
     case HloOpcode::kSetDimensionSize:

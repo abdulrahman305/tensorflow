@@ -124,6 +124,40 @@ xla_cc_test(
     ],
 )
 
+cc_library(
+    name = "xla_executable_version",
+    srcs = ["xla_executable_version.cc"],
+    hdrs = ["xla_executable_version.h"],
+    compatible_with = get_compatible_with_portable(),
+    deps = [
+        ":executable_metadata_proto_cc",
+        "//xla/python/ifrt",
+        "//xla/python/ifrt:serdes_default_version_accessor",
+        "//xla/python/ifrt:serdes_version",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@llvm-project//llvm:Support",
+    ],
+)
+
+cc_library(
+    name = "xla_executable_version_serdes",
+    srcs = ["xla_executable_version_serdes.cc"],
+    compatible_with = get_compatible_with_portable(),
+    deps = [
+        ":executable_metadata_proto_cc",
+        ":xla_executable_version",
+        "//xla/python/ifrt:serdes",
+        "//xla/python/ifrt:serdes_version",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
+        "@llvm-project//llvm:Support",
+    ],
+    alwayslink = True,
+)
+
 tf_proto_library(
     name = "executable_metadata_proto",
     srcs = ["executable_metadata.proto"],
@@ -145,6 +179,9 @@ cc_library(
     testonly = True,
     srcs = ["xla_executable_impl_test_lib.cc"],
     deps = [
+        ":executable_metadata_proto_cc",
+        ":pjrt_layout",
+        ":xla_executable_version",
         ":xla_ifrt",
         "//xla/client:executable_build_options",
         "//xla/pjrt:mlir_to_hlo",
@@ -157,12 +194,15 @@ cc_library(
         "//xla/tsl/platform:statusor",
         "//xla/tsl/platform:test",
         "//xla/tsl/util/proto:proto_matchers",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
         "@llvm-project//mlir:IR",
+        "@local_tsl//tsl/platform:protobuf",
     ],
     alwayslink = True,
 )
@@ -192,6 +232,7 @@ xla_cc_test(
         "//xla/tsl/platform:status_matchers",
         "//xla/tsl/platform:statusor",
         "@com_google_absl//absl/hash:hash_testing",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest_main",
     ],
@@ -224,6 +265,7 @@ cc_library(
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
@@ -271,6 +313,7 @@ cc_library(
         ":pjrt_attribute_map_util",
         ":pjrt_dtype",
         ":transfer_server_interface",
+        ":xla_executable_version_serdes",
         ":xla_ifrt",
         "//xla:literal",
         "//xla:shape_util",
@@ -302,6 +345,7 @@ cc_library(
         "//xla/python/ifrt:user_context",
         "//xla/python/ifrt/hlo:hlo_program",
         "//xla/service:computation_placer_hdr",
+        "//xla/service:global_device_id",
         "//xla/service:hlo_proto_cc",
         "//xla/tsl/concurrency:ref_count",
         "//xla/tsl/distributed_runtime:call_options",
@@ -331,6 +375,7 @@ cc_library(
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@local_tsl//tsl/platform:casts",
+        "@local_tsl//tsl/platform:unbounded_work_queue",
     ],
 )
 
@@ -539,6 +584,7 @@ xla_cc_test(
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:cord",
         "@com_google_absl//absl/strings:string_view",

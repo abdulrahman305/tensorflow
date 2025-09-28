@@ -305,20 +305,34 @@ xla_cc_binary(
     srcs = ["interactive_graphviz.cc"],
     deps = [
         ":hlo_extractor",
+        "//xla:debug_options_flags",
+        "//xla:shape_util",
         "//xla/client:client_library",
         "//xla/client:local_client",
+        "//xla/hlo/ir:hlo",
+        "//xla/hlo/parser:hlo_parser",
         "//xla/service:compiler",
         "//xla/service:cpu_plugin",
+        "//xla/service:hlo_graph_dumper",
         "//xla/service:hlo_module_util",
         "//xla/service:hlo_proto_cc",
         "//xla/service:local_service",
         "//xla/service:platform_util",
+        "//xla/stream_executor:platform",
+        "//xla/stream_executor:stream_executor_h",
+        "//xla/tsl/platform:env",
+        "//xla/tsl/platform:errors",
+        "//xla/tsl/platform:status",
         "//xla/tsl/platform:subprocess",
         "//xla/tsl/protobuf:error_codes_proto_impl_cc",
         "//xla/tsl/util:command_line_flags",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:path",
         "@local_tsl//tsl/platform:platform_port",
@@ -334,7 +348,6 @@ xla_cc_binary(
         "//xla/stream_executor:rocm_platform",
     ]) + xla_internal(
         ["service:hlo_graph_dumper_google"],
-        otherwise = ["//xla/service:hlo_graph_dumper"],
     ),
 )
 
@@ -692,10 +705,14 @@ xla_test(
     deps = [
         ":matmul_perf_table_gen",
         "//xla:xla_data_proto_cc",
+        "//xla/hlo/testlib:pattern_matcher_gmock",
         "//xla/service/gpu/model:hlo_op_profile_proto_cc",
         "//xla/stream_executor:device_description",
         "//xla/tests:hlo_test_base",
+        "//xla/tsl/platform:env",
         "//xla/tsl/platform:statusor",
+        "//xla/tsl/util/proto:proto_matchers",
+        "@com_google_absl//absl/strings:string_view",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -757,7 +774,6 @@ cc_library(
 
 cc_library(
     name = "collective_perf_table_gen_main_lib",
-    testonly = True,
     srcs = ["collective_perf_table_gen_main.cc"],
     compatible_with = None,
     tags = [
@@ -845,7 +861,6 @@ xla_test(
 
 xla_cc_binary(
     name = "collective_perf_table_gen_main",
-    testonly = True,
     tags = [
         "no_mac",
     ],
@@ -1061,8 +1076,8 @@ xla_test(
     ],
     data = [
         ":data/add.hlo",
-        "//xla/service:xla_aot_compile_test_gpu_target_config.txtpb",
         "//xla/service/gpu:gpu_compiler_test_autotune_db.textproto",
+        "//xla/tools/hlo_opt:gpu_specs/h100_sxm.txtpb",
     ],
     deps = [
         ":xla_compile_lib",

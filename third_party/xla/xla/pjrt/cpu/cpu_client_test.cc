@@ -13,6 +13,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <array>
+
+#include "absl/status/status_matchers.h"
+#include "xla/pjrt/plugin/xla_cpu/cpu_memory.h"
 #ifndef _WIN32
 #include <unistd.h>
 #endif
@@ -70,7 +74,6 @@ using ::testing::ElementsAre;
 using ::testing::ElementsAreArray;
 using ::testing::HasSubstr;
 using ::testing::IsFalse;
-using ::tsl::testing::IsOkAndHolds;
 
 static absl::Status TestError(ffi::AnyBuffer, ffi::Result<ffi::AnyBuffer>,
                               ffi::Result<ffi::AnyBuffer>) {
@@ -354,6 +357,69 @@ TEST(PjRtCpuClientTest, UnoptimizedHloSnapshot) {
   ASSERT_EQ(
       *Literal::CreateFromProto(snapshot.partitions(0).arguments(1)),
       LiteralUtil::CreateR2<float>({{10.0, 20.0}, {30.0, 40.0}, {50.0, 60.0}}));
+}
+
+TEST(PjRtCpuClientTest, DumpOnDeserialize) {
+  static constexpr char kProgram[] = R"(
+    HloModule add
+    ENTRY add {
+      x = f32[3,2] parameter(0)
+      y = f32[3,2] parameter(1)
+      ROOT add = f32[3,2] add(x, y)
+    })";
+  TF_ASSERT_OK_AND_ASSIGN(auto client, GetPjRtCpuClient(CpuClientOptions()));
+  TF_ASSERT_OK_AND_ASSIGN(auto hlo_module,
+                          ParseAndReturnUnverifiedModule(kProgram, {}));
+  XlaComputation xla_computation(hlo_module->ToProto());
+
+  tsl::Env* env = tsl::Env::Default();
+  EXPECT_TRUE(env);
+  std::string compile_dump_dir;
+  EXPECT_TRUE(env->LocalTempFilename(&compile_dump_dir));
+  CompileOptions compile_options;
+  compile_options.executable_build_options.mutable_debug_options()
+      ->set_xla_dump_to(compile_dump_dir);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto executable,
+      client->CompileAndLoad(xla_computation, compile_options));
+  std::string compile_dump_name, compile_dump_contents;
+  {
+    std::vector<std::string> matches;
+    TF_ASSERT_OK(env->GetMatchingPaths(
+        tsl::io::JoinPath(compile_dump_dir, "*after_optimizations.txt"),
+        &matches));
+    EXPECT_THAT(matches, ::testing::SizeIs(1));
+    compile_dump_name = std::move(matches.front());
+    TF_ASSERT_OK(
+        tsl::ReadFileToString(env, compile_dump_name, &compile_dump_contents));
+  }
+
+  TF_ASSERT_OK_AND_ASSIGN(std::string serialized,
+                          executable->SerializeExecutable());
+
+  std::string deserialize_dump_dir;
+  EXPECT_TRUE(env->LocalTempFilename(&deserialize_dump_dir));
+  EXPECT_NE(compile_dump_dir, deserialize_dump_dir);
+  CompileOptions deserialize_options;
+  deserialize_options.executable_build_options.mutable_debug_options()
+      ->set_xla_dump_to(deserialize_dump_dir);
+  LoadOptions load_options;
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<PjRtLoadedExecutable> reloaded_executable,
+      client->LoadSerializedExecutable(serialized, deserialize_options,
+                                       load_options));
+  std::string deserialize_dump_name, deserialize_dump_contents;
+  {
+    std::vector<std::string> matches;
+    TF_ASSERT_OK(env->GetMatchingPaths(
+        tsl::io::JoinPath(deserialize_dump_dir, "*after_optimizations.txt"),
+        &matches));
+    EXPECT_THAT(matches, ::testing::SizeIs(1));
+    deserialize_dump_name = std::move(matches.front());
+    TF_ASSERT_OK(tsl::ReadFileToString(env, deserialize_dump_name,
+                                       &deserialize_dump_contents));
+  }
+  EXPECT_EQ(compile_dump_contents, deserialize_dump_contents);
 }
 
 TEST(PjRtCpuClientTest, AsyncTransferRawData) {
@@ -922,6 +988,41 @@ TEST(PjRtCpuClientTest, SubByteLiteralToBufferRoundtrip) {
   TF_ASSERT_OK(buffer->ToLiteralSync(&literal_result));
 
   EXPECT_TRUE(LiteralTestUtil::Equal(literal, literal_result));
+}
+
+TEST(PjRtCpuClientTest, CustomAllocator) {
+  alignas(64) std::array<float, 4> data;
+
+  class CustomMemory : public CpuMemory {
+   public:
+    CustomMemory(void* base, size_t size_bytes)
+        : base_(base), size_bytes_(size_bytes) {}
+
+    void* base() const final { return base_; }
+    size_t size_bytes() const final { return size_bytes_; }
+
+   private:
+    void* base_;
+    size_t size_bytes_;
+  };
+
+  CpuClientOptions options;
+  options.allocator = [&](size_t size_bytes, size_t alignment) {
+    return std::make_unique<CustomMemory>(&data, sizeof(data));
+  };
+
+  TF_ASSERT_OK_AND_ASSIGN(auto client, GetPjRtCpuClient(options));
+  xla::Shape shape = xla::ShapeUtil::MakeShape(F32, {4});
+  TF_ASSERT_OK_AND_ASSIGN(auto literal, xla::MakeFakeLiteral(shape));
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto buffer,
+      client->BufferFromHostLiteral(literal, client->memory_spaces()[0]));
+  TF_ASSERT_OK_AND_ASSIGN(auto received_literal, buffer->ToLiteralSync());
+
+  // Check that buffer was constructed in the data array provided by the custom
+  // allocator.
+  EXPECT_THAT(data, ElementsAreArray(literal.data<float>()));
 }
 
 }  // namespace

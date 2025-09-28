@@ -10,6 +10,8 @@ lit_test_suite(
     name = "all_tests",
     srcs = enforce_glob(
         [
+            "acos.mlir",
+            "acosh.mlir",
             "add.mlir",
             "attributes.mlir",
             "call.mlir",
@@ -23,6 +25,7 @@ lit_test_suite(
             "export_bounded_dynamism.mlir",
             "export_entry_computation_layout.mlir",
             "export_large_constants.mlir",
+            "export_tuple_args_parameter_replication.mlir",
             "export_replicas.mlir",
             "frontend_attributes.mlir",
             "function.mlir",
@@ -32,6 +35,7 @@ lit_test_suite(
             "int4.mlir",
             "layouts_and_names.mlir",
             "location_to_op_metadata.mlir",
+            "location_to_original_value.mlir",
             "location_to_stacktrace.mlir",
             "missing_main.mlir",
             "module_config.mlir",

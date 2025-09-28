@@ -28,8 +28,13 @@ limitations under the License.
 #include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/FMF.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/Instruction.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Support/Casting.h"
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/ComplexToStandard/ComplexToStandard.h"
 #include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
@@ -56,10 +61,12 @@ limitations under the License.
 #include "mlir/IR/Visitors.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
+#include "mlir/Support/WalkResult.h"
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
 #include "mlir/Transforms/Passes.h"
+#include "stablehlo/transforms/Passes.h"
 #include "xla/backends/cpu/codegen/emitters/ir/xla_cpu_dialect.h"
 #include "xla/backends/cpu/codegen/emitters/transforms/passes.h"
 #include "xla/backends/cpu/codegen/kernel_api_ir_builder.h"
@@ -73,7 +80,6 @@ limitations under the License.
 #include "xla/codegen/trace_pass_instrumentation.h"
 #include "xla/mlir/tools/mlir_replay/public/compiler_trace.pb.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
-#include "xla/mlir_hlo/mhlo/transforms/passes.h"
 #include "xla/status_macros.h"
 #include "xla/tsl/framework/mlir/status_scoped_diagnostic_handler.h"
 #include "xla/tsl/platform/errors.h"
@@ -129,10 +135,9 @@ static void AddLoopTransformationPasses(mlir::OpPassManager& pm,
   pm.addPass(mlir::createCSEPass());
   pm.addNestedPass<mlir::func::FuncOp>(
       emitters::CreateLowerXlaLoopsToScfPass());
-  pm.addPass(mlir::mhlo::createConvertToSignlessPass());
+  pm.addPass(mlir::stablehlo::createStablehloConvertToSignlessPass());
   pm.addPass(emitters::CreatePropagateSliceIndicesPass());
   pm.addPass(emitters::CreateFlattenTensorsPass());
-  pm.addPass(emitters::createPropagateAliasScopesPass());
   // We need LICM before unswitching loops, because our loop unswitcher only
   // detects for loops with a single if inside them.
   pm.addPass(mlir::createLoopInvariantCodeMotionPass());
@@ -200,6 +205,19 @@ static int GetLlvmFunctionDefCount(mlir::ModuleOp m) {
   });
   return count;
 };
+
+static void ApplyFastMathFlags(llvm::Module& llvm_module,
+                               const llvm::FastMathFlags& fast_math_flags) {
+  for (llvm::Function& function : llvm_module) {
+    for (llvm::BasicBlock& basic_block : function) {
+      for (llvm::Instruction& instruction : basic_block) {
+        if (llvm::isa<llvm::FPMathOperator>(instruction)) {
+          instruction.setFastMathFlags(fast_math_flags);
+        }
+      }
+    }
+  }
+}
 
 FusionCompiler::FusionCompiler(mlir::MLIRContext* context, Options options,
                                CompilationHooks hooks)
@@ -298,6 +316,10 @@ absl::StatusOr<std::unique_ptr<llvm::Module>> FusionCompiler::Compile(
       << "Failed to translate module to LLVM IR.";
 
   llvm_module->setDataLayout(llvm_module->getDataLayout());
+
+  if (options_.fast_math_flags.any()) {
+    ApplyFastMathFlags(*llvm_module, options_.fast_math_flags);
+  }
 
   return llvm_module;
 }

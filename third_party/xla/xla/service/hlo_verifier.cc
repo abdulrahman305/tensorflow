@@ -44,7 +44,7 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "xla/comparison_util.h"
-#include "xla/hlo/ir/dfs_hlo_visitor_with_default.h"
+#include "xla/hlo/ir/collective_op_group_mode.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_input_output_alias_config.h"
@@ -1920,6 +1920,7 @@ absl::Status CheckMixedPrecisionOperands(const HloInstruction* instruction) {
     case HloOpcode::kConvolution:
     case HloOpcode::kDot:
     case HloOpcode::kRaggedDot:
+    case HloOpcode::kScaledDot:
     case HloOpcode::kAllReduce:
     case HloOpcode::kAllReduceStart:
     case HloOpcode::kAllReduceDone:
@@ -2753,37 +2754,6 @@ bool IsOtherCollective(const HloInstruction* instruction) {
   }
 }
 
-absl::Status VerifyNoCollectiveDeadlocksRecursive(
-    const HloComputation* computation, DfaState& current_state,
-    absl::flat_hash_set<const HloSendInstruction*>& send_instructions,
-    absl::flat_hash_set<const HloRecvInstruction*>& recv_instructions) {
-  for (const HloInstruction* instruction : computation->instructions()) {
-    if (instruction->called_computations().empty()) {
-      if (instruction->opcode() == HloOpcode::kSend) {
-        TF_RETURN_IF_ERROR(CheckDeadlocksForSend(
-            DynCast<HloSendInstruction>(instruction), current_state,
-            send_instructions, recv_instructions));
-      } else if (instruction->opcode() == HloOpcode::kRecv) {
-        TF_RETURN_IF_ERROR(CheckDeadlocksForRecv(
-            DynCast<HloRecvInstruction>(instruction), current_state,
-            send_instructions, recv_instructions));
-      } else if (IsOtherCollective(instruction)) {
-        TF_RETURN_IF_ERROR(CheckDeadlocksForOtherCollectives(
-            instruction, current_state, send_instructions, recv_instructions));
-      } else {
-        continue;
-      }
-    } else {
-      for (const HloComputation* computation :
-           instruction->called_computations()) {
-        TF_RETURN_IF_ERROR(VerifyNoCollectiveDeadlocksRecursive(
-            computation, current_state, send_instructions, recv_instructions));
-      }
-    }
-  }
-  return absl::OkStatus();
-}
-
 absl::Status CheckPendingSendRecvDeadlocks(
     absl::flat_hash_set<const HloSendInstruction*>& send_instructions,
     absl::flat_hash_set<const HloRecvInstruction*>& recv_instructions) {
@@ -2817,6 +2787,61 @@ absl::Status CheckPendingSendRecvDeadlocks(
   if (!last_checked_instructions.empty()) {
     return Internal("Deadlock detected. Last checked instructions: %s",
                     last_checked_instructions);
+  }
+  return absl::OkStatus();
+}
+
+absl::Status VerifyNoCollectiveDeadlocksRecursive(
+    const HloComputation* computation, DfaState& current_state,
+    absl::flat_hash_set<const HloSendInstruction*>& send_instructions,
+    absl::flat_hash_set<const HloRecvInstruction*>& recv_instructions) {
+  for (const HloInstruction* instruction : computation->instructions()) {
+    if (instruction->called_computations().empty()) {
+      if (instruction->opcode() == HloOpcode::kSend) {
+        TF_RETURN_IF_ERROR(CheckDeadlocksForSend(
+            DynCast<HloSendInstruction>(instruction), current_state,
+            send_instructions, recv_instructions));
+      } else if (instruction->opcode() == HloOpcode::kRecv) {
+        TF_RETURN_IF_ERROR(CheckDeadlocksForRecv(
+            DynCast<HloRecvInstruction>(instruction), current_state,
+            send_instructions, recv_instructions));
+      } else if (IsOtherCollective(instruction)) {
+        TF_RETURN_IF_ERROR(CheckDeadlocksForOtherCollectives(
+            instruction, current_state, send_instructions, recv_instructions));
+      } else {
+        continue;
+      }
+    } else {
+      for (const HloComputation* computation :
+           instruction->called_computations()) {
+        // special handling for grouped multi-op async collectives
+        if (computation->IsAsyncComputation() &&
+            !computation->CanExpandIntoSingleInstruction()) {
+          // Reset the state machine for async-grouped send and recv. This block
+          // essentially calls the main VerifyNoCollectiveDeadlocks function
+          // on the async computation without recursion. This is necessary for
+          // async-wrapped send and recv instructions that are sandwiched in
+          // between partially pipelined collectives.
+          DfaState async_comp_current_state = DfaState::kNoExpectation;
+          absl::flat_hash_set<const HloSendInstruction*>
+              async_comp_send_instructions;
+          absl::flat_hash_set<const HloRecvInstruction*>
+              async_comp_recv_instructions;
+          TF_RETURN_IF_ERROR(VerifyNoCollectiveDeadlocksRecursive(
+              computation, async_comp_current_state,
+              async_comp_send_instructions, async_comp_recv_instructions));
+          if (current_state != DfaState::kNoExpectation) {
+            TF_RETURN_IF_ERROR(CheckPendingSendRecvDeadlocks(
+                async_comp_send_instructions, async_comp_recv_instructions));
+          }
+        } else {
+          // normal case
+          TF_RETURN_IF_ERROR(VerifyNoCollectiveDeadlocksRecursive(
+              computation, current_state, send_instructions,
+              recv_instructions));
+        }
+      }
+    }
   }
   return absl::OkStatus();
 }
@@ -2871,20 +2896,64 @@ absl::Status VerifyLayoutConstrainedAllReduce(const HloModule& module) {
   return absl::OkStatus();
 }
 
-// Verifies that leaf nodes in an original value contain values.
+namespace {
+std::string FormatShapeIndexValidationError(
+    absl::string_view instruction_name,
+    const absl::flat_hash_set<ShapeIndex>& shape_leaf_indices,
+    const absl::flat_hash_set<ShapeIndex>& ov_leaf_indices) {
+  std::vector<ShapeIndex> shape_only;
+  std::vector<ShapeIndex> ov_only;
+  for (const auto& idx : shape_leaf_indices) {
+    if (!ov_leaf_indices.contains(idx)) {
+      shape_only.push_back(idx);
+    }
+  }
+  for (const auto& idx : ov_leaf_indices) {
+    if (!shape_leaf_indices.contains(idx)) {
+      ov_only.push_back(idx);
+    }
+  }
+  std::sort(shape_only.begin(), shape_only.end());
+  std::sort(ov_only.begin(), ov_only.end());
+  auto shape_index_formatter = [](std::string* out, const ShapeIndex& i) {
+    absl::StrAppend(out, i.ToString());
+  };
+  return absl::StrFormat(
+      "Mismatched tuple structure in original_value for "
+      "instruction %s. Leaf indices in shape and original_value "
+      "do not match.\nIn shape only: {%s}\nIn original_value only: {%s}",
+      instruction_name, absl::StrJoin(shape_only, ", ", shape_index_formatter),
+      absl::StrJoin(ov_only, ", ", shape_index_formatter));
+}
+
+}  // namespace
+
+// Verifies that the original value has the same tuple structure as the
+// instruction shape.
 absl::Status VerifyOriginalValue(const HloModule& module) {
   for (const HloComputation* computation : module.computations()) {
     for (const HloInstruction* instruction : computation->instructions()) {
-      if (auto original_value = instruction->original_value()) {
-        // An original value is expected to have intermediate nodes that are
-        // always nullopt and leaves with actual values.
-        for (const auto& pair : original_value->original_arrays()) {
-          if (!pair.second.has_value()) {
-            return Internal(
-                "Leaf nodes in an original value is expected to contain values."
-                " Instruction: %s.",
-                instruction->ToString());
-          }
+      if (instruction->original_value()) {
+        const auto& shape = instruction->shape();
+        const auto& original_value = instruction->original_value();
+        if (original_value->is_synthetic_call()) {
+          continue;
+        }
+        absl::flat_hash_set<ShapeIndex> shape_leaf_indices;
+        ShapeUtil::ForEachLeafShape(
+            shape, [&](const Shape& /*subshape*/, const ShapeIndex& index) {
+              shape_leaf_indices.insert(index);
+            });
+
+        absl::flat_hash_set<ShapeIndex> ov_leaf_indices;
+        for (const auto& [index, value] : original_value->original_arrays()) {
+          ov_leaf_indices.insert(index);
+        }
+
+        if (shape_leaf_indices != ov_leaf_indices) {
+          return Internal("%s", FormatShapeIndexValidationError(
+                                    instruction->name(), shape_leaf_indices,
+                                    ov_leaf_indices));
         }
       }
     }
@@ -3140,359 +3209,6 @@ absl::Status CheckElementwiseInstruction(HloInstruction* instruction) {
   }
   return absl::OkStatus();
 }
-
-// Visitor which verifies various fields on the HLO instruction. This class does
-// not check result shape as that is checked in the ShapeVerifier.
-class InstructionVerifier : public DfsHloVisitorWithDefault {
- public:
-  InstructionVerifier(const HloModule* module, const HloVerifierOpts& opts)
-      : opts_(opts) {
-    // TODO(b/258285553): Eliminate this check when all paths that enable SPMD
-    // partitioning also set the num_partitions correctly.
-    const int64_t num_partitions = module->config().num_partitions();
-    if (module->config().use_spmd_partitioning() &&
-        opts.verify_sharding_device_numbers && num_partitions > 1) {
-      num_devices_ = module->config().num_partitions();
-    }
-  }
-
-  absl::Status DefaultAction(HloInstruction*) override {
-    return absl::OkStatus();
-  }
-
-  absl::Status HandleFusion(HloInstruction* fusion) override {
-    TF_RETURN_IF_ERROR(CheckCallableInstructionThreadName(fusion));
-    return CheckFusionInstruction(fusion);
-  }
-
-  absl::Status HandleBroadcast(HloInstruction* broadcast) override {
-    // If you see this failure then someone has confused the difference
-    // between the HLO broadcast op, and the UserComputation broadcast
-    // op. See https://groups.google.com/forum/#!topic/xla-dev/9LqijHmTt_I
-    // or ComputationLowerer::Visit()
-    TF_RET_CHECK(broadcast->dimensions().size() ==
-                 broadcast->operand(0)->shape().dimensions().size())
-        << "Broadcast HLO (" << broadcast->ToShortString()
-        << ") has invalid number of dimensions: "
-        << broadcast->dimensions().size()
-        << " != " << broadcast->operand(0)->shape().dimensions().size();
-    if (opts_.verify_broadcast_dimensions_order) {
-      TF_RET_CHECK(absl::c_is_sorted(broadcast->dimensions()))
-          << "Broadcast dimensions should be ordered, got: "
-          << broadcast->ToString();
-    }
-    return absl::OkStatus();
-  }
-
-  absl::Status HandleBitcastConvert(HloInstruction* c) override {
-    // Shape verifier will check all we need.
-    return absl::OkStatus();
-  }
-
-  absl::Status HandleWhile(HloInstruction* xla_while) override {
-    auto* while_cond = xla_while->while_condition();
-    auto* while_body = xla_while->while_body();
-    if (while_cond->num_parameters() != 1) {
-      return FailedPrecondition(
-          "While condition must have exactly 1 parameter; had %d : %s",
-          while_cond->num_parameters(), while_cond->ToString());
-    }
-    if (while_body->num_parameters() != 1) {
-      return FailedPrecondition(
-          "While body must have exactly 1 parameter; had %d : %s",
-          while_body->num_parameters(), while_body->ToString());
-    }
-    if (xla_while->operand_count() != 1) {
-      return FailedPrecondition(
-          "While loop must have exactly one operand; had %d : %s",
-          xla_while->operand_count(), xla_while->ToString());
-    }
-    // Allow kWhile to contain computations on separate thread.
-    TF_RETURN_IF_ERROR(CheckCallableInstructionThreadName(xla_while));
-
-    // Verify consistency of sharding of while instructions and related
-    // instructions (parameters, root) in its called computations.
-    TF_RETURN_IF_ERROR(VerifyConsistentSharding(
-        xla_while, {xla_while, xla_while->while_body()->root_instruction(),
-                    xla_while->while_body()->parameter_instruction(0),
-                    xla_while->while_condition()->parameter_instruction(0)}));
-
-    return absl::OkStatus();
-  }
-
-  absl::Status HandleCall(HloInstruction* call) override {
-    if (opts_.verify_call_nested_computation_thread_name) {
-      return CheckCallableInstructionThreadName(call);
-    }
-
-    // As opposed to other callable instructions, nothing respects input/output
-    // aliasing for call instructions, so make sure it's not set.
-    const HloCallableInstruction* callable =
-        DynCast<const HloCallableInstruction>(call);
-    TF_RET_CHECK(callable != nullptr);
-    TF_RET_CHECK(callable->output_to_operand_aliasing().empty())
-        << "Call instruction " << call->ToString()
-        << " may not have an output-to-operand aliasing set.";
-    return absl::OkStatus();
-  }
-
-  absl::Status HandleConditional(HloInstruction* conditional) override {
-    const std::vector<HloComputation*> branch_computations =
-        conditional->branch_computations();
-    std::vector<const HloInstruction*> sharding_check_instructions;
-    sharding_check_instructions.reserve(branch_computations.size() + 1);
-    sharding_check_instructions.push_back(conditional);
-
-    for (const HloComputation* branch_computation : branch_computations) {
-      if (branch_computation->num_parameters() != 1) {
-        return FailedPrecondition(
-            "Branch computation %s of %s must have 1 parameter instead of %d",
-            branch_computation->name(), conditional->ToString(),
-            branch_computation->num_parameters());
-      }
-      sharding_check_instructions.push_back(
-          branch_computation->root_instruction());
-    }
-    // Allow kConditional to contain computations on separate thread.
-    TF_RETURN_IF_ERROR(CheckCallableInstructionThreadName(conditional));
-
-    // Verify consistency of sharding of conditional instructions and roots of
-    // its branches.
-    TF_RETURN_IF_ERROR(
-        VerifyConsistentSharding(conditional, sharding_check_instructions));
-
-    return absl::OkStatus();
-  }
-
-  absl::Status HandleElementwiseUnary(HloInstruction* instruction) override {
-    TF_RETURN_IF_ERROR(CheckUnaryOpWithResultAccuracy(instruction));
-    return CheckElementwiseInstruction(instruction);
-  }
-
-  absl::Status HandleElementwiseBinary(HloInstruction* instruction) override {
-    return CheckElementwiseInstruction(instruction);
-  }
-
-  absl::Status HandleGetTupleElement(HloInstruction* gte) override {
-    TF_RET_CHECK(gte->operand(0)->shape().IsTuple());
-    return absl::OkStatus();
-  }
-
-  absl::Status HandleTranspose(HloInstruction* transpose) override {
-    const Shape& shape = transpose->shape();
-    const HloInstruction* operand = transpose->operand(0);
-    TF_RET_CHECK(shape.dimensions().size() == transpose->dimensions().size());
-    TF_RET_CHECK(shape.dimensions().size() ==
-                 transpose->operand(0)->shape().dimensions().size());
-    TF_RET_CHECK(std::equal(
-        shape.dimensions().begin(), shape.dimensions().end(),
-        Permute(operand->shape().dimensions(), transpose->dimensions())
-            .begin()))
-        << "shape: " << shape << ", operand->shape(): " << shape
-        << ", dimensions: {" << absl::StrJoin(transpose->dimensions(), ", ")
-        << "}";
-    return absl::OkStatus();
-  }
-
-  absl::Status HandleAllReduce(HloInstruction* crs) override {
-    if (crs->channel_id().has_value()) {
-      TF_RET_CHECK(crs->channel_id().value() > 0)
-          << "All reduce channel id must be greater than 0 for "
-          << crs->ToShortString();
-    }
-    return absl::OkStatus();
-  }
-
-  absl::Status HandleReshape(HloInstruction* hlo) override {
-    if (opts_.verify_reshape_is_bitcast && !hlo->IsFused()) {
-      TF_RET_CHECK(
-          ShapeUtil::ReshapeIsBitcast(hlo->operand(0)->shape(), hlo->shape()))
-          << "Reshape should be a physical bitcast, got: " << hlo->ToString();
-    }
-    return absl::OkStatus();
-  }
-
-  absl::Status HandleCustomCall(HloInstruction* hlo) override {
-    if (opts_.verify_call_nested_computation_thread_name) {
-      // Allow kCustomCall to contain computations on separate thread.
-      return CheckCallableInstructionThreadName(hlo);
-    }
-    return absl::OkStatus();
-  }
-
-  absl::Status HandleScatter(HloInstruction* scatter) override {
-    int64_t rank = scatter->operand(0)->shape().dimensions().size();
-    for (int64_t operand_dim :
-         scatter->scatter_dimension_numbers().scatter_dims_to_operand_dims()) {
-      if (operand_dim > rank) {
-        return absl::OutOfRangeError(absl::StrCat(
-            "The provided scatter_dims_to_operand_dim was out of range.",
-            " (operand_dim: ", operand_dim, ", rank: ", rank, ")"));
-      }
-    }
-    return absl::OkStatus();
-  }
-
-  absl::Status Preprocess(HloInstruction* instruction) override {
-    auto [it, inserted] =
-        instructions_by_name_.emplace(instruction->name(), instruction);
-    TF_RET_CHECK(inserted) << "HLO has name that is not unique within module:\n"
-                           << instruction->ToString() << " in computation: "
-                           << instruction->parent()->name()
-                           << "\nPrevious HLO with same name:\n"
-                           << it->second->ToString() << " in computation: "
-                           << it->second->parent()->name();
-
-    if (instruction->has_sharding()) {
-      absl::Status status =
-          instruction->sharding().Validate(instruction->shape(), num_devices_);
-      if (!status.ok()) {
-        return absl::Status(
-            status.code(),
-            absl::StrCat("Invalid sharding for instruction: ",
-                         instruction->ToString(), ": ", status.message()));
-      }
-    }
-
-    if (opts_.verify_call_nested_computation_thread_name &&
-        instruction->has_to_apply() &&
-        xla::GetInstructionCallContext(instruction->opcode()) !=
-            xla::CallContext::kEmbedded &&
-        instruction->to_apply()->execution_thread() !=
-            instruction->parent()->execution_thread()) {
-      return Internal(
-          "Non-Embedded context callable instruction %s to_apply computation "
-          "execution thread does not match (%s vs %s)",
-          instruction->name(), instruction->to_apply()->execution_thread(),
-          instruction->parent()->execution_thread());
-    }
-
-    return absl::OkStatus();
-  }
-
-  absl::Status Postprocess(HloInstruction* instruction) override {
-    if (opts_.verify_no_host_memory_space) {
-      TF_RETURN_IF_ERROR(VerifyNoHostMemorySpace(instruction));
-    }
-    if (!opts_.InstructionCanChangeLayout(instruction) &&
-        instruction->shape().IsArray() && instruction->shape().has_layout()) {
-      const Shape& result_shape = instruction->shape();
-      const Layout& result_layout = result_shape.layout();
-      for (HloInstruction* operand : instruction->operands()) {
-        const Shape& operand_shape = operand->shape();
-        if (operand_shape.IsArray() &&
-            operand_shape.dimensions().size() ==
-                result_shape.dimensions().size() &&
-            operand_shape.has_layout()) {
-          const Layout& operand_layout = operand_shape.layout();
-          Layout::Equal equal_predicate =
-              Layout::Equal().IgnoreTiles().IgnoreMemorySpace();
-          if (instruction->opcode() == HloOpcode::kConvert ||
-              instruction->opcode() == HloOpcode::kCompare ||
-              instruction->opcode() == HloOpcode::kIsFinite ||
-              (instruction->opcode() == HloOpcode::kSelect &&
-               operand_shape.element_type() == PRED) ||
-              instruction->opcode() == HloOpcode::kScatter) {
-            // Some instructions can change element_size_in_bits
-            // Select instructions ignore element_size_in_bits for predicate
-            equal_predicate.IgnoreElementSize();
-          } else if (instruction->opcode() == HloOpcode::kDynamicSlice ||
-                     instruction->opcode() == HloOpcode::kDynamicUpdateSlice ||
-                     instruction->opcode() == HloOpcode::kCopy) {
-            TF_RETURN_IF_ERROR(HostOffloadInstructionCanChangeMemorySpace(
-                instruction, operand_layout.memory_space(),
-                result_layout.memory_space()));
-            equal_predicate.IgnoreMemorySpace();
-          }
-          TF_RET_CHECK(equal_predicate(result_layout, operand_layout))
-              << "Instruction shouldn't change layouts "
-              << instruction->ToString() << " From " << result_shape << " To "
-              << operand_shape;
-        }
-      }
-    }
-    return absl::OkStatus();
-  }
-
- private:
-  static absl::Status VerifyConsistentSharding(
-      const HloInstruction* parent,
-      absl::Span<const HloInstruction* const> instructions) {
-    const HloInstruction* common_sharding_inst = nullptr;
-    for (const HloInstruction* check_inst : instructions) {
-      if (!check_inst->has_sharding()) {
-        continue;
-      }
-      if (!common_sharding_inst) {
-        common_sharding_inst = check_inst;
-        continue;
-      }
-      TF_RET_CHECK(check_inst->sharding() == common_sharding_inst->sharding())
-          << "Inconsistent " << parent->opcode()
-          << " sharding among instructions: \n"
-          << common_sharding_inst->ToString() << "\n"
-          << check_inst->ToString();
-    }
-    return absl::OkStatus();
-  }
-
-  // Verifies whether a given `instruction` is permitted to change the layout
-  // memory space from `operand_memory_space` to `result_memory_space`.
-  // Returns absl::OkStatus() if the instruction's layout changes are valid;
-  // otherwise, returns an appropriate error status.
-  static absl::Status HostOffloadInstructionCanChangeMemorySpace(
-      const HloInstruction* instruction, const int64_t operand_memory_space,
-      const int64_t result_memory_space) {
-    TF_RET_CHECK(!(operand_memory_space == Layout::kGenericFastMemorySpace &&
-                   result_memory_space != Layout::kGenericFastMemorySpace) ||
-                 (operand_memory_space != Layout::kGenericFastMemorySpace &&
-                  result_memory_space == Layout::kGenericFastMemorySpace))
-        << "Instruction shouldn't change layout memory space between generic "
-           "fast memory space and others for instruction: "
-        << instruction->ToString();
-
-    if (instruction->opcode() == HloOpcode::kDynamicSlice) {
-      TF_RET_CHECK(!(operand_memory_space == Layout::kDefaultMemorySpace &&
-                     result_memory_space == Layout::kHostMemorySpace))
-          << "DynamicSlice instruction shouldn't change layout memory "
-          << "space from device to host: " << instruction->ToString();
-    } else if (instruction->opcode() == HloOpcode::kDynamicUpdateSlice) {
-      TF_RET_CHECK(!(operand_memory_space == Layout::kHostMemorySpace &&
-                     result_memory_space == Layout::kDefaultMemorySpace))
-          << "DynamicUpdateSlice instruction shouldn't change layout "
-          << "memory space from host to device: " << instruction->ToString();
-    } else if (instruction->opcode() != HloOpcode::kCopy) {
-      return absl::InvalidArgumentError(
-          absl::StrCat("Instruction shouldn't change layout memory space: ",
-                       instruction->ToString()));
-    }
-    return absl::OkStatus();
-  }
-
-  // Returns an error status if an instruction or any operand contains host
-  // memory space.
-  static absl::Status VerifyNoHostMemorySpace(
-      const HloInstruction* instruction) {
-    return ShapeUtil::ForEachSubshapeWithStatus(
-        instruction->shape(),
-        [&](const Shape& subshape, const ShapeIndex& index) -> absl::Status {
-          if (subshape.has_layout()) {
-            const Layout& result_layout = subshape.layout();
-            if (result_layout.memory_space() == Layout::kHostMemorySpace) {
-              return absl::InternalError(absl::StrCat(
-                  "Instruction shouldn't have the layout of host memory "
-                  "space: ",
-                  instruction->ToString()));
-            }
-          }
-          return absl::OkStatus();
-        });
-  }
-
-  absl::flat_hash_map<std::string, const HloInstruction*> instructions_by_name_;
-  const HloVerifierOpts& opts_;
-  std::optional<int64_t> num_devices_;
-};
 
 bool IsCollectivesGroupComputation(HloComputation* computation) {
   auto maybe_caller = computation->GetUniqueCaller(HloOpcode::kAsyncStart);
@@ -3828,6 +3544,334 @@ absl::Status VerifyBuffers(const HloModule& module, bool layout_sentitive) {
 }
 
 }  // namespace
+
+absl::Status InstructionVerifier::DefaultAction(HloInstruction*) {
+  return absl::OkStatus();
+}
+
+absl::Status InstructionVerifier::HandleFusion(HloInstruction* fusion) {
+  TF_RETURN_IF_ERROR(CheckCallableInstructionThreadName(fusion));
+  return CheckFusionInstruction(fusion);
+}
+
+absl::Status InstructionVerifier::HandleBroadcast(HloInstruction* broadcast) {
+  // If you see this failure then someone has confused the difference
+  // between the HLO broadcast op, and the UserComputation broadcast
+  // op. See https://groups.google.com/forum/#!topic/xla-dev/9LqijHmTt_I
+  // or ComputationLowerer::Visit()
+  TF_RET_CHECK(broadcast->dimensions().size() ==
+               broadcast->operand(0)->shape().dimensions().size())
+      << "Broadcast HLO (" << broadcast->ToShortString()
+      << ") has invalid number of dimensions: "
+      << broadcast->dimensions().size()
+      << " != " << broadcast->operand(0)->shape().dimensions().size();
+  if (opts_.verify_broadcast_dimensions_order) {
+    TF_RET_CHECK(absl::c_is_sorted(broadcast->dimensions()))
+        << "Broadcast dimensions should be ordered, got: "
+        << broadcast->ToString();
+  }
+  return absl::OkStatus();
+}
+
+absl::Status InstructionVerifier::HandleBitcastConvert(HloInstruction* c) {
+  // Shape verifier will check all we need.
+  return absl::OkStatus();
+}
+
+absl::Status InstructionVerifier::HandleWhile(HloInstruction* xla_while) {
+  auto* while_cond = xla_while->while_condition();
+  auto* while_body = xla_while->while_body();
+  if (while_cond->num_parameters() != 1) {
+    return FailedPrecondition(
+        "While condition must have exactly 1 parameter; had %d : %s",
+        while_cond->num_parameters(), while_cond->ToString());
+  }
+  if (while_body->num_parameters() != 1) {
+    return FailedPrecondition(
+        "While body must have exactly 1 parameter; had %d : %s",
+        while_body->num_parameters(), while_body->ToString());
+  }
+  if (xla_while->operand_count() != 1) {
+    return FailedPrecondition(
+        "While loop must have exactly one operand; had %d : %s",
+        xla_while->operand_count(), xla_while->ToString());
+  }
+  // Allow kWhile to contain computations on separate thread.
+  TF_RETURN_IF_ERROR(CheckCallableInstructionThreadName(xla_while));
+
+  // Verify consistency of sharding of while instructions and related
+  // instructions (parameters, root) in its called computations.
+  TF_RETURN_IF_ERROR(VerifyConsistentSharding(
+      xla_while, {xla_while, xla_while->while_body()->root_instruction(),
+                  xla_while->while_body()->parameter_instruction(0),
+                  xla_while->while_condition()->parameter_instruction(0)}));
+
+  return absl::OkStatus();
+}
+
+absl::Status InstructionVerifier::HandleCall(HloInstruction* call) {
+  if (opts_.verify_call_nested_computation_thread_name) {
+    return CheckCallableInstructionThreadName(call);
+  }
+
+  // As opposed to other callable instructions, nothing respects input/output
+  // aliasing for call instructions, so make sure it's not set.
+  const HloCallableInstruction* callable =
+      DynCast<const HloCallableInstruction>(call);
+  TF_RET_CHECK(callable != nullptr);
+  TF_RET_CHECK(callable->output_to_operand_aliasing().empty())
+      << "Call instruction " << call->ToString()
+      << " may not have an output-to-operand aliasing set.";
+  return absl::OkStatus();
+}
+
+absl::Status InstructionVerifier::HandleConditional(
+    HloInstruction* conditional) {
+  const std::vector<HloComputation*> branch_computations =
+      conditional->branch_computations();
+  std::vector<const HloInstruction*> sharding_check_instructions;
+  sharding_check_instructions.reserve(branch_computations.size() + 1);
+  sharding_check_instructions.push_back(conditional);
+
+  for (const HloComputation* branch_computation : branch_computations) {
+    if (branch_computation->num_parameters() != 1) {
+      return FailedPrecondition(
+          "Branch computation %s of %s must have 1 parameter instead of %d",
+          branch_computation->name(), conditional->ToString(),
+          branch_computation->num_parameters());
+    }
+    sharding_check_instructions.push_back(
+        branch_computation->root_instruction());
+  }
+  // Allow kConditional to contain computations on separate thread.
+  TF_RETURN_IF_ERROR(CheckCallableInstructionThreadName(conditional));
+
+  // Verify consistency of sharding of conditional instructions and roots of
+  // its branches.
+  TF_RETURN_IF_ERROR(
+      VerifyConsistentSharding(conditional, sharding_check_instructions));
+
+  return absl::OkStatus();
+}
+
+absl::Status InstructionVerifier::HandleElementwiseUnary(
+    HloInstruction* instruction) {
+  TF_RETURN_IF_ERROR(CheckUnaryOpWithResultAccuracy(instruction));
+  return CheckElementwiseInstruction(instruction);
+}
+
+absl::Status InstructionVerifier::HandleElementwiseBinary(
+    HloInstruction* instruction) {
+  return CheckElementwiseInstruction(instruction);
+}
+
+absl::Status InstructionVerifier::HandleGetTupleElement(HloInstruction* gte) {
+  TF_RET_CHECK(gte->operand(0)->shape().IsTuple());
+  return absl::OkStatus();
+}
+
+absl::Status InstructionVerifier::HandleTranspose(HloInstruction* transpose) {
+  const Shape& shape = transpose->shape();
+  const HloInstruction* operand = transpose->operand(0);
+  TF_RET_CHECK(shape.dimensions().size() == transpose->dimensions().size());
+  TF_RET_CHECK(shape.dimensions().size() ==
+               transpose->operand(0)->shape().dimensions().size());
+  TF_RET_CHECK(std::equal(
+      shape.dimensions().begin(), shape.dimensions().end(),
+      Permute(operand->shape().dimensions(), transpose->dimensions()).begin()))
+      << "shape: " << shape << ", operand->shape(): " << shape
+      << ", dimensions: {" << absl::StrJoin(transpose->dimensions(), ", ")
+      << "}";
+  return absl::OkStatus();
+}
+
+absl::Status InstructionVerifier::HandleAllReduce(HloInstruction* crs) {
+  if (crs->channel_id().has_value()) {
+    TF_RET_CHECK(crs->channel_id().value() > 0)
+        << "All reduce channel id must be greater than 0 for "
+        << crs->ToShortString();
+  }
+  return absl::OkStatus();
+}
+
+absl::Status InstructionVerifier::HandleReshape(HloInstruction* hlo) {
+  if (opts_.verify_reshape_is_bitcast && !hlo->IsFused()) {
+    TF_RET_CHECK(
+        ShapeUtil::ReshapeIsBitcast(hlo->operand(0)->shape(), hlo->shape()))
+        << "Reshape should be a physical bitcast, got: " << hlo->ToString();
+  }
+  return absl::OkStatus();
+}
+
+absl::Status InstructionVerifier::HandleCustomCall(HloInstruction* hlo) {
+  if (opts_.verify_call_nested_computation_thread_name) {
+    // Allow kCustomCall to contain computations on separate thread.
+    return CheckCallableInstructionThreadName(hlo);
+  }
+  return absl::OkStatus();
+}
+
+absl::Status InstructionVerifier::HandleScatter(HloInstruction* scatter) {
+  int64_t rank = scatter->operand(0)->shape().dimensions().size();
+  for (int64_t operand_dim :
+       scatter->scatter_dimension_numbers().scatter_dims_to_operand_dims()) {
+    if (operand_dim > rank) {
+      return absl::OutOfRangeError(absl::StrCat(
+          "The provided scatter_dims_to_operand_dim was out of range.",
+          " (operand_dim: ", operand_dim, ", rank: ", rank, ")"));
+    }
+  }
+  return absl::OkStatus();
+}
+
+absl::Status InstructionVerifier::Preprocess(HloInstruction* instruction) {
+  auto [it, inserted] =
+      instructions_by_name_.emplace(instruction->name(), instruction);
+  TF_RET_CHECK(inserted) << "HLO has name that is not unique within module:\n"
+                         << instruction->ToString()
+                         << " in computation: " << instruction->parent()->name()
+                         << "\nPrevious HLO with same name:\n"
+                         << it->second->ToString()
+                         << " in computation: " << it->second->parent()->name();
+
+  if (instruction->has_sharding()) {
+    absl::Status status =
+        instruction->sharding().Validate(instruction->shape(), num_devices_);
+    if (!status.ok()) {
+      return absl::Status(
+          status.code(),
+          absl::StrCat("Invalid sharding for instruction: ",
+                       instruction->ToString(), ": ", status.message()));
+    }
+  }
+
+  if (opts_.verify_call_nested_computation_thread_name &&
+      instruction->has_to_apply() &&
+      xla::GetInstructionCallContext(instruction->opcode()) !=
+          xla::CallContext::kEmbedded &&
+      instruction->to_apply()->execution_thread() !=
+          instruction->parent()->execution_thread()) {
+    return Internal(
+        "Non-Embedded context callable instruction %s to_apply computation "
+        "execution thread does not match (%s vs %s)",
+        instruction->name(), instruction->to_apply()->execution_thread(),
+        instruction->parent()->execution_thread());
+  }
+
+  return absl::OkStatus();
+}
+
+absl::Status InstructionVerifier::Postprocess(HloInstruction* instruction) {
+  if (opts_.verify_no_host_memory_space) {
+    TF_RETURN_IF_ERROR(VerifyNoHostMemorySpace(instruction));
+  }
+  if (!opts_.InstructionCanChangeLayout(instruction) &&
+      instruction->shape().IsArray() && instruction->shape().has_layout()) {
+    const Shape& result_shape = instruction->shape();
+    const Layout& result_layout = result_shape.layout();
+    for (HloInstruction* operand : instruction->operands()) {
+      const Shape& operand_shape = operand->shape();
+      if (operand_shape.IsArray() &&
+          operand_shape.dimensions().size() ==
+              result_shape.dimensions().size() &&
+          operand_shape.has_layout()) {
+        const Layout& operand_layout = operand_shape.layout();
+        Layout::Equal equal_predicate =
+            Layout::Equal().IgnoreTiles().IgnoreMemorySpace();
+        if (instruction->opcode() == HloOpcode::kConvert ||
+            instruction->opcode() == HloOpcode::kCompare ||
+            instruction->opcode() == HloOpcode::kIsFinite ||
+            (instruction->opcode() == HloOpcode::kSelect &&
+             operand_shape.element_type() == PRED) ||
+            instruction->opcode() == HloOpcode::kScatter) {
+          // Some instructions can change element_size_in_bits
+          // Select instructions ignore element_size_in_bits for predicate
+          equal_predicate.IgnoreElementSize();
+        } else if (instruction->opcode() == HloOpcode::kDynamicSlice ||
+                   instruction->opcode() == HloOpcode::kDynamicUpdateSlice ||
+                   instruction->opcode() == HloOpcode::kCopy) {
+          TF_RETURN_IF_ERROR(HostOffloadInstructionCanChangeMemorySpace(
+              instruction, operand_layout.memory_space(),
+              result_layout.memory_space()));
+          equal_predicate.IgnoreMemorySpace();
+        }
+        TF_RET_CHECK(equal_predicate(result_layout, operand_layout))
+            << "Instruction shouldn't change layouts "
+            << instruction->ToString() << " From " << result_shape << " To "
+            << operand_shape;
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+
+absl::Status InstructionVerifier::VerifyConsistentSharding(
+    const HloInstruction* parent,
+    absl::Span<const HloInstruction* const> instructions) {
+  const HloInstruction* common_sharding_inst = nullptr;
+  for (const HloInstruction* check_inst : instructions) {
+    if (!check_inst->has_sharding()) {
+      continue;
+    }
+    if (!common_sharding_inst) {
+      common_sharding_inst = check_inst;
+      continue;
+    }
+    TF_RET_CHECK(check_inst->sharding() == common_sharding_inst->sharding())
+        << "Inconsistent " << parent->opcode()
+        << " sharding among instructions: \n"
+        << common_sharding_inst->ToString() << "\n"
+        << check_inst->ToString();
+  }
+  return absl::OkStatus();
+}
+
+absl::Status InstructionVerifier::HostOffloadInstructionCanChangeMemorySpace(
+    const HloInstruction* instruction, const int64_t operand_memory_space,
+    const int64_t result_memory_space) {
+  TF_RET_CHECK(!(operand_memory_space == Layout::kGenericFastMemorySpace &&
+                 result_memory_space != Layout::kGenericFastMemorySpace) ||
+               (operand_memory_space != Layout::kGenericFastMemorySpace &&
+                result_memory_space == Layout::kGenericFastMemorySpace))
+      << "Instruction shouldn't change layout memory space between generic "
+         "fast memory space and others for instruction: "
+      << instruction->ToString();
+
+  if (instruction->opcode() == HloOpcode::kDynamicSlice) {
+    TF_RET_CHECK(!(operand_memory_space == Layout::kDefaultMemorySpace &&
+                   result_memory_space == Layout::kHostMemorySpace))
+        << "DynamicSlice instruction shouldn't change layout memory "
+        << "space from device to host: " << instruction->ToString();
+  } else if (instruction->opcode() == HloOpcode::kDynamicUpdateSlice) {
+    TF_RET_CHECK(!(operand_memory_space == Layout::kHostMemorySpace &&
+                   result_memory_space == Layout::kDefaultMemorySpace))
+        << "DynamicUpdateSlice instruction shouldn't change layout "
+        << "memory space from host to device: " << instruction->ToString();
+  } else if (instruction->opcode() != HloOpcode::kCopy) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("Instruction shouldn't change layout memory space: ",
+                     instruction->ToString()));
+  }
+  return absl::OkStatus();
+}
+
+absl::Status InstructionVerifier::VerifyNoHostMemorySpace(
+    const HloInstruction* instruction) {
+  return ShapeUtil::ForEachSubshapeWithStatus(
+      instruction->shape(),
+      [&](const Shape& subshape, const ShapeIndex& index) -> absl::Status {
+        if (subshape.has_layout()) {
+          const Layout& result_layout = subshape.layout();
+          if (result_layout.memory_space() == Layout::kHostMemorySpace) {
+            return absl::InternalError(absl::StrCat(
+                "Instruction shouldn't have the layout of host memory "
+                "space: ",
+                instruction->ToString()));
+          }
+        }
+        return absl::OkStatus();
+      });
+}
 
 absl::StatusOr<bool> HloVerifier::Run(
     HloModule* module,

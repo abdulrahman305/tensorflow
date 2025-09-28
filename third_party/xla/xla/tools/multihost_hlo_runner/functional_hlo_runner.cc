@@ -40,6 +40,7 @@ limitations under the License.
 #include "absl/types/span.h"
 #include "mlir/Dialect/Func/Extensions/AllExtensions.h"
 #include "xla/client/executable_build_options.h"
+#include "xla/future.h"
 #include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_input_output_alias_config.h"
 #include "xla/hlo/ir/hlo_module.h"
@@ -374,7 +375,7 @@ absl::StatusOr<PerDeviceLiteralVecType> FetchAndLogOutput(
         output_slice.emplace_back(
             ShapeUtil::DeviceShapeToHostShape(buffer->on_device_shape()));
         buffer->ToLiteral(&output_slice.back()).OnReady([&](absl::Status s) {
-          absl::MutexLock lock(&mu);
+          absl::MutexLock lock(mu);
           --num_pending_transfers;
           status.Update(s);
         });
@@ -392,7 +393,7 @@ absl::StatusOr<PerDeviceLiteralVecType> FetchAndLogOutput(
       (module_output_mode == ModuleOutputMode::kReturnDevice0Outputs &&
        device_0_is_local)) {
     auto cond = [&]() { return !status.ok() || num_pending_transfers == 0; };
-    absl::MutexLock lock(&mu);
+    absl::MutexLock lock(mu);
     mu.Await(absl::Condition(&cond));
     TF_RETURN_IF_ERROR(status);
     if (log_output) {
@@ -502,9 +503,6 @@ absl::StatusOr<PerDeviceLiteralVecType> RunInternal(
   if (running_options.multi_slice_config != nullptr) {
     execute_options.multi_slice_config = running_options.multi_slice_config;
   }
-  if (running_options.untuple_result.has_value()) {
-    execute_options.untuple_result = *running_options.untuple_result;
-  }
   TF_ASSIGN_OR_RETURN(std::vector<std::shared_ptr<HloModule>> hlo_modules,
                       executable->GetHloModules());
   CHECK_EQ(hlo_modules.size(), 1);
@@ -545,40 +543,20 @@ absl::StatusOr<PerDeviceLiteralVecType> RunInternal(
   };
 
   std::vector<std::vector<std::unique_ptr<PjRtBuffer>>> output_buffers;
-  auto output_has_tuple_leaf_on_host_memory_space = [&module]() {
-    if (!module.result_shape().IsTuple()) {
-      return false;
-    }
-    return true;
-  };
-  // If any output leaf buffer is a tuple, PJRT requires untuple_result.
-  bool must_untuple_result = output_has_tuple_leaf_on_host_memory_space();
-  bool default_untuple_result =
-      must_untuple_result || execute_options.untuple_result;
-  switch (parameter_type) {
-    case ParameterType::kOneTupleOfArrays:
-      execute_options.arguments_are_tupled = false;
-      execute_options.untuple_result =
-          module.entry_computation()->root_instruction()->shape().IsTuple();
-      break;
-    case ParameterType::kOneListOfArrays:
-      execute_options.arguments_are_tupled = false;
-      execute_options.untuple_result =
-          module.entry_computation()->root_instruction()->shape().IsTuple();
-      break;
-    case ParameterType::kOther:
-      execute_options.arguments_are_tupled = false;
-      execute_options.untuple_result = false;
-      break;
-  }
-  if (must_untuple_result) {
-    execute_options.untuple_result = true;
-  }
-  std::optional<std::vector<PjRtFuture<>>> futures;
+  execute_options.arguments_are_tupled = false;
+  std::optional<std::vector<Future<>>> futures;
   futures.emplace();
   std::vector<std::vector<std::unique_ptr<PjRtBuffer>>> device_buffers;
   std::vector<std::vector<PjRtBuffer*>> argument_ptrs;
+
+  bool has_active_profiler_session = false;
   for (int repeat = 0; repeat < running_options.num_repeats; ++repeat) {
+    const bool is_last_repeat = (repeat == running_options.num_repeats - 1);
+    const bool profile_current_repeat =
+        (running_options.profiler != nullptr) &&
+        (repeat >= running_options.num_repeats -
+                       running_options.num_repeats_with_profiler);
+
     VLOG(1) << "FunctionalHloRunner: ExecuteOnDevices started (repeat = "
             << repeat << ").";
     {
@@ -592,17 +570,17 @@ absl::StatusOr<PerDeviceLiteralVecType> RunInternal(
                                                 flatten_arguments));
         argument_ptrs = CreateArgumentPointersFromDeviceBuffers(device_buffers);
       }
-      if (repeat == running_options.num_repeats - 1) {
-        execute_options.untuple_result = default_untuple_result;
-        if (running_options.profiler != nullptr) {
-          running_options.profiler->CreateSession();
-        }
-      }
+      execute_options.untuple_result = true;
       execute_options.launch_id = repeat + 1 + running_options.base_run_id;
       if (running_options.execution_profiles != nullptr) {
         execute_options.execution_profile =
             &running_options.execution_profiles->emplace_back();
         execute_options.execution_profile->set_warmup_run_executed(repeat > 0);
+      }
+
+      if (profile_current_repeat && !has_active_profiler_session) {
+        running_options.profiler->CreateSession();
+        has_active_profiler_session = true;
       }
       futures->clear();
       TF_ASSIGN_OR_RETURN(
@@ -611,10 +589,18 @@ absl::StatusOr<PerDeviceLiteralVecType> RunInternal(
       for (auto& future : *futures) {
         TF_RETURN_IF_ERROR(future.Await());
       }
+
+      const bool upload_active_profiler_session =
+          running_options.recreate_profiler_session_between_repeats ||
+          is_last_repeat;
+      if (has_active_profiler_session && upload_active_profiler_session) {
+        running_options.profiler->UploadSession();
+        has_active_profiler_session = false;
+      }
     }
     VLOG(1) << "FunctionalHloRunner: ExecuteOnDevices succeeded (repeat = "
             << repeat << ")";
-    if (repeat < running_options.num_repeats - 1) {
+    if (!is_last_repeat) {
       switch (parameter_type) {
         case ParameterType::kOneTupleOfArrays:
           argument_ptrs = CreateArgumentPointersBasedOnAliasing(
@@ -638,9 +624,6 @@ absl::StatusOr<PerDeviceLiteralVecType> RunInternal(
                       FetchAndLogOutput(client, output_buffers,
                                         running_options.module_output_mode,
                                         running_options.log_input_output()));
-  if (running_options.profiler != nullptr) {
-    running_options.profiler->UploadSession();
-  }
   return results;
 }
 

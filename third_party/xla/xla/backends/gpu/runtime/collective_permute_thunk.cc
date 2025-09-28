@@ -190,7 +190,7 @@ absl::Status CollectivePermuteStartThunk::Initialize(
     TF_ASSIGN_OR_RETURN(const int64_t current_id,
                         GetCurrentId(params.collective_params, config_));
     {
-      absl::MutexLock lock(&barrier_mutex_);
+      absl::MutexLock lock(barrier_mutex_);
       if (receiver_barrier_events_.find(current_id) ==
           receiver_barrier_events_.end()) {
         TF_ASSIGN_OR_RETURN(auto receiver_event,
@@ -274,7 +274,7 @@ absl::StatusOr<bool> CollectivePermuteStartThunk::RunCollective(
     // Receiving side will record an event and the sender will wait for the
     // event before proceeding.
     if (source_id) {
-      absl::MutexLock lock(&barrier_mutex_);
+      absl::MutexLock lock(barrier_mutex_);
       auto receiver_event = receiver_barrier_events_.find(current_id);
       TF_RETURN_IF_ERROR(stream.RecordEvent(receiver_event->second.get()));
     }
@@ -298,7 +298,7 @@ absl::StatusOr<bool> CollectivePermuteStartThunk::RunCollective(
 
     // For sending side, wait for the recorded event from the receiving side.
     if (target_id) {
-      absl::MutexLock lock(&barrier_mutex_);
+      absl::MutexLock lock(barrier_mutex_);
       auto receiver_event = receiver_barrier_events_.find(*target_id);
       TF_RETURN_IF_ERROR(stream.WaitFor(receiver_event->second.get()));
     }
@@ -316,7 +316,7 @@ absl::StatusOr<bool> CollectivePermuteStartThunk::RunCollective(
     // wait for the sender's event before proceeding to ensure
     // data has been copied.
     if (target_id) {
-      absl::MutexLock lock(&barrier_mutex_);
+      absl::MutexLock lock(barrier_mutex_);
       auto sender_event = sender_barrier_events_.find(current_id);
       TF_RETURN_IF_ERROR(stream.RecordEvent(sender_event->second.get()));
     }
@@ -340,7 +340,7 @@ absl::StatusOr<bool> CollectivePermuteStartThunk::RunCollective(
 
     // For receiving side, wait for the recorded event from the sending side.
     if (source_id) {
-      absl::MutexLock lock(&barrier_mutex_);
+      absl::MutexLock lock(barrier_mutex_);
       auto sender_event = sender_barrier_events_.find(*source_id);
       TF_RETURN_IF_ERROR(stream.WaitFor(sender_event->second.get()));
     }
@@ -380,10 +380,8 @@ absl::Status RunCollectivePermute(
   //
 
   int device_ordinal = stream.parent()->device_ordinal();
-  VLOG(3) << "Performing collective permute from device ordinal: "
-          << device_ordinal << " current_id " << current_id;
-  TF_RETURN_IF_ERROR(MaybeRegisterBuffers(stream.parent(), buffers, comm,
-                                          use_symmetric_buffer));
+  VLOG(3) << "[" << device_ordinal
+          << "] Performing collective permute, current_id " << current_id;
 
   std::optional<int64_t> source_id = source_target.source;
   std::optional<int64_t> target_id = source_target.target;
@@ -424,6 +422,8 @@ absl::Status RunCollectivePermute(
         }
       }
     } else {
+      TF_RETURN_IF_ERROR(MaybeRegisterBuffers(stream.parent(), buffers, comm,
+                                              use_symmetric_buffer));
       auto* gpu_comm = tsl::down_cast<GpuCommunicator*>(comm);
       tsl::AsyncValueRef<Communicator::Event> event = gpu_comm->GroupExecute(
           [source_rank, &buffers, &src_addrs, &dest_addrs, &target_ranks,
