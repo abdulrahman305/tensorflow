@@ -1785,7 +1785,6 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
-        "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:numbers",
     ],
 )
@@ -4974,6 +4973,7 @@ cc_library(
     hdrs = ["while_loop_fusible_sinking.h"],
     deps = [
         ":pattern_matcher",
+        ":while_loop_simplifier",
         ":while_util",
         "//xla:comparison_util",
         "//xla:shape_util",
@@ -4982,6 +4982,7 @@ cc_library(
         "//xla/hlo/analysis:while_loop_analysis",
         "//xla/hlo/ir:hlo",
         "//xla/hlo/pass:hlo_pass",
+        "//xla/hlo/transforms/simplifiers:hlo_dce",
         "//xla/hlo/utils:hlo_query",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_map",

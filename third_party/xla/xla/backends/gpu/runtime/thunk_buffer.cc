@@ -1,4 +1,4 @@
-/* Copyright 2024 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2025 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -13,9 +13,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_TSL_PLATFORM_THREADPOOL_ASYNC_EXECUTOR_H_
-#define TENSORFLOW_TSL_PLATFORM_THREADPOOL_ASYNC_EXECUTOR_H_
+#include "xla/backends/gpu/runtime/thunk_buffer.h"
 
-#include "xla/tsl/platform/threadpool_async_executor.h"
+#include <string>
 
-#endif  // TENSORFLOW_TSL_PLATFORM_THREADPOOL_ASYNC_EXECUTOR_H_
+#include "absl/strings/str_format.h"
+
+namespace xla::gpu {
+
+std::string ThunkBuffer::ToString() const {
+  return absl::StrFormat(
+      "{slice:%v, is_content_defined_on_input:%v, "
+      "is_content_defined_on_output:%v}",
+      slice, is_content_defined_on_input, is_content_defined_on_output);
+}
+
+}  // namespace xla::gpu
