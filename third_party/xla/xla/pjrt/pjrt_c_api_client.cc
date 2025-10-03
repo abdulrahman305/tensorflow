@@ -61,6 +61,8 @@ limitations under the License.
 #include "xla/pjrt/distributed/key_value_store_interface.h"
 #include "xla/pjrt/extensions/cross_host_transfers/pjrt_c_api_cross_host_transfers_extension.h"
 #include "xla/pjrt/extensions/executable_metadata/executable_metadata_extension.h"
+#include "xla/pjrt/extensions/host_allocator/host_allocator_extension.h"
+#include "xla/pjrt/extensions/host_allocator/host_allocator_interface_impl.h"
 #include "xla/pjrt/mlir_to_hlo.h"
 #include "xla/pjrt/pjrt_api.h"
 #include "xla/pjrt/pjrt_client.h"
@@ -123,6 +125,17 @@ InitExtensions(const PJRT_Api* c_api) {
   return extensions;
 }
 
+static absl::StatusOr<std::unique_ptr<PjRtClient::HostAllocator>>
+InitHostAllocator(const PJRT_Api* c_api, PJRT_Client* c_client) {
+  PJRT_HostAllocator_Extension* extension =
+      pjrt::FindExtension<PJRT_HostAllocator_Extension>(
+          c_api, PJRT_Extension_Type::PJRT_Extension_Type_HostAllocator);
+  if (extension == nullptr) {
+    return absl::UnimplementedError("HostAllocator extension not found");
+  }
+  return std::make_unique<HostAllocatorInterfaceImpl>(c_client, extension);
+}
+
 PjRtCApiClient::PjRtCApiClient(
     const PJRT_Api* c_api, PJRT_Client* c_client,
     std::unique_ptr<pjrt::PJRT_KeyValueCallbackData> kv_callback_data)
@@ -132,6 +145,7 @@ PjRtCApiClient::PjRtCApiClient(
       kv_callback_data_(std::move(kv_callback_data)),
       topo_desc_(InitClientTopoDesc(c_api, c_client)),
       extensions_(InitExtensions(c_api)),
+      host_allocator_(InitHostAllocator(c_api, c_client)),
       // Example platform version string:
       //   PJRT C API
       //   TFRT TPU v2
@@ -678,6 +692,14 @@ PjRtCApiClient::GetTopologyDescription() const {
     return topo_desc_.status();
   }
   return &(*topo_desc_);
+}
+
+absl::StatusOr<PjRtClient::HostAllocator*> PjRtCApiClient::GetHostAllocator()
+    const {
+  if (!host_allocator_.ok()) {
+    return host_allocator_.status();
+  }
+  return host_allocator_->get();
 }
 
 absl::StatusOr<std::uintptr_t> PjRtCApiClient::UnsafeBufferPointer(
@@ -2817,6 +2839,33 @@ PJRT_Event* PjRtCApiBuffer::GetReadyEvent() {
 void PjRtCApiBuffer::MakePromiseTrackEvent() {
   CHECK(readiness_promise_ != nullptr);
   const PJRT_Api* api = pjrt_c_api();
+
+  // Check if device execution has finished via `PJRT_Event_IsReady`. If true,
+  // fetch the status with `PJRT_Event_Error()` and fulfill the promise
+  // immediately. This avoids unnecessary overhead for already completed events.
+  // Otherwise, register an asynchronous callback with
+  // `PJRT_Event_OnReady` to be notified when the event is ready.
+  PJRT_Event_IsReady_Args is_ready_args;
+  is_ready_args.struct_size = PJRT_Event_IsReady_Args_STRUCT_SIZE;
+  is_ready_args.extension_start = nullptr;
+  is_ready_args.event = GetReadyEvent();
+  std::unique_ptr<PJRT_Error, pjrt::PJRT_ErrorDeleter> is_ready_error{
+      api->PJRT_Event_IsReady(&is_ready_args), pjrt::MakeErrorDeleter(api)};
+  if (is_ready_error != nullptr) {
+    readiness_promise_->Set(pjrt::PjrtErrorToStatus(is_ready_error.get(), api));
+    return;
+  }
+  if (is_ready_args.is_ready) {
+    PJRT_Event_Error_Args error_args;
+    error_args.struct_size = PJRT_Event_Error_Args_STRUCT_SIZE;
+    error_args.extension_start = nullptr;
+    error_args.event = is_ready_args.event;
+    PJRT_Error* error = api->PJRT_Event_Error(&error_args);
+    readiness_promise_->Set(pjrt::PjrtErrorToStatus(error, api));
+    pjrt::MakeErrorDeleter(api)(error);
+    return;
+  }
+
   PJRT_Event_OnReady_Args args;
   args.struct_size = PJRT_Event_OnReady_Args_STRUCT_SIZE;
   args.extension_start = nullptr;
