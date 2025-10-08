@@ -684,14 +684,12 @@ absl::Status CpuCompiler::RunHloPassesThroughLayoutAssn(
 
   // Rewrite to custom calls with target as oneDNN library calls.
 #ifdef XLA_ONEDNN
-  // This pass is not supported in the thunk runtime yet.
-  bool is_thunk_runtime = true;
   bool use_onednn_custom_call =
       module->config()
           .debug_options()
           .xla_cpu_experimental_onednn_custom_call() &&
       is_onednn_compatible;
-  if (use_onednn_custom_call && !is_thunk_runtime) {
+  if (use_onednn_custom_call) {
     // Placing OneDnnOpsRewriter here to match the flax patterns
     // TODO: Decide where would be the appropriate place for this pass to make
     // it more generic
@@ -912,6 +910,9 @@ absl::Status CpuCompiler::RunHloPassesAfterLayoutAssn(
   bool use_onednn_custom_call =
       debug_options.xla_cpu_experimental_onednn_custom_call() &&
       is_onednn_compatible;
+  bool use_onednn_graph =
+      debug_options.xla_cpu_use_onednn() &&
+      (!debug_options.xla_cpu_experimental_onednn_fusion_type().empty());
   if (use_onednn_custom_call) {
     // Run SimplifyFPConversions pass to simplify the BF16 pattern and make it
     // easier to match.
@@ -919,8 +920,8 @@ absl::Status CpuCompiler::RunHloPassesAfterLayoutAssn(
     if (debug_options.xla_allow_excess_precision()) {
       pipeline.AddPass<SimplifyFPConversions>();
     }
-    pipeline.AddPass<OneDnnContractionRewriter>(max_parallelism,
-                                                compile_options.thread_pool);
+    pipeline.AddPass<OneDnnContractionRewriter>(
+        max_parallelism, compile_options.thread_pool, use_onednn_graph);
     // Run SimplifyFPConversions pass again to remove redundant Convert ops
     // that may exist as a result of running OneDnnContractionRewriter pass.
     if (debug_options.xla_allow_excess_precision()) {
