@@ -111,6 +111,7 @@ absl::flat_hash_set<HloOpcode> TritonSupportedUnaryElementwiseOps(
         HloOpcode::kAcos,
         HloOpcode::kAcosh,
         HloOpcode::kAsin,
+        HloOpcode::kAsinh,
         HloOpcode::kAtanh,
         HloOpcode::kCbrt,
         HloOpcode::kCeil,
@@ -757,6 +758,14 @@ CodegenDecision IsTritonSupportedComputation(
     const se::GpuComputeCapability& gpu_compute_capability) {
   VLOG(3) << "IsTritonSupportedComputation: " << computation.ToString();
   for (const auto* instruction : computation.instructions()) {
+    // TODO(b/452478982): This check can be removed if we support Tuple ops
+    // generally.
+    if (instruction == computation.root_instruction() &&
+        instruction->opcode() == HloOpcode::kTuple) {
+      // While Tuple is not generally supported by Triton codegen, it is
+      // supported for fusion roots.
+      continue;
+    }
     if (CodegenDecision can_codegen =
             IsTritonSupportedInstruction(*instruction, gpu_compute_capability);
         !can_codegen) {
