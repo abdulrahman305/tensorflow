@@ -26,6 +26,11 @@ from xla.codegen.testlib import utilities as testlib_utilities
 create_literal = testlib_utilities.create_literal_from_np
 
 
+def get_random_array(shape: tuple[int, ...], dtype: np.dtype) -> np.ndarray:
+  rng = np.random.default_rng()
+  return rng.uniform(low=-5, high=5, size=shape).astype(dtype)
+
+
 def compare_kernel(
     ir: str,
     kernel_name: str,
@@ -45,14 +50,13 @@ def compare_kernel(
       kernel_definition,
       cpu_testlib.JitCompiler(base_testlib.HloModuleConfig()),
   )
-  inputs = [np.random.rand(*shape).astype(dtype) for shape in input_shapes]
+
+  # Simply use a all-ones arrays as inputs to make it easy to debug the kernel.
+  inputs = [np.ones(shape=shape, dtype=dtype) for shape in input_shapes]
 
   input_tensors = [create_literal(input) for input in inputs]
-  output_tensor = create_literal(
-      np.zeros(shape=output_shape, dtype=dtype)
-      if output_shape
-      else np.array(0, dtype=dtype)
-  )
+  # Use a random array as the output to ensure all values are written to.
+  output_tensor = create_literal(get_random_array(output_shape, dtype))
   runner.call(input_tensors + [output_tensor])
 
   output_np = np.asarray(output_tensor)
@@ -92,6 +96,30 @@ class XtileLoweringTest(absltest.TestCase):
         (5, 5),
         np.float32,
         lambda arg: arg.transpose(),
+    )
+
+  def test_strided(self):
+    ir = """
+      module @tiled_slice {
+        xtile.entry_func @tiled_slice(
+            %input: memref<64x64xf32>,
+            %output: memref<4x32xf32>,
+            %tile_id: index) attributes {xtile.tiling_info = #xtile.tiling_info<tile_count:1, tiles_per_workgroup:1>} {
+          %input_tile = xtile.extract %input[%tile_id, %tile_id][4, 32][21, 2] : memref<64x64xf32> -> tensor<4x32xf32>
+          xtile.insert %input_tile into %output[%tile_id, %tile_id][4, 32][1, 1] : tensor<4x32xf32> -> memref<4x32xf32>
+          xtile.return
+        }
+      }
+    """
+
+    compare_kernel(
+        ir,
+        "tiled_slice",
+        1,
+        [(64, 64)],
+        (4, 32),
+        np.float32,
+        lambda arg: arg[::21, ::2],
     )
 
   def test_transpose(self):
