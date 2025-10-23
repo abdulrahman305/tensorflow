@@ -396,44 +396,6 @@ void StallStreamOnError(LocalDeviceState* local_device, se::Stream* stream) {
   }
 }
 
-// Does all necessary bookkeeping, after a buffer is successfully enqueued onto
-// a stream, to ensure that the buffer will be kept alive until its use on that
-// stream is complete.
-//
-//   device_buffer:              the buffer that was enqueued.
-//   buffer_local_device:        the device the buffer was allocated on.
-//   stream_local_device:        the device that manages usage_stream.
-//   event:                      an event that was recorded on usage_stream
-//                               after the usage of device_buffer was enqueued.
-//   usage_stream:               the stream the operation using device_buffer
-//                               was enqueued on.
-void RecordUsage(PjRtStreamExecutorBuffer::ScopedHold device_buffer,
-                 LocalDeviceState* buffer_local_device,
-                 LocalDeviceState* stream_local_device,
-                 BufferSequencingEventRef event, se::Stream* usage_stream,
-                 std::vector<tsl::RCReference<RawSEDeviceMemory>>*
-                     buffers_to_release = nullptr) {
-  tsl::profiler::TraceMe traceme("RecordUsage");
-  bool retain_buffer_until_completion =
-      // If the buffer wasn't allocated on the same device as the stream, always
-      // retain a reference.
-      (stream_local_device != buffer_local_device) ||
-      // In the synchronous allocation model, always retain a reference.
-      (stream_local_device->allocation_model() ==
-       LocalDeviceState::kSynchronous);
-  if (retain_buffer_until_completion) {
-    if (buffers_to_release) {
-      buffers_to_release->push_back(device_buffer->device_memory());
-    } else {
-      buffer_local_device
-          ->ThenRelease(usage_stream, device_buffer->device_memory())
-          .IgnoreError();
-    }
-  }
-  device_buffer.ConvertUsageHold(usage_stream, event,
-                                 retain_buffer_until_completion);
-}
-
 // Adds necessary synchronization after a copy has been enqueued to a buffer.
 // definition_event was added when the buffer was allocated, but has not yet
 // had an event recorded.
@@ -708,16 +670,6 @@ AllocateDestinationBuffer(const Shape& on_host_shape, PjRtDevice* device,
   return py_buffer;
 }
 
-void PjRtStreamExecutorBuffer::ScopedHold::ConvertUsageHold(
-    se::Stream* usage_stream, BufferSequencingEventRef event,
-    bool reference_held) {
-  CHECK(ok());
-  CHECK_EQ(type(), kUsage);
-  parent()->ConvertUsageHold(buffer(), usage_stream, std::move(event),
-                             reference_held);
-  SetState(kConverted);
-}
-
 bool PjRtStreamExecutorClient::IsOnCpu(PjRtMemorySpace* memory_space) {
   return memory_space->kind() == PinnedHostMemorySpace::kKind;
 }
@@ -727,15 +679,16 @@ PjRtStreamExecutorBuffer::DonateWithControlDependency(Future<> dependency) {
   VLOG(1) << "PjRtStreamExecutorBuffer::DonateWithControlDependency";
   std::unique_ptr<PjRtBuffer> new_buffer;
 
-  auto tracked_buffer =
-      GetBufferWithHold(PjRtStreamExecutorBuffer::ScopedHold::kDonation);
+  auto hold = GetBufferWithHold(CommonPjRtBuffer::ScopedHold::kDonation);
 
-  if (!tracked_buffer.ok()) {
+  if (!hold.ok()) {
     return InvalidArgument(
         "Invalid buffer passed to DonateWithControlDependency: %s",
-        tracked_buffer.status().ToString());
+        hold.status().ToString());
   }
 
+  auto* tracked_buffer =
+      tensorflow::down_cast<TrackedDeviceBuffer*>(hold.buffer());
   // Copy all the data in the existing tracked_buffer.
   const auto& original_definition_events = tracked_buffer->definition_events();
   absl::InlinedVector<BufferSequencingEventRef, 4> definition_events;
@@ -774,7 +727,7 @@ PjRtStreamExecutorBuffer::DonateWithControlDependency(Future<> dependency) {
         local_device->ReturnStreamToPool(std::move(stream));
       });
 
-  tracked_buffer.ConfirmDonation();
+  hold.ConfirmDonation();
   return new_buffer;
 }
 
@@ -1389,26 +1342,6 @@ void PjRtStreamExecutorBuffer::Delete() {
   TF_CHECK_OK(Release(/*wait_for_operations_to_complete=*/false).status());
 }
 
-void PjRtStreamExecutorBuffer::ConvertUsageHold(TrackedDeviceBuffer* buffer,
-                                                se::Stream* usage_stream,
-                                                BufferSequencingEventRef event,
-                                                bool reference_held) {
-  absl::MutexLock lock(&mu_);
-  CHECK(device_buffer() == buffer || device_buffer() == nullptr);
-  buffer->AddUsageEvent(std::move(event), reference_held);
-  DecrementUsage();
-}
-
-PjRtStreamExecutorBuffer::ScopedHold
-PjRtStreamExecutorBuffer::GetBufferWithHold(ScopedHold::Type type) {
-  absl::MutexLock lock(&mu_);
-  // Ensure that at most one donation hold can be in progress at a time.
-  WaitForOutstandingDonationHold();
-  ScopedHold hold(this, type);
-  AcquireHoldLocked(&hold);
-  return hold;
-}
-
 Future<> PjRtStreamExecutorBuffer::GetReadyFuture() {
   absl::InlinedVector<BufferSequencingEventRef, 2> definition_events;
   Promise<> definition_promise;
@@ -1420,7 +1353,9 @@ Future<> PjRtStreamExecutorBuffer::GetReadyFuture() {
           "GetReadyFuture() called on deleted or donated buffer"));
     }
     if (!definition_future_) {
-      definition_events = device_buffer()->definition_events();
+      definition_events =
+          tensorflow::down_cast<TrackedDeviceBuffer*>(device_buffer())
+              ->definition_events();
       std::tie(definition_promise, definition_future_) =
           Future<>::MakePromise();
     }
@@ -1563,12 +1498,12 @@ absl::Status CheckCompatibleShapes(bool strict_shape_checking,
 // Makes a tuple from the arguments to an execution.
 static absl::StatusOr<std::pair<ShapeTree<PjRtStreamExecutorExecutionInput>,
                                 BufferSequencingEventRef>>
-MakeTupleHelper(
-    PjRtStreamExecutorClient* client, LocalDeviceState* local_device,
-    bool strict_shape_checking, const Shape& tupled_parameter_shape,
-    absl::Span<PjRtBuffer* const> py_buffers,
-    absl::Span<const PjRtStreamExecutorBuffer::ScopedHold> device_buffers,
-    int device_ordinal) {
+MakeTupleHelper(PjRtStreamExecutorClient* client,
+                LocalDeviceState* local_device, bool strict_shape_checking,
+                const Shape& tupled_parameter_shape,
+                absl::Span<PjRtBuffer* const> py_buffers,
+                absl::Span<const CommonPjRtBuffer::ScopedHold> device_buffers,
+                int device_ordinal) {
   se::DeviceMemoryAllocator* allocator = client->allocator();
   TransferManager* transfer_manager =
       client->client()->backend().transfer_manager();
@@ -1610,11 +1545,11 @@ MakeTupleHelper(
                                       local_device, allocator)};
   ++input_iterator;
   // Then set each sub-tuple in turn from the parameters.
-  for (const PjRtStreamExecutorBuffer::ScopedHold& device_buffer :
-       device_buffers) {
+  for (const CommonPjRtBuffer::ScopedHold& device_buffer : device_buffers) {
     input_iterator->second = {
-        device_buffer.type() == PjRtStreamExecutorBuffer::ScopedHold::kDonation,
-        device_buffer->device_memory()};
+        device_buffer.type() == CommonPjRtBuffer::ScopedHold::kDonation,
+        tensorflow::down_cast<TrackedDeviceBuffer*>(device_buffer.buffer())
+            ->device_memory()};
     ++input_iterator;
   }
   CHECK(input_iterator == iterator_end);
@@ -1643,8 +1578,7 @@ MakeTupleHelper(
 absl::StatusOr<std::unique_ptr<PjRtBuffer>> OutputBufferHelper(
     ShapeTree<tsl::RCReference<RawSEDeviceMemory>> result_buffer,
     BufferSequencingEventRef definition_event, PjRtClient* client,
-    PjRtDevice* device, LocalDeviceState* local_device,
-    std::vector<tsl::RCReference<RawSEDeviceMemory>>& buffers_to_release) {
+    PjRtDevice* device, LocalDeviceState* local_device) {
   if (result_buffer.shape().IsTuple()) {
     return absl::InternalError("OutputBufferHelper called on tuple.");
   }
@@ -1680,9 +1614,6 @@ absl::StatusOr<std::unique_ptr<PjRtBuffer>> OutputBufferHelper(
   auto pjrt_buffer = std::make_unique<PjRtStreamExecutorBuffer>(
       result_buffer.shape(), std::move(out_buffer), client, device,
       memory_space);
-  RecordUsage(pjrt_buffer->GetBufferWithUsageHold(), local_device, local_device,
-              definition_event, local_device->compute_stream(),
-              &buffers_to_release);
   return std::unique_ptr<PjRtBuffer>(std::move(pjrt_buffer));
 }
 
@@ -1798,7 +1729,7 @@ PjRtStreamExecutorLoadedExecutable::MakeExecutionInputsAndWaitForEvents(
     int device_ordinal, const ExecuteOptions& options,
     absl::Span<const Shape> executable_parameter_shapes,
     absl::Span<PjRtBuffer* const> argument_handles,
-    absl::Span<const PjRtStreamExecutorBuffer::ScopedHold> device_buffers,
+    absl::Span<const CommonPjRtBuffer::ScopedHold> device_buffers,
     absl::flat_hash_set<BufferSequencingEvent*>& events) const {
   std::vector<ShapeTree<PjRtStreamExecutorExecutionInput>> execution_inputs;
   LocalDeviceState* device_state = &(client_->device_state(device_ordinal));
@@ -1834,11 +1765,12 @@ PjRtStreamExecutorLoadedExecutable::MakeExecutionInputsAndWaitForEvents(
           execution_inputs.back();
       auto input_iterator = execution_input.begin();
       auto iterator_end = execution_input.end();
-      const auto& buf = device_buffers[i]->device_memory();
+      const auto& buf = tensorflow::down_cast<TrackedDeviceBuffer*>(
+                            device_buffers[i].buffer())
+                            ->device_memory();
       CHECK(input_iterator != iterator_end);
       input_iterator->second = {
-          device_buffers[i].type() ==
-              PjRtStreamExecutorBuffer::ScopedHold::kDonation,
+          device_buffers[i].type() == CommonPjRtBuffer::ScopedHold::kDonation,
           buf};
       ++input_iterator;
       CHECK(input_iterator == iterator_end);
@@ -2154,7 +2086,7 @@ PjRtStreamExecutorLoadedExecutable::EnqueueExecution(
     absl::Span<PjRtBuffer* const> argument_handles, int replica, int partition,
     int executable_idx, const RunId& run_id, const ExecuteOptions& options,
     PjRtDevice* device,
-    std::vector<PjRtStreamExecutorBuffer::ScopedHold>* device_buffers,
+    std::vector<CommonPjRtBuffer::ScopedHold>* device_buffers,
     std::shared_ptr<DeviceAssignment> device_assignment,
     std::vector<absl::AnyInvocable<void() &&>>& compute_callbacks) const {
   int device_ordinal = tensorflow::down_cast<PjRtStreamExecutorDevice*>(device)
@@ -2194,16 +2126,17 @@ PjRtStreamExecutorLoadedExecutable::EnqueueExecution(
     TF_RETURN_IF_ERROR(TestBufferDonationClashes(
         handle, donation_clashes, must_donate, i, replica, partition));
     device_buffers->emplace_back(handle->GetBufferWithHold(
-        must_donate ? PjRtStreamExecutorBuffer::ScopedHold::kDonation
-                    : PjRtStreamExecutorBuffer::ScopedHold::kUsage));
-    PjRtStreamExecutorBuffer::ScopedHold& device_buffer =
-        device_buffers->back();
-    if (!device_buffer.ok()) {
+        must_donate ? CommonPjRtBuffer::ScopedHold::kDonation
+                    : CommonPjRtBuffer::ScopedHold::kUsage));
+    CommonPjRtBuffer::ScopedHold& hold = device_buffers->back();
+    if (!hold.ok()) {
       return InvalidArgument(
           "Invalid buffer passed to Execute() as argument %d to replica %d: "
           "%s",
-          i, replica, device_buffer.status().ToString());
+          i, replica, hold.status().ToString());
     }
+    auto* device_buffer =
+        tensorflow::down_cast<TrackedDeviceBuffer*>(hold.buffer());
     // If we are trying to donate the buffer wait on the usage events as well
     // as the definition events to ensure that all reads have been completed
     // before the buffer is mutated. Usage holds are excluded during a donation
@@ -2408,9 +2341,7 @@ PjRtStreamExecutorLoadedExecutable::MakeOutputBuffers(
     int device_ordinal, const ExecuteOptions& options,
     ShapeTree<tsl::RCReference<RawSEDeviceMemory>> result_buffer,
     BufferSequencingEventRef definition_event, PjRtDevice* device,
-    std::vector<absl::AnyInvocable<void() &&>>& compute_callbacks,
-    std::vector<tsl::RCReference<RawSEDeviceMemory>>& buffers_to_release)
-    const {
+    std::vector<absl::AnyInvocable<void() &&>>& compute_callbacks) const {
   tsl::profiler::TraceMe traceme("MakeOutputBuffers");
   std::vector<std::unique_ptr<PjRtBuffer>> outputs;
   LocalDeviceState* device_state = &(client_->device_state(device_ordinal));
@@ -2426,7 +2357,7 @@ PjRtStreamExecutorLoadedExecutable::MakeOutputBuffers(
       TF_ASSIGN_OR_RETURN(
           std::unique_ptr<PjRtBuffer> buffer,
           OutputBufferHelper(std::move(tuple_buffer), definition_event, client_,
-                             device, device_state, buffers_to_release));
+                             device, device_state));
       outputs.push_back(std::move(buffer));
     }
     if (device_state->allocation_model() == LocalDeviceState::kSynchronous) {
@@ -2438,7 +2369,7 @@ PjRtStreamExecutorLoadedExecutable::MakeOutputBuffers(
     TF_ASSIGN_OR_RETURN(
         std::unique_ptr<PjRtBuffer> buffer,
         OutputBufferHelper(std::move(result_buffer), definition_event, client_,
-                           device, device_state, buffers_to_release));
+                           device, device_state));
     outputs.push_back(std::move(buffer));
   }
   return outputs;
@@ -2447,13 +2378,15 @@ PjRtStreamExecutorLoadedExecutable::MakeOutputBuffers(
 static absl::Status GetFirstInputError(
     absl::Span<PjRtBuffer* const> argument_handles) {
   for (auto* handle : argument_handles) {
-    auto* buffer = tensorflow::down_cast<PjRtStreamExecutorBuffer*>(handle);
-    PjRtStreamExecutorBuffer::ScopedHold hold =
-        buffer->GetBufferWithUsageHold();
+    auto* buffer = tensorflow::down_cast<CommonPjRtBuffer*>(handle);
+    CommonPjRtBuffer::ScopedHold hold =
+        buffer->GetBufferWithHold(CommonPjRtBuffer::ScopedHold::kUsage);
     if (!hold.ok()) {
       return hold.status();
     }
-    for (const auto& event : hold->definition_events()) {
+    auto* tracked_buffer =
+        tensorflow::down_cast<TrackedDeviceBuffer*>(hold.buffer());
+    for (const auto& event : tracked_buffer->definition_events()) {
       if (event->IsPredeterminedError()) {
         return event->GetDefinedStatus();
       }
@@ -2524,7 +2457,7 @@ PjRtStreamExecutorLoadedExecutable::ExecuteHelper(
   int executable_idx = executables_.size() > 1 ? partition : 0;
 
   std::vector<absl::AnyInvocable<void() &&>> compute_callbacks;
-  std::vector<PjRtStreamExecutorBuffer::ScopedHold> device_buffers;
+  std::vector<CommonPjRtBuffer::ScopedHold> device_buffers;
   device_buffers.reserve(argument_handles.size());
   absl::StatusOr<ShapeTree<tsl::RCReference<RawSEDeviceMemory>>>
       result_buffer_or_status =
@@ -2543,33 +2476,46 @@ PjRtStreamExecutorLoadedExecutable::ExecuteHelper(
   LocalDeviceState* device_state = &(client_->device_state(device_ordinal));
   se::Stream* stream = device_state->compute_stream();
 
-  auto definition_event = device_state->GetEventForComputeStreamSyncPoint(
+  auto definition_event_or = device_state->GetEventForComputeStreamSyncPoint(
       device_state->GetNextComputeStreamSyncPoint(), client_->thread_pool());
-  if (!definition_event.ok()) {
+  if (!definition_event_or.ok()) {
     StallStreamOnError(device_state, stream);
-    for (PjRtStreamExecutorBuffer::ScopedHold& b : device_buffers) {
-      if (b.type() == PjRtStreamExecutorBuffer::ScopedHold::kDonation) {
+    for (CommonPjRtBuffer::ScopedHold& b : device_buffers) {
+      if (b.type() == CommonPjRtBuffer::ScopedHold::kDonation) {
         // Even though there was an error we need to call ConfirmDonation, which
         // renders b invalid, since the computation has been enqueued and b has
         // been donated.
         b.ConfirmDonation();
       }
     }
-    return definition_event.status();
+    return definition_event_or.status();
+  }
+  std::vector<tsl::RCReference<RawSEDeviceMemory>> leaves_to_release;
+  if (device_state->allocation_model() == LocalDeviceState::kSynchronous) {
+    leaves_to_release.reserve(result_buffer.leaf_count());
+    for (auto& node : result_buffer.leaves()) {
+      leaves_to_release.push_back(node.second);
+    }
   }
   std::vector<tsl::RCReference<RawSEDeviceMemory>> buffers_to_release;
+  auto definition_event = tsl::MakeRef<PjRtStreamExecutorDeviceEvent>(
+      *definition_event_or, "PjRtStreamExecutorLoadedExecutable", "Execute");
   TF_ASSIGN_OR_RETURN(
       std::vector<std::unique_ptr<PjRtBuffer>> outputs,
       MakeOutputBuffers(device_ordinal, options, std::move(result_buffer),
-                        *definition_event, device, compute_callbacks,
-                        buffers_to_release));
+                        *definition_event_or, device, compute_callbacks));
 
-  for (PjRtStreamExecutorBuffer::ScopedHold& b : device_buffers) {
-    if (b.type() == PjRtStreamExecutorBuffer::ScopedHold::kUsage) {
-      RecordUsage(std::move(b), device_state, device_state, *definition_event,
-                  stream, &buffers_to_release);
+  for (CommonPjRtBuffer::ScopedHold& b : device_buffers) {
+    if (b.type() == CommonPjRtBuffer::ScopedHold::kUsage) {
+      if (device_state->allocation_model() == LocalDeviceState::kSynchronous) {
+        buffers_to_release.push_back(
+            tensorflow::down_cast<PjRtStreamExecutorRawBuffer*>(
+                b.buffer()->GetRawBuffer(b.parent()->memory_space()).get())
+                ->device_buffer());
+      }
+      b.ConvertUsageHold(definition_event);
     } else {
-      CHECK(b.type() == PjRtStreamExecutorBuffer::ScopedHold::kDonation);
+      CHECK(b.type() == CommonPjRtBuffer::ScopedHold::kDonation);
       b.ConfirmDonation();
     }
   }
@@ -2583,7 +2529,8 @@ PjRtStreamExecutorLoadedExecutable::ExecuteHelper(
   }
   definition_event->AndThen(
       [callbacks{std::move(compute_callbacks)},
-       buffers_to_release{std::move(buffers_to_release)}]() mutable {
+       buffers_to_release{std::move(buffers_to_release)},
+       leaves_to_release = std::move(leaves_to_release)]() mutable {
         for (auto& fn : callbacks) {
           std::move(fn)();
         }
