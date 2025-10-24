@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef XLA_BACKENDS_CPU_YNN_THREADPOOL_H_
-#define XLA_BACKENDS_CPU_YNN_THREADPOOL_H_
+#ifndef XLA_BACKENDS_CPU_RUNTIME_YNNPACK_SLINKY_THREADPOOL_H_
+#define XLA_BACKENDS_CPU_RUNTIME_YNNPACK_SLINKY_THREADPOOL_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -32,14 +32,14 @@ namespace xla::cpu {
 
 // This is an implementation of slinky::thread_pool, using absl::Mutex for
 // synchronization, and dispatches work to Eigen::ThreadPoolInterface.
-class YnnThreadpool final : public slinky::thread_pool {
+class SlinkyThreadPool final : public slinky::thread_pool {
  public:
-  explicit YnnThreadpool(Eigen::ThreadPoolDevice* device);
-  explicit YnnThreadpool(Eigen::ThreadPoolInterface* threadpool);
-  ~YnnThreadpool() final;
+  explicit SlinkyThreadPool(Eigen::ThreadPoolDevice* device);
+  explicit SlinkyThreadPool(Eigen::ThreadPoolInterface* threadpool);
+  ~SlinkyThreadPool() final;
 
-  YnnThreadpool(YnnThreadpool&&) = delete;
-  YnnThreadpool& operator=(YnnThreadpool&&) = delete;
+  SlinkyThreadPool(SlinkyThreadPool&&) = default;
+  SlinkyThreadPool& operator=(SlinkyThreadPool&&) = default;
 
   slinky::ref_count<task> enqueue(size_t n, task_body t,
                                   int32_t max_workers) final;
@@ -52,10 +52,10 @@ class YnnThreadpool final : public slinky::thread_pool {
   int thread_count() const final;
 
  private:
-  class impl;
-  slinky::ref_count<impl> impl_;
+  class Impl;
+  slinky::ref_count<Impl> impl_;
 };
 
 }  // namespace xla::cpu
 
-#endif  // XLA_BACKENDS_CPU_YNN_THREADPOOL_H_
+#endif  // XLA_BACKENDS_CPU_RUNTIME_YNNPACK_SLINKY_THREADPOOL_H_

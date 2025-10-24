@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "xla/backends/cpu/ynn_threadpool.h"
+#include "xla/backends/cpu/runtime/ynnpack/slinky_threadpool.h"
 
 #include <array>
 #include <atomic>
@@ -22,17 +22,15 @@ limitations under the License.
 #include <vector>
 
 #include <gtest/gtest.h>
+#include "slinky/base/thread_pool.h"
 #include "xla/tsl/platform/env.h"
 #include "xla/tsl/platform/threadpool.h"
 
-namespace Eigen {
-class ThreadPoolInterface;
-}  // namespace Eigen
-
 namespace xla::cpu {
 
-TEST(YnnThreadpool, inline_scheduling) {
-  YnnThreadpool thread_pool(static_cast<Eigen::ThreadPoolInterface*>(nullptr));
+TEST(SlinkyThreadPoolTest, InlineScheduling) {
+  SlinkyThreadPool thread_pool(
+      static_cast<Eigen::ThreadPoolInterface*>(nullptr));
 
   static constexpr size_t size = 10000;
 
@@ -45,9 +43,9 @@ TEST(YnnThreadpool, inline_scheduling) {
   EXPECT_EQ(data, expected);
 }
 
-TEST(YnnThreadpool, single_loop) {
+TEST(SlinkyThreadPoolTest, SingleLoop) {
   tsl::thread::ThreadPool test_thread_pool(tsl::Env::Default(), "test", 4);
-  YnnThreadpool thread_pool(test_thread_pool.AsEigenThreadPool());
+  SlinkyThreadPool thread_pool(test_thread_pool.AsEigenThreadPool());
 
   static constexpr size_t size = 10000;
 
@@ -60,9 +58,9 @@ TEST(YnnThreadpool, single_loop) {
   EXPECT_EQ(data, expected);
 }
 
-TEST(YnnThreadpool, loop_chain) {
+TEST(SlinkyThreadPoolTest, LoopChain) {
   tsl::thread::ThreadPool test_thread_pool(tsl::Env::Default(), "test", 4);
-  YnnThreadpool thread_pool(test_thread_pool.AsEigenThreadPool());
+  SlinkyThreadPool thread_pool(test_thread_pool.AsEigenThreadPool());
 
   static constexpr size_t size = 10000;
 
@@ -79,9 +77,9 @@ TEST(YnnThreadpool, loop_chain) {
   EXPECT_EQ(data, expected);
 }
 
-TEST(YnnThreadpool, nested_loops) {
+TEST(SlinkyThreadPoolTest, NestedLoops) {
   tsl::thread::ThreadPool test_thread_pool(tsl::Env::Default(), "test", 4);
-  YnnThreadpool thread_pool(test_thread_pool.AsEigenThreadPool());
+  SlinkyThreadPool thread_pool(test_thread_pool.AsEigenThreadPool());
 
   static constexpr size_t size = 100;
 
