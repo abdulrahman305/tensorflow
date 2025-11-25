@@ -53,9 +53,8 @@ class LoopFusionTest(parameterized.TestCase):
     hlo_module, buffer_assignment = utilities.parse_hlo_module(hlo)
     jit_compiler = testlib_cpu.JitCompiler(hlo_module.get_config())
     mlir_context = testlib_cpu.MLIRContext()
-    symbolic_expr_context = testlib_cpu.SymbolicExprContext(mlir_context)
     kernel_definition = testlib_cpu.emit_fusion_kernel(
-        symbolic_expr_context,
+        mlir_context,
         hlo_module.get_root_instruction(),
         buffer_assignment,
     )
@@ -114,9 +113,8 @@ class LoopFusionTest(parameterized.TestCase):
     hlo_module, buffer_assignment = utilities.parse_hlo_module(hlo)
     jit_compiler = testlib_cpu.JitCompiler(hlo_module.get_config())
     mlir_context = testlib_cpu.MLIRContext()
-    symbolic_expr_context = testlib_cpu.SymbolicExprContext(mlir_context)
     kernel_definition = testlib_cpu.emit_fusion_kernel(
-        symbolic_expr_context,
+        mlir_context,
         hlo_module.get_root_instruction(),
         buffer_assignment,
     )
@@ -170,9 +168,8 @@ class LoopFusionTest(parameterized.TestCase):
     hlo_module, buffer_assignment = utilities.parse_hlo_module(hlo)
     jit_compiler = testlib_cpu.JitCompiler(hlo_module.get_config())
     mlir_context = testlib_cpu.MLIRContext()
-    symbolic_expr_context = testlib_cpu.SymbolicExprContext(mlir_context)
     kernel_definition = testlib_cpu.emit_fusion_kernel(
-        symbolic_expr_context,
+        mlir_context,
         hlo_module.get_root_instruction(),
         buffer_assignment,
     )
@@ -223,9 +220,8 @@ class LoopFusionTest(parameterized.TestCase):
     hlo_module, buffer_assignment = utilities.parse_hlo_module(hlo)
     jit_compiler = testlib_cpu.JitCompiler(hlo_module.get_config())
     mlir_context = testlib_cpu.MLIRContext()
-    symbolic_expr_context = testlib_cpu.SymbolicExprContext(mlir_context)
     kernel_definition = testlib_cpu.emit_fusion_kernel(
-        symbolic_expr_context,
+        mlir_context,
         hlo_module.get_root_instruction(),
         buffer_assignment,
     )
@@ -273,9 +269,8 @@ class FusionEmitterTest(parameterized.TestCase):
     hlo_module, buffer_assignment = utilities.parse_hlo_module(hlo)
     jit_compiler = testlib_cpu.JitCompiler(hlo_module.get_config())
     mlir_context = testlib_cpu.MLIRContext()
-    symbolic_expr_context = testlib_cpu.SymbolicExprContext(mlir_context)
     kernel_definition = testlib_cpu.emit_fusion_kernel(
-        symbolic_expr_context,
+        mlir_context,
         hlo_module.get_root_instruction(),
         buffer_assignment,
     )

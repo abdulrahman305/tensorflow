@@ -1,34 +1,17 @@
 Auto generated patch. Do not edit or delete it, even if empty.
-diff -ruN --strip-trailing-cr a/mlir/test/Target/SPIRV/function-decorations-asserts.mlir b/mlir/test/Target/SPIRV/function-decorations-asserts.mlir
---- a/mlir/test/Target/SPIRV/function-decorations-asserts.mlir
-+++ b/mlir/test/Target/SPIRV/function-decorations-asserts.mlir
-@@ -0,0 +1,20 @@
-+// REQUIRES: asserts
-+// RUN: mlir-translate --no-implicit-module --test-spirv-roundtrip --split-input-file --debug %s | FileCheck %s
+diff -ruN --strip-trailing-cr a/mlir/lib/Target/LLVMIR/Dialect/OpenMP/OpenMPToLLVMIRTranslation.cpp b/mlir/lib/Target/LLVMIR/Dialect/OpenMP/OpenMPToLLVMIRTranslation.cpp
+--- a/mlir/lib/Target/LLVMIR/Dialect/OpenMP/OpenMPToLLVMIRTranslation.cpp
++++ b/mlir/lib/Target/LLVMIR/Dialect/OpenMP/OpenMPToLLVMIRTranslation.cpp
+@@ -4095,6 +4095,12 @@
+   llvm::SmallVector<size_t> occludedChildren;
+   llvm::sort(
+       indices.begin(), indices.end(), [&](const size_t a, const size_t b) {
++        // Bail early if we are asked to look at the same index. If we do not
++        // bail early, we can end up mistakenly adding indices to
++        // occludedChildren. This can occur with some types of libc++ hardening.
++        if (a == b)
++          return false;
 +
-+spirv.module Logical GLSL450 requires #spirv.vce<v1.0, [Shader, Linkage], []> {
-+    spirv.func @linkage_attr_test_kernel()  "DontInline"  attributes {}  {
-+        %uchar_0 = spirv.Constant 0 : i8
-+        %ushort_1 = spirv.Constant 1 : i16
-+        %uint_0 = spirv.Constant 0 : i32
-+        spirv.FunctionCall @outside.func.with.linkage(%uchar_0):(i8) -> ()
-+        spirv.Return
-+    }
-+    // CHECK: linkage_attributes = #spirv.linkage_attributes<linkage_name = "outside.func", linkage_type = <Import>>
-+    spirv.func @outside.func.with.linkage(%arg0 : i8) -> () "Pure" attributes {
-+      linkage_attributes=#spirv.linkage_attributes<
-+        linkage_name="outside.func",
-+        linkage_type=<Import>
-+      >
-+    }
-+    spirv.func @inside.func() -> () "Pure" attributes {} {spirv.Return}
-+}
-diff -ruN --strip-trailing-cr a/mlir/test/Target/SPIRV/function-decorations.mlir b/mlir/test/Target/SPIRV/function-decorations.mlir
---- a/mlir/test/Target/SPIRV/function-decorations.mlir
-+++ b/mlir/test/Target/SPIRV/function-decorations.mlir
-@@ -1,5 +1,4 @@
- // RUN: mlir-translate --no-implicit-module --test-spirv-roundtrip --split-input-file %s | FileCheck %s
--// RUN: mlir-translate --no-implicit-module --test-spirv-roundtrip --split-input-file --debug %s | FileCheck %s
+         auto memberIndicesA = cast<ArrayAttr>(indexAttr[a]);
+         auto memberIndicesB = cast<ArrayAttr>(indexAttr[b]);
  
- spirv.module Logical GLSL450 requires #spirv.vce<v1.0, [Shader, Linkage], []> {
-     spirv.func @linkage_attr_test_kernel()  "DontInline"  attributes {}  {

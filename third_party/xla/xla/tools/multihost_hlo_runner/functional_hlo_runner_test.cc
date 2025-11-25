@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "xla/tools/multihost_hlo_runner/functional_hlo_runner.h"
 
+#include <cstdint>
 #include <cstdlib>
 #include <memory>
 #include <random>
@@ -27,12 +28,15 @@ limitations under the License.
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 #include "xla/debug_options_flags.h"
+#include "xla/hlo/ir/hlo_computation.h"
+#include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/testlib/filecheck.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
@@ -49,7 +53,6 @@ limitations under the License.
 #include "xla/tsl/platform/errors.h"
 #include "xla/tsl/platform/file_system.h"
 #include "xla/tsl/platform/file_system_helper.h"
-#include "xla/tsl/platform/status_matchers.h"
 #include "xla/tsl/platform/statusor.h"
 #include "xla/tsl/platform/subprocess.h"
 #include "xla/tsl/platform/test.h"
@@ -62,9 +65,12 @@ limitations under the License.
 namespace xla {
 namespace {
 
+using ::testing::Each;
+using ::testing::ElementsAre;
+using ::testing::Eq;
+using ::testing::Lt;
+using ::testing::Property;
 using ::testing::SizeIs;
-using ::tsl::testing::IsOkAndHolds;
-using ::tsl::testing::StatusIs;
 using HloModuleAndArguments = ::xla::FunctionalHloRunner::HloModuleAndArguments;
 
 std::string GetHloPath(std::string file_name) {
@@ -793,6 +799,71 @@ TEST_F(FunctionalHloRunnerTest, ReadHloUnoptimizedSnapshot) {
 
   CHECK_EQ(hlo_module_and_arguments_from_text.arguments.size(),
            hlo_module_and_arguments_from_binary.arguments.size());
+}
+
+TEST_F(FunctionalHloRunnerTest,
+       ReadHloModuleProtoDoesNotPreserveInstructionIds) {
+  std::string path_to_text_hlo =
+      GetHloPath("sharded_unoptimized_hlo_snapshot.pbtxt");
+
+  tsl::Env* env = tsl::Env::Default();
+
+  // Read the text proto
+  HloUnoptimizedSnapshot message;
+  TF_ASSERT_OK(tsl::ReadTextProto(env, path_to_text_hlo, &message));
+
+  // Manually modify instruction ids in the proto.
+  int64_t instruction_id_offset = 1000;
+  for (HloComputationProto& computation :
+       *message.mutable_hlo_module()->mutable_computations()) {
+    for (HloInstructionProto& instruction :
+         *computation.mutable_instructions()) {
+      instruction.set_id(instruction.id() + instruction_id_offset);
+      for (int64_t& operand_id : *instruction.mutable_operand_ids()) {
+        operand_id += instruction_id_offset;
+      }
+    }
+    computation.set_root_id(computation.root_id() + instruction_id_offset);
+  }
+
+  // Dump message in the custom binary format
+  std::string path_to_binary_hlo =
+      tsl::io::JoinPath(std::getenv("TEST_UNDECLARED_OUTPUTS_DIR"),
+                        "sharded_unoptimized_hlo_snapshot_modified_ids.pb");
+
+  std::unique_ptr<tsl::WritableFile> file;
+  TF_ASSERT_OK(env->NewWritableFile(path_to_binary_hlo, &file));
+
+  tsl::WritableFileCopyingOutputStream output(file.get());
+
+  tsl::protobuf::io::CopyingOutputStreamAdaptor adaptor(&output);
+  EXPECT_TRUE(message.SerializeToZeroCopyStream(&adaptor));
+  adaptor.Flush();
+
+  TF_ASSERT_OK(file->Close());
+
+  // Read HloModuleAndArguments from binary dump.
+  TF_ASSERT_OK_AND_ASSIGN(
+      HloModuleAndArguments hlo_module_and_arguments_from_binary,
+      FunctionalHloRunner::LoadHloModuleAndArguments(
+          path_to_binary_hlo, InputFormat::kUnoptimizedSnapshotProtoBinary));
+
+  // Check if ids have been re-assigned in a compact way
+  HloComputation* entry_computation =
+      hlo_module_and_arguments_from_binary.hlo_module->entry_computation();
+
+  EXPECT_THAT(entry_computation->instructions(),
+              ElementsAre(Property(&HloInstruction::local_id, Eq(0)),
+                          Property(&HloInstruction::local_id, Eq(1)),
+                          Property(&HloInstruction::local_id, Eq(2)),
+                          Property(&HloInstruction::local_id, Eq(3))));
+
+  // Check that all operand ids are also within the re-assigned range.
+  EXPECT_THAT(entry_computation->instructions(),
+              Each(Property(&HloInstruction::operands,
+                            Each(Property(&HloInstruction::local_id, Lt(4))))));
+
+  EXPECT_THAT(entry_computation->root_instruction()->local_id(), Eq(3));
 }
 
 TEST_F(FunctionalHloRunnerTest, FixFakeArguments) {

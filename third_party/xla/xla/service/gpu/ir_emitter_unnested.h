@@ -96,6 +96,11 @@ class IrEmitterUnnested : public IrEmitter {
                                              std::move(thunk_sequence_));
   }
 
+  absl::Status EmitHloEntryComputation(const HloModule* module);
+
+ private:
+  explicit IrEmitterUnnested(IrEmitterContext* ir_emitter_context);
+
   // Emits code for the given HLO computation.
   //
   // Also populates related information to 'ir_emitter_context_' for
@@ -104,9 +109,6 @@ class IrEmitterUnnested : public IrEmitter {
   // constants will be stored in 'content'. Constants with initializers in the
   // generated code will have empty 'content'.
   absl::Status EmitHloComputation(const HloComputation* computation);
-
- private:
-  explicit IrEmitterUnnested(IrEmitterContext* ir_emitter_context);
 
   absl::Status EmitCommandBufferThunk(const HloInstruction* instr);
 
@@ -126,7 +128,6 @@ class IrEmitterUnnested : public IrEmitter {
   absl::Status EmitCuDnnThunk(const HloCustomCallInstruction* instr);
   absl::Status EmitPtxCustomCall(const HloCustomCallInstruction* instr);
   absl::Status EmitCubDeviceRadixSort(const HloCustomCallInstruction* instr);
-  absl::Status EmitCholeskyThunk(const HloInstruction* instr);
   absl::Status EmitCustomCallThunk(const HloCustomCallInstruction* instr);
   absl::Status EmitFftThunk(const HloFftInstruction* instr);
   absl::Status EmitAsyncComputation(const HloInstruction* instr);
@@ -176,6 +177,8 @@ class IrEmitterUnnested : public IrEmitter {
 
   template <typename ThunkType>
   absl::Status EmitReplicaOrPartitionId(const HloInstruction* instr);
+
+  absl::Status EmitCollectiveMetadata(const HloInstruction* instr);
 
   absl::Status EmitCollectivePermute(
       const HloCollectivePermuteInstruction* instr);
@@ -318,7 +321,8 @@ class IrEmitterUnnested : public IrEmitter {
   absl::Status EmitSliceToDynamic(const HloCustomCallInstruction* instr);
 
   absl::StatusOr<std::vector<llvm_ir::IrArray>> BuildKernelThunkForNonFusionOp(
-      const HloInstruction* instr, const LaunchDimensions& launch_dimensions);
+      llvm::Module* llvm_module, const HloInstruction* instr,
+      const LaunchDimensions& launch_dimensions);
 
   // Returns a WhileThunk that invokes thunk sequences for 'condition' and
   // 'body' sub-computations of while instruction.

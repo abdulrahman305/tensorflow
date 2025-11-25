@@ -93,10 +93,9 @@ absl::Status CheckUnaryOpWithResultAccuracy(HloInstruction* unary) {
   if (unary->has_result_accuracy()) {
     if (IsUnaryOpWithResultAccuracy(unary->opcode())) {
       return absl::OkStatus();
-    } else {
-      return Internal("Unary op with result accuracy is not supported for %s",
-                      HloOpcodeString(opcode));
     }
+    return Internal("Unary op with result accuracy is not supported for %s",
+                    HloOpcodeString(opcode));
   }
   return absl::OkStatus();
 }
@@ -642,15 +641,14 @@ absl::Status ShapeVerifier::HandleAllToAll(HloInstruction* hlo) {
         hlo, ShapeInference::InferAllToAllShape(
                  hlo->operand(0)->shape(), *all_to_all->split_dimension(),
                  *all_to_all->split_dimension(), split_count));
-  } else {
-    TF_RET_CHECK(hlo->operand_count() == split_count);
-    std::vector<const Shape*> operand_shapes;
-    for (const HloInstruction* operand : hlo->operands()) {
-      operand_shapes.push_back(&operand->shape());
-    }
-    return CheckShape(hlo,
-                      ShapeInference::InferAllToAllTupleShape(operand_shapes));
   }
+  TF_RET_CHECK(hlo->operand_count() == split_count);
+  std::vector<const Shape*> operand_shapes;
+  for (const HloInstruction* operand : hlo->operands()) {
+    operand_shapes.push_back(&operand->shape());
+  }
+  return CheckShape(hlo,
+                    ShapeInference::InferAllToAllTupleShape(operand_shapes));
 }
 
 absl::Status ShapeVerifier::HandleRaggedAllToAll(HloInstruction* hlo) {
@@ -842,16 +840,15 @@ absl::Status CheckDuplicatedSourceOrTarget(
             "Source %d appears more than once in instruction's source-target "
             "pairs: %s",
             p.first, collective_permute->ToString());
-      } else {
-        return Internal(
-            "Source %d appears more than %d times in instruction's "
-            "source-target "
-            "pairs: %s",
-            p.first, allowed_seen_count, collective_permute->ToString());
       }
-    } else {
-      seen_source_to_targets[p.first].push_back(p.second);
+      return Internal(
+          "Source %d appears more than %d times in instruction's "
+          "source-target "
+          "pairs: %s",
+          p.first, allowed_seen_count, collective_permute->ToString());
     }
+    seen_source_to_targets[p.first].push_back(p.second);
+
     TF_RET_CHECK(p.second >= 0)
         << "Target " << p.second
         << " in the instruction's source-target pair must be >= 0 : "
@@ -867,16 +864,14 @@ absl::Status CheckDuplicatedSourceOrTarget(
             "Target %d appears more than once in instruction's source-target "
             "pairs: %s",
             p.second, collective_permute->ToString());
-      } else {
-        return Internal(
-            "Target %d appears more than %d times in instruction's "
-            "source-target "
-            "pairs: %s",
-            p.second, allowed_seen_count, collective_permute->ToString());
       }
-    } else {
-      seen_target_to_sources[p.second].push_back(p.first);
+      return Internal(
+          "Target %d appears more than %d times in instruction's "
+          "source-target "
+          "pairs: %s",
+          p.second, allowed_seen_count, collective_permute->ToString());
     }
+    seen_target_to_sources[p.second].push_back(p.first);
   }
   return absl::OkStatus();
 }
@@ -2868,7 +2863,7 @@ absl::Status VerifyLayoutConstrainedAllReduce(const HloModule& module) {
 
 namespace {
 std::string FormatShapeIndexValidationError(
-    absl::string_view instruction_name,
+    const HloInstruction* instruction,
     const absl::flat_hash_set<ShapeIndex>& shape_leaf_indices,
     const absl::flat_hash_set<ShapeIndex>& ov_leaf_indices) {
   std::vector<ShapeIndex> shape_only;
@@ -2892,7 +2887,8 @@ std::string FormatShapeIndexValidationError(
       "Mismatched tuple structure in original_value for "
       "instruction %s. Leaf indices in shape and original_value "
       "do not match.\nIn shape only: {%s}\nIn original_value only: {%s}",
-      instruction_name, absl::StrJoin(shape_only, ", ", shape_index_formatter),
+      instruction->ToString(),
+      absl::StrJoin(shape_only, ", ", shape_index_formatter),
       absl::StrJoin(ov_only, ", ", shape_index_formatter));
 }
 
@@ -2921,9 +2917,9 @@ absl::Status VerifyOriginalValue(const HloModule& module) {
         }
 
         if (shape_leaf_indices != ov_leaf_indices) {
-          return Internal("%s", FormatShapeIndexValidationError(
-                                    instruction->name(), shape_leaf_indices,
-                                    ov_leaf_indices));
+          return Internal(
+              "%s", FormatShapeIndexValidationError(
+                        instruction, shape_leaf_indices, ov_leaf_indices));
         }
       }
     }
@@ -3209,7 +3205,7 @@ int64_t CountWriters(const HloInstruction* inst,
 int64_t CountWritersInUser(const HloInstruction* inst,
                            absl::Span<const int64_t> shape_index,
                            const HloInstruction* user) {
-  if (dynamic_cast<const HloCallableInstruction*>(user) ||
+  if (HloCallableInstruction::ClassOf(user) ||
       user->opcode() == HloOpcode::kWhile ||
       user->opcode() == HloOpcode::kConditional) {
     // For HloCallableInstruction, we may overcount here if we will allow
@@ -3646,9 +3642,9 @@ absl::Status InstructionVerifier::HandleTranspose(HloInstruction* transpose) {
   TF_RET_CHECK(shape.dimensions().size() == transpose->dimensions().size());
   TF_RET_CHECK(shape.dimensions().size() ==
                transpose->operand(0)->shape().dimensions().size());
-  TF_RET_CHECK(std::equal(
-      shape.dimensions().begin(), shape.dimensions().end(),
-      Permute(operand->shape().dimensions(), transpose->dimensions()).begin()))
+  TF_RET_CHECK(absl::c_equal(
+      shape.dimensions(),
+      Permute(operand->shape().dimensions(), transpose->dimensions())))
       << "shape: " << shape << ", operand->shape(): " << shape
       << ", dimensions: {" << absl::StrJoin(transpose->dimensions(), ", ")
       << "}";
@@ -3840,11 +3836,11 @@ absl::Status InstructionVerifier::VerifyNoHostMemorySpace(
       });
 }
 
-absl::StatusOr<bool> HloVerifier::Run(
+absl::StatusOr<bool> HloVerifier::RunImpl(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
   auto disabled = module->config().debug_options().xla_disable_hlo_passes();
-  if (std::find(disabled.begin(), disabled.end(), name()) != disabled.end()) {
+  if (absl::c_find(disabled, name()) != disabled.end()) {
     return false;
   }
   auto status_or_changed = [&]() -> absl::StatusOr<bool> {
@@ -3899,9 +3895,8 @@ absl::StatusOr<bool> HloVerifier::Run(
           *module, [this](const Shape& shape) -> int64_t {
             if (target_metadata_->GetVerifierOpts().IsLayoutSensitive()) {
               return target_metadata_->GetVerifierOpts().ShapeSize(shape);
-            } else {
-              return 0;
             }
+            return 0;
           }));
     }
 

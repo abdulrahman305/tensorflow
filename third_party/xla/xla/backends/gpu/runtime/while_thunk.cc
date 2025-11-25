@@ -100,11 +100,9 @@ WhileThunk::WhileThunk(
       body_thunk_sequence_(std::move(body_thunk_sequence)),
       trip_count_(trip_count) {}
 
-absl::Status WhileThunk::Prepare(const PrepareParams& params,
-                                 ResourceRequestsInterface& resource_requests) {
-  TF_RETURN_IF_ERROR(
-      condition_thunk_sequence_->Prepare(params, resource_requests));
-  TF_RETURN_IF_ERROR(body_thunk_sequence_->Prepare(params, resource_requests));
+absl::Status WhileThunk::Prepare(const PrepareParams& params) {
+  TF_RETURN_IF_ERROR(condition_thunk_sequence_->Prepare(params));
+  TF_RETURN_IF_ERROR(body_thunk_sequence_->Prepare(params));
   return absl::OkStatus();
 }
 
@@ -197,6 +195,23 @@ void WhileThunk::ForAllThunksMutable(absl::FunctionRef<void(Thunk*)> fn) {
   fn(this);
   condition_thunk_sequence_->ForAllThunksMutable(fn);
   body_thunk_sequence_->ForAllThunksMutable(fn);
+}
+
+absl::Status WhileThunk::TransformAllNestedThunks(
+    absl::FunctionRef<
+        absl::StatusOr<std::unique_ptr<Thunk>>(std::unique_ptr<Thunk>)>
+        fn) {
+  TF_RETURN_IF_ERROR(condition_thunk_sequence_->TransformAllNestedThunks(fn));
+
+  TF_ASSIGN_OR_RETURN(std::unique_ptr<Thunk> thunk,
+                      fn(std::move(condition_thunk_sequence_)));
+  condition_thunk_sequence_ = SequentialThunk::FromThunk(std::move(thunk));
+
+  TF_RETURN_IF_ERROR(body_thunk_sequence_->TransformAllNestedThunks(fn));
+
+  TF_ASSIGN_OR_RETURN(thunk, fn(std::move(body_thunk_sequence_)));
+  body_thunk_sequence_ = SequentialThunk::FromThunk(std::move(thunk));
+  return absl::OkStatus();
 }
 
 std::string WhileThunk::ToString(int indent) const {

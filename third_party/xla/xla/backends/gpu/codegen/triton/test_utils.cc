@@ -52,11 +52,13 @@ limitations under the License.
 #include "xla/service/gpu/gpu_device_info_for_tests.h"
 #include "xla/service/gpu/gpu_float_support.h"
 #include "xla/service/gpu/ir_emission_utils.h"
+#include "xla/service/gpu/model/block_level_parameters.h"
+#include "xla/service/gpu/model/triton_emitter_constraints.h"
 #include "xla/status_macros.h"
 #include "xla/stream_executor/cuda/cuda_compute_capability.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/tests/hlo_test_base.h"
-#include "xla/tests/hlo_test_base_with_symbolic_expr_context.h"
+#include "xla/tests/hlo_test_base_with_mlir_context.h"
 #include "xla/tsl/platform/errors.h"
 #include "xla/tsl/platform/statusor.h"
 #include "xla/xla.pb.h"
@@ -118,12 +120,11 @@ absl::Status CreateTritonIrAndFileCheck(
   auto* fusion = Cast<HloFusionInstruction>(computation.FusionInstruction());
 
   mlir::MLIRContext mlir_context;
-  SymbolicExprContext symbolic_expr_context(&mlir_context);
   TF_ASSIGN_OR_RETURN(
       mlir::OwningOpRef<mlir::ModuleOp> triton_module,
       CreateTritonModule("triton_fn", fusion,
                          TestGpuDeviceInfo::RTXA6000DeviceInfo(),
-                         block_level_parameters, symbolic_expr_context));
+                         block_level_parameters, mlir_context));
 
   std::string out;
   llvm::raw_string_ostream os(out);
@@ -137,7 +138,7 @@ absl::Status CreateTritonIrAndFileCheck(
 
 absl::StatusOr<
     std::pair<mlir::OwningOpRef<mlir::ModuleOp>, std::unique_ptr<HloModule>>>
-CreateXTileIrAndFileCheck(HloTestBaseWithSymbolicExprContext* test,
+CreateXTileIrAndFileCheck(HloTestBaseWithMLIRContext* test,
                           absl::string_view hlo_text,
                           absl::string_view triton_fusion_name,
                           absl::string_view filecheck_pattern) {
@@ -160,7 +161,7 @@ CreateXTileIrAndFileCheck(HloTestBaseWithSymbolicExprContext* test,
 }
 
 absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> CreateXTileIrAndFileCheck(
-    HloTestBaseWithSymbolicExprContext* test, const HloComputation& computation,
+    HloTestBaseWithMLIRContext* test, const HloComputation& computation,
     const BlockLevelParameters& block_level_parameters,
     absl::string_view filecheck_pattern) {
   auto* fusion = Cast<HloFusionInstruction>(computation.FusionInstruction());
@@ -168,8 +169,10 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> CreateXTileIrAndFileCheck(
   TF_ASSIGN_OR_RETURN(
       mlir::OwningOpRef<mlir::ModuleOp> xtile_dialect_module,
       ir_emitter_triton_internal::EmitXTileModule(
-          "xtile_dialect_fn", fusion, TestGpuDeviceInfo::RTXA6000DeviceInfo(),
-          block_level_parameters, *test->symbolic_expr_context()));
+          "xtile_dialect_fn",
+          TritonEmitterConstraints::GetBuilder(
+              TestGpuDeviceInfo::RTXA6000DeviceInfo()),
+          fusion, block_level_parameters, *test->mlir_context()));
 
   std::string out;
   llvm::raw_string_ostream os(out);
@@ -182,12 +185,11 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> CreateXTileIrAndFileCheck(
 }
 
 absl::Status LowerXTileIrToTritonAndFileCheck(
-    HloTestBaseWithSymbolicExprContext* test,
-    mlir::ModuleOp xtile_dialect_module, absl::string_view filecheck_pattern,
-    const HloFusionInstruction& fusion) {
+    HloTestBaseWithMLIRContext* test, mlir::ModuleOp xtile_dialect_module,
+    absl::string_view filecheck_pattern, const HloFusionInstruction& fusion) {
   TF_RETURN_IF_ERROR(ir_emitter_triton_internal::LowerXTileToTriton(
-      xtile_dialect_module, *test->symbolic_expr_context()->GetMLIRContext(),
-      fusion));
+      xtile_dialect_module, *test->mlir_context(), fusion,
+      TestGpuDeviceInfo::RTXH100SXMDeviceInfo()));
 
   std::string out;
   llvm::raw_string_ostream os(out);
@@ -206,13 +208,20 @@ absl::Status CreateTritonIrAndFileCheckForDot(
                       test->ParseAndReturnVerifiedModule(hlo_text));
   auto* comp = verified_module->GetComputationWithName(triton_fusion_name);
   TF_RET_CHECK(comp != nullptr);
-  return CreateTritonIrAndFileCheck(*comp, /*block_level_parameters=*/{},
-                                    filecheck_pattern);
+  return CreateTritonIrAndFileCheckForDot(*comp, filecheck_pattern);
 }
 
 absl::Status CreateTritonIrAndFileCheckForDot(
     const HloComputation& computation, absl::string_view filecheck_pattern) {
-  return CreateTritonIrAndFileCheck(computation, /*block_level_parameters=*/{},
+  BlockLevelParameters block_level_parameters;
+  if (auto gpu_config =
+          computation.FusionInstruction()->backend_config<GpuBackendConfig>();
+      gpu_config.ok() && gpu_config->has_fusion_backend_config() &&
+      gpu_config->fusion_backend_config().has_block_level_fusion_config()) {
+    block_level_parameters = BlockLevelParameters::FromBlockLevelFusionConfig(
+        gpu_config->fusion_backend_config().block_level_fusion_config());
+  }
+  return CreateTritonIrAndFileCheck(computation, block_level_parameters,
                                     filecheck_pattern);
 }
 

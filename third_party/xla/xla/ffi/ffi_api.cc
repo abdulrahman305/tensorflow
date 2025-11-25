@@ -289,7 +289,7 @@ static XLA_FFI_CallFrame PrepareMetadataCallFrame(
   return XLA_FFI_CallFrame{
       XLA_FFI_CallFrame_STRUCT_SIZE,
       &extension->extension_base,
-      /*api=*/nullptr,
+      /*api=*/GetXlaFfiApi(),
       /*context=*/nullptr,
       /*stage=*/XLA_FFI_ExecutionStage_EXECUTE,
       /*args=*/XLA_FFI_Args{XLA_FFI_Args_STRUCT_SIZE},
@@ -386,20 +386,6 @@ static std::vector<std::string> GetHandlerStages(
   return stages;
 }
 
-static bool CheckMetadata(const XLA_FFI_Metadata& a,
-                          const XLA_FFI_Metadata& b) {
-  return a.api_version.major_version == b.api_version.major_version &&
-         a.api_version.minor_version == b.api_version.minor_version &&
-         a.traits == b.traits &&
-         a.state_type_id.type_id == b.state_type_id.type_id;
-}
-
-static bool CheckHandlerBundle(const XLA_FFI_Handler_Bundle& a,
-                               const XLA_FFI_Handler_Bundle& b) {
-  return a.instantiate == b.instantiate && a.prepare == b.prepare &&
-         a.initialize == b.initialize && a.execute == b.execute;
-}
-
 static absl::Status RegisterHandler(absl::string_view name,
                                     absl::string_view platform,
                                     XLA_FFI_Handler_Bundle bundle,
@@ -455,13 +441,13 @@ static absl::Status RegisterHandler(absl::string_view name,
   // long as we register exactly the same handler.
   if (!emplaced) {
     const HandlerRegistration& existing = it->second;
-    if (!CheckMetadata(existing.metadata, metadata)) {
+    if (existing.metadata != metadata) {
       return InvalidArgument(
           "Duplicate FFI handler registration for %s on platform %s "
           "(canonical %s) with different metadata: %v vs %v",
           name, platform, canonical_platform, existing.metadata, metadata);
     }
-    if (!CheckHandlerBundle(existing.bundle, bundle)) {
+    if (existing.bundle != bundle) {
       return InvalidArgument(
           "Duplicate FFI handler registration for %s on platform %s "
           "(canonical %s) with different bundle addresses",
@@ -753,16 +739,8 @@ static XLA_FFI_Error* XLA_FFI_State_Set(XLA_FFI_State_Set_Args* args) {
 
   DCHECK(args->ctx->execution_state) << "ExecutionState must be set";
 
-  absl::Status status;
-  if (args->deleter == nullptr) {
-    status = args->ctx->execution_state->Set(
-        TypeRegistry::TypeId(args->type_id->type_id), args->state);
-  } else {
-    status = args->ctx->execution_state->Set(
-        TypeRegistry::TypeId(args->type_id->type_id), args->state,
-        args->deleter);
-  }
-
+  absl::Status status = args->ctx->execution_state->Set(
+      TypeRegistry::TypeId(args->type_id->type_id), args->state);
   if (!status.ok()) {
     return new XLA_FFI_Error{std::move(status)};
   }
@@ -911,7 +889,7 @@ static XLA_FFI_Error* XLA_FFI_ThreadPool_NumThreads(
 }
 
 //===----------------------------------------------------------------------===//
-// XLA FFI Internal Api Implementation
+// Generic XLA internal APIs available on all XLA backends.
 //===----------------------------------------------------------------------===//
 
 static XLA_FFI_Error* XLA_FFI_INTERNAL_Error_Forward(void* status) {
@@ -930,6 +908,50 @@ static XLA_FFI_Future* XLA_FFI_INTERNAL_Future_Forward(void* async_value) {
       tsl::AsyncValueRef<tsl::Chain>(tsl::TakeRef(tsl_async_value))};
 }
 
+static int32_t XLA_FFI_INTERNAL_DeviceOrdinal_Get(
+    XLA_FFI_ExecutionContext* ctx) {
+  return ctx->device_ordinal;
+}
+
+static int64_t XLA_FFI_INTERNAL_RunId_Get(XLA_FFI_ExecutionContext* ctx) {
+  return ctx->run_id.ToInt();
+}
+
+static void* XLA_FFI_INTERNAL_CalledComputation_Get(
+    XLA_FFI_ExecutionContext* ctx) {
+  return const_cast<HloComputation*>(ctx->called_computation);  // NOLINT
+}
+
+static void* XLA_FFI_INTERNAL_ExecutionContext_Get(
+    XLA_FFI_ExecutionContext* ctx) {
+  return const_cast<ffi::ExecutionContext*>(ctx->execution_context);  // NOLINT
+}
+
+static void* XLA_FFI_INTERNAL_ExecutionState_Get(
+    XLA_FFI_ExecutionContext* ctx) {
+  return const_cast<ffi::ExecutionState*>(ctx->execution_state);  // NOLINT
+}
+
+//===----------------------------------------------------------------------===//
+// XLA:CPU specific internal APIs.
+//===----------------------------------------------------------------------===//
+
+static void* XLA_FFI_INTERNAL_IntraOpThreadPool_Get(
+    XLA_FFI_ExecutionContext* ctx) {
+  if (auto* cpu = std::get_if<XLA_FFI_ExecutionContext::CpuContext>(
+          &ctx->backend_context)) {
+    return const_cast<Eigen::ThreadPoolDevice*>(  // NOLINT
+        cpu->intra_op_thread_pool);
+  }
+
+  return new XLA_FFI_Error{
+      InvalidArgument("XLA FFI CPU context is not available")};
+}
+
+//===----------------------------------------------------------------------===//
+// XLA:GPU specific internal APIs.
+//===----------------------------------------------------------------------===//
+
 static void* XLA_FFI_INTERNAL_Stream_Get(XLA_FFI_ExecutionContext* ctx) {
   if (auto* gpu = std::get_if<XLA_FFI_ExecutionContext::GpuContext>(
           &ctx->backend_context)) {
@@ -938,15 +960,6 @@ static void* XLA_FFI_INTERNAL_Stream_Get(XLA_FFI_ExecutionContext* ctx) {
 
   return new XLA_FFI_Error{
       InvalidArgument("XLA FFI GPU context is not available")};
-}
-
-static int32_t XLA_FFI_INTERNAL_DeviceOrdinal_Get(
-    XLA_FFI_ExecutionContext* ctx) {
-  return ctx->device_ordinal;
-}
-
-static int64_t XLA_FFI_INTERNAL_RunId_Get(XLA_FFI_ExecutionContext* ctx) {
-  return ctx->run_id.ToInt();
 }
 
 static void* XLA_FFI_INTERNAL_DeviceMemoryAllocator_Get(
@@ -960,31 +973,6 @@ static void* XLA_FFI_INTERNAL_DeviceMemoryAllocator_Get(
       InvalidArgument("XLA FFI GPU context is not available")};
 }
 
-static void* XLA_FFI_INTERNAL_CalledComputation_Get(
-    XLA_FFI_ExecutionContext* ctx) {
-  return const_cast<HloComputation*>(ctx->called_computation);
-}
-
-static void* XLA_FFI_INTERNAL_ExecutionContext_Get(
-    XLA_FFI_ExecutionContext* ctx) {
-  return const_cast<ffi::ExecutionContext*>(ctx->execution_context);
-}
-
-static void* XLA_FFI_INTERNAL_ExecutionState_Get(
-    XLA_FFI_ExecutionContext* ctx) {
-  return const_cast<ffi::ExecutionState*>(ctx->execution_state);
-}
-
-void* XLA_FFI_INTERNAL_IntraOpThreadPool_Get(XLA_FFI_ExecutionContext* ctx) {
-  if (auto* cpu = std::get_if<XLA_FFI_ExecutionContext::CpuContext>(
-          &ctx->backend_context)) {
-    return const_cast<Eigen::ThreadPoolDevice*>(cpu->intra_op_thread_pool);
-  }
-
-  return new XLA_FFI_Error{
-      InvalidArgument("XLA FFI CPU context is not available")};
-}
-
 //===----------------------------------------------------------------------===//
 // XLA FFI Api access
 //===----------------------------------------------------------------------===//
@@ -992,16 +980,21 @@ void* XLA_FFI_INTERNAL_IntraOpThreadPool_Get(XLA_FFI_ExecutionContext* ctx) {
 extern "C" const XLA_FFI_Api* XLA_FFI_GetApi() { return GetXlaFfiApi(); }
 
 static XLA_FFI_InternalApi internal_api = {
+    // Generic XLA APIs available on all XLA backends.
     XLA_FFI_INTERNAL_Error_Forward,
     XLA_FFI_INTERNAL_Future_Forward,
-    XLA_FFI_INTERNAL_Stream_Get,
     XLA_FFI_INTERNAL_DeviceOrdinal_Get,
     XLA_FFI_INTERNAL_RunId_Get,
-    XLA_FFI_INTERNAL_DeviceMemoryAllocator_Get,
     XLA_FFI_INTERNAL_CalledComputation_Get,
     XLA_FFI_INTERNAL_ExecutionContext_Get,
     XLA_FFI_INTERNAL_ExecutionState_Get,
+
+    // XLA:CPU specific APIs.
     XLA_FFI_INTERNAL_IntraOpThreadPool_Get,
+
+    // XLA:GPU specific APIs.
+    XLA_FFI_INTERNAL_Stream_Get,
+    XLA_FFI_INTERNAL_DeviceMemoryAllocator_Get,
 };
 
 static XLA_FFI_Api api = {

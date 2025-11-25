@@ -37,13 +37,17 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
+#include "xla/backends/gpu/runtime/collective_permute_thunk.h"
 #include "xla/backends/gpu/runtime/collective_thunk.h"
 #include "xla/backends/gpu/runtime/copy_thunk.h"
 #include "xla/backends/gpu/runtime/custom_call_thunk.h"
 #include "xla/backends/gpu/runtime/dynamic_slice_thunk.h"
 #include "xla/backends/gpu/runtime/gpublas_lt_matmul_thunk.h"
+#include "xla/backends/gpu/runtime/p2p_thunk_common.h"
+#include "xla/backends/gpu/runtime/shaped_slice.h"
 #include "xla/backends/gpu/runtime/thunk.h"
 #include "xla/ffi/api/c_api.h"
+#include "xla/ffi/attribute_map.h"
 #include "xla/ffi/call_frame.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/runtime/buffer_use.h"
@@ -94,6 +98,7 @@ namespace xla::gpu {
   V(kAllToAllCmd, "AllToAllCmd")                                 \
   V(kAllGatherCmd, "AllGatherCmd")                               \
   V(kCollectiveBroadcastCmd, "CollectiveBroadcastCmd")           \
+  V(kCollectivePermuteCmd, "CollectivePermuteCmd")               \
   V(kAsyncDone, "AsyncDone")                                     \
   V(kDynamicSliceFusionCmd, "DynamicSliceFusionCmd")             \
   V(kDynamicSliceCopyFusionCmd, "DynamicSliceCopyFusionCmd")     \
@@ -259,9 +264,7 @@ class CommandBufferCmd {
 
   // Prepare command for execution by allowing command to request shared state
   // required for recording (i.e. collective commands request cliques).
-  virtual absl::Status Prepare(
-      const Thunk::PrepareParams& params,
-      Thunk::ResourceRequestsInterface& resource_requests) {
+  virtual absl::Status Prepare(const Thunk::PrepareParams& params) {
     return absl::OkStatus();
   }
 
@@ -418,8 +421,7 @@ class CommandBufferCmdExecutor {
       SynchronizationMode synchronization_mode);
 
   // Prepares all commands added to a sequence.
-  absl::Status Prepare(const Thunk::PrepareParams& params,
-                       Thunk::ResourceRequestsInterface& resource_requests);
+  absl::Status Prepare(const Thunk::PrepareParams& params);
 
   // Initializes all commands added to a sequence.
   absl::Status Initialize(const Thunk::InitializeParams& params,
@@ -869,9 +871,7 @@ class WhileCmd : public CommandBufferCmd {
   absl::Status Initialize(const Thunk::InitializeParams& params,
                           StateManager& state) override;
 
-  absl::Status Prepare(
-      const Thunk::PrepareParams& params,
-      Thunk::ResourceRequestsInterface& resource_requests) override;
+  absl::Status Prepare(const Thunk::PrepareParams& params) override;
 
   absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
@@ -989,13 +989,13 @@ class CuDnnCmd : public TracedCommandBufferCmd {
 class CustomCallCmd : public CommandBufferCmd {
  public:
   using CustomCallTarget = CustomCallThunk::CustomCallTarget;
-  using AttributesMap = CustomCallThunk::AttributesMap;
+  using AttributesMap = ffi::AttributesMap;
 
   // This is a legacy custom call API that is discouraged, and will be
   // deprecated once XLA:FFI mechanism is ready.
   CustomCallCmd(std::string target_name, CustomCallTarget call_target,
-                std::vector<std::optional<ShapedSlice>> operands,
-                std::vector<std::optional<ShapedSlice>> results,
+                std::vector<NullableShapedSlice> operands,
+                std::vector<NullableShapedSlice> results,
                 absl::string_view opaque)
       : CommandBufferCmd(CommandBufferCmdType::kCustomCallCmd),
         target_name_(std::move(target_name)),
@@ -1005,8 +1005,8 @@ class CustomCallCmd : public CommandBufferCmd {
         results_(std::move(results)) {}
 
   CustomCallCmd(std::string target_name, XLA_FFI_Handler* handler,
-                std::vector<std::optional<ShapedSlice>> operands,
-                std::vector<std::optional<ShapedSlice>> results,
+                std::vector<NullableShapedSlice> operands,
+                std::vector<NullableShapedSlice> results,
                 ffi::CallFrame call_frame,
                 const HloComputation* called_computation)
       : CommandBufferCmd(CommandBufferCmdType::kCustomCallCmd),
@@ -1058,8 +1058,8 @@ class CustomCallCmd : public CommandBufferCmd {
 
   const HloComputation* called_computation_;
 
-  std::vector<std::optional<ShapedSlice>> operands_;
-  std::vector<std::optional<ShapedSlice>> results_;
+  std::vector<NullableShapedSlice> operands_;
+  std::vector<NullableShapedSlice> results_;
 };
 
 //===----------------------------------------------------------------------===//
@@ -1071,9 +1071,7 @@ class CollectiveCmd : public CommandBufferCmd {
   CollectiveCmd(CommandBufferCmdType cmd_type, CollectiveConfig config,
                 std::shared_ptr<CollectiveThunk::AsyncEvents> async_events);
 
-  absl::Status Prepare(
-      const Thunk::PrepareParams& params,
-      Thunk::ResourceRequestsInterface& resource_requests) final;
+  absl::Status Prepare(const Thunk::PrepareParams& params) final;
 
   bool requires_initialization() override { return true; }
 
@@ -1208,6 +1206,29 @@ class CollectiveBroadcastCmd : public CollectiveCmd {
 };
 
 //===----------------------------------------------------------------------===//
+// CollectivePermuteCmd
+//===----------------------------------------------------------------------===//
+
+class CollectivePermuteCmd : public CollectiveCmd {
+ public:
+  CollectivePermuteCmd(
+      CollectiveConfig config, P2PConfig p2p_config,
+      absl::Span<const CollectiveThunk::Buffer> buffers,
+      std::shared_ptr<CollectiveThunk::AsyncEvents> async_events);
+
+  absl::StatusOr<const se::CommandBuffer::Command*> Record(
+      const Thunk::ExecuteParams& execute_params,
+      const RecordParams& record_params, RecordAction record_action,
+      se::CommandBuffer* command_buffer) override;
+
+  BufferUseVector buffers() const override;
+
+ private:
+  P2PConfig p2p_config_;
+  std::vector<CollectiveThunk::Buffer> buffers_;
+};
+
+//===----------------------------------------------------------------------===//
 // DynamicSliceFusionCmd
 //===----------------------------------------------------------------------===//
 
@@ -1216,7 +1237,7 @@ class DynamicSliceFusionCmd : public CommandBufferCmd {
   DynamicSliceFusionCmd(
       CommandBufferCmdExecutor embedded_commands,
       std::vector<std::optional<BufferAllocation::Slice>> arguments,
-      std::vector<std::unique_ptr<BufferAllocation>> fake_allocations_,
+      std::vector<BufferAllocation> fake_allocations,
       std::vector<std::optional<std::vector<DynamicSliceThunk::Offset>>>
           offsets,
       std::vector<std::optional<Shape>> orig_shapes,
@@ -1229,9 +1250,7 @@ class DynamicSliceFusionCmd : public CommandBufferCmd {
   absl::Status Initialize(const Thunk::InitializeParams& params,
                           StateManager& state) override;
 
-  absl::Status Prepare(
-      const Thunk::PrepareParams& params,
-      Thunk::ResourceRequestsInterface& resource_requests) final;
+  absl::Status Prepare(const Thunk::PrepareParams& params) final;
 
   absl::StatusOr<const se::CommandBuffer::Command*> Record(
       const Thunk::ExecuteParams& execute_params,
@@ -1251,7 +1270,7 @@ class DynamicSliceFusionCmd : public CommandBufferCmd {
  private:
   CommandBufferCmdExecutor embedded_commands_;
   std::vector<DynamicSliceThunk::SliceDef> slices_;
-  std::vector<std::unique_ptr<BufferAllocation>> fake_allocations_;
+  std::vector<BufferAllocation> fake_allocations_;
 
   // Pinned host memory for transferring offset values from device to host.
   absl::Mutex mutex_;

@@ -43,7 +43,6 @@ limitations under the License.
 #include "xla/core/collectives/communicator.h"
 #include "xla/core/collectives/rank_id.h"
 #include "xla/future.h"
-#include "xla/hlo/ir/collective_op_group_mode.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/service/gpu/transforms/collectives/collective_ops_utils.h"
@@ -55,7 +54,6 @@ limitations under the License.
 #include "xla/stream_executor/event.h"
 #include "xla/stream_executor/memory_allocation.h"
 #include "xla/stream_executor/stream.h"
-#include "xla/tsl/concurrency/async_value_ref.h"
 #include "xla/tsl/platform/errors.h"
 #include "xla/tsl/platform/statusor.h"
 #include "xla/xla_data.pb.h"
@@ -418,7 +416,7 @@ RaggedAllToAllStartThunk::RaggedAllToAllStartThunk(
               ->config()
               .debug_options()
               .xla_gpu_unsupported_use_ragged_all_to_all_one_shot_kernel()) {
-  CHECK_EQ(config_.config.operand_count, buffers_.size());
+  CHECK_EQ(config_.config.operand_element_type.size(), buffers_.size());
 }
 
 /*static*/ absl::Status RaggedAllToAllStartThunk::CheckImplementable(

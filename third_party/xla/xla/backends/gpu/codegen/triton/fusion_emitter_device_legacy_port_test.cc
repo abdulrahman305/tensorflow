@@ -17,7 +17,6 @@ limitations under the License.
 #include <memory>
 #include <string>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -46,7 +45,7 @@ limitations under the License.
 #include "xla/hlo/utils/hlo_query.h"
 #include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/gpu_device_info_for_tests.h"
-#include "xla/service/gpu/model/experimental/symbolic_expr.h"
+#include "xla/service/gpu/model/block_level_parameters.h"
 #include "xla/service/gpu/tests/gpu_codegen_test.h"
 #include "xla/service/gpu/transforms/nest_gemm_fusion.h"
 #include "xla/service/pattern_matcher.h"
@@ -55,7 +54,6 @@ limitations under the License.
 #include "xla/tsl/lib/core/status_test_util.h"
 #include "xla/tsl/platform/env.h"
 #include "xla/tsl/platform/errors.h"
-#include "xla/tsl/platform/status_matchers.h"
 #include "xla/tsl/platform/statusor.h"
 #include "xla/tsl/platform/test.h"
 #include "xla/xla.pb.h"
@@ -89,14 +87,6 @@ class TritonTest : public GpuCodegenTest {
  public:
   DebugOptions GetDebugOptionsForTest() const override {
     DebugOptions debug_options = GpuCodegenTest::GetDebugOptionsForTest();
-    auto* emitter_opts =
-        debug_options
-            .mutable_xla_gpu_unsupported_generic_triton_emitter_features();
-    emitter_opts->Add(DebugOptions::GENERIC_TRITON_EMITTER_ENABLE_NESTED_GEMM);
-    emitter_opts->Add(
-        DebugOptions::GENERIC_TRITON_EMITTER_ALLOW_ALL_OPS_IN_GEMM_FUSION);
-    emitter_opts->Add(
-        DebugOptions::GENERIC_TRITON_EMITTER_ALLOW_ALL_GEMM_SHAPES);
     debug_options.set_xla_gpu_autotune_level(0);
     return debug_options;
   }
@@ -112,15 +102,6 @@ class TritonTest : public GpuCodegenTest {
     return device_desc().gpu_compute_capability();
   }
 
-  stream_executor::GpuComputeCapability CudaAmpereOrRocm() {
-    if (GpuComputeCapability().IsRocm()) {
-      return stream_executor::GpuComputeCapability{
-          device_desc().rocm_compute_capability()};
-    }
-    return stream_executor::GpuComputeCapability{
-        se::CudaComputeCapability::Ampere()};
-  }
-
   // Returns the module, its fusion computation and associated block level
   // parameters from an HLO module text whose entry computation contains a
   // single GEMM fusion.
@@ -128,9 +109,9 @@ class TritonTest : public GpuCodegenTest {
   GetModuleAndNestedFusionMetadata(absl::string_view hlo_text) {
     TF_ASSIGN_OR_RETURN(std::unique_ptr<VerifiedHloModule> module,
                         ParseAndReturnVerifiedModule(hlo_text));
-    TF_ASSIGN_OR_RETURN(bool fusion_was_nested,
-                        NestGemmFusion(device_desc(), &symbolic_expr_context_)
-                            .Run(module.get()));
+    TF_ASSIGN_OR_RETURN(
+        bool fusion_was_nested,
+        NestGemmFusion(device_desc(), &mlir_context_).Run(module.get()));
     if (!fusion_was_nested) {
       return absl::InternalError("Failed to nest the GEMM fusion.");
     }
@@ -153,7 +134,6 @@ class TritonTest : public GpuCodegenTest {
   }
 
   mlir::MLIRContext mlir_context_;
-  SymbolicExprContext symbolic_expr_context_{&mlir_context_};
 };
 
 class TritonGemmTest : public TritonTest {
@@ -171,14 +151,6 @@ class TritonGemmTest : public TritonTest {
     debug_options.set_xla_gpu_enable_split_k_autotuning(false);
     // Always rewrite Gemms with Triton regardless of size.
     debug_options.set_xla_gpu_gemm_rewrite_size_threshold(0);
-    // TODO(b/393299275): remove when generic emitter is fully enabled.
-    debug_options.clear_xla_gpu_unsupported_generic_triton_emitter_features();
-    debug_options.add_xla_gpu_unsupported_generic_triton_emitter_features(
-        DebugOptions::GENERIC_TRITON_EMITTER_ENABLE_NESTED_GEMM);
-    debug_options.add_xla_gpu_unsupported_generic_triton_emitter_features(
-        DebugOptions::GENERIC_TRITON_EMITTER_ALLOW_ALL_OPS_IN_GEMM_FUSION);
-    debug_options.add_xla_gpu_unsupported_generic_triton_emitter_features(
-        DebugOptions::GENERIC_TRITON_EMITTER_ALLOW_ALL_GEMM_SHAPES);
     return debug_options;
   }
 
@@ -268,8 +240,8 @@ ENTRY e {
                                  module_and_metadata.block_level_parameters,
                                  R"(
 CHECK: %[[LOAD:.*]] = xtile.extract {{.*}} -> tensor<16x16xi8>
-CHECK: %[[TRUNCI:.*]] = arith.trunci %[[LOAD]] : tensor<16x16xi8> to tensor<16x16xi1>
-CHECK: %{{.*}} = arith.andi %[[TRUNCI]], %{{.*}} : tensor<16x16xi1>
+CHECK: %[[CMPI:.*]] = arith.cmpi ne, %[[LOAD]], {{.*}} : tensor<16x16xi8>
+CHECK: %{{.*}} = arith.andi %[[CMPI]], %{{.*}} : tensor<16x16xi1>
 )"));
 }
 
@@ -412,7 +384,7 @@ ENTRY e {
   }
   DebugOptions debug_options = verified_module->config().debug_options();
   debug_options.set_xla_dump_to(output_directory);
-  debug_options.set_xla_dump_hlo_pass_re("triton-fusion-emitter");
+  debug_options.set_xla_dump_emitter_re("triton-fusion");
   verified_module->mutable_config().set_debug_options(debug_options);
 
   EXPECT_TRUE(RunAndCompare(std::move(verified_module),
@@ -486,7 +458,6 @@ TEST_F(TritonGemmTest, FailIfTooMuchShmem) {
       TestGpuDeviceInfo::RTXA6000DeviceInfo();
   llvm::LLVMContext llvm_ctx;
   llvm::Module llvm_module("module", llvm_ctx);
-  mlir::MLIRContext mlir_context;
 
   constexpr absl::string_view kHloTextTemplate = R"(
 triton_gemm_dot {
@@ -516,7 +487,7 @@ ENTRY entry {
   EXPECT_THAT(
       TritonWrapper("test_fn", fusion1, se::GpuComputeCapability{cc},
                     device_info, module1_and_metadata.block_level_parameters,
-                    &llvm_module, symbolic_expr_context_),
+                    &llvm_module, mlir_context_),
       absl_testing::StatusIs(
           tsl::error::RESOURCE_EXHAUSTED,
           ::testing::HasSubstr("Shared memory size limit exceeded")));
@@ -532,7 +503,7 @@ ENTRY entry {
       const auto result,
       TritonWrapper("test_fn", fusion2, se::GpuComputeCapability{cc},
                     device_info, module2_and_metadata.block_level_parameters,
-                    &llvm_module, symbolic_expr_context_));
+                    &llvm_module, mlir_context_));
   // Use optin shared memory which is > shared_memory_per_block.
   EXPECT_GT(result.shmem_bytes, device_info.shared_memory_per_block());
 }
@@ -830,7 +801,6 @@ TEST_F(TritonGemmTest, DISABLED_FailForTooComplexTiling) {
       TestGpuDeviceInfo::RTXA6000DeviceInfo();
   llvm::LLVMContext llvm_ctx;
   llvm::Module llvm_module("module", llvm_ctx);
-  mlir::MLIRContext mlir_context;
 
   constexpr absl::string_view kHloTextTemplate = R"(
 HloModule module
@@ -863,7 +833,7 @@ ENTRY entry {
   EXPECT_THAT(
       TritonWrapper("test_fn", fusion1, se::GpuComputeCapability{cc},
                     device_info, module1_and_metadata.block_level_parameters,
-                    &llvm_module, symbolic_expr_context_),
+                    &llvm_module, mlir_context_),
       absl_testing::StatusIs(tsl::error::RESOURCE_EXHAUSTED,
                              "Tiling complexity heuristic exceeded"));
 
@@ -878,7 +848,7 @@ ENTRY entry {
   TF_EXPECT_OK(TritonWrapper("test_fn", fusion2, se::GpuComputeCapability{cc},
                              device_info,
                              module2_and_metadata.block_level_parameters,
-                             &llvm_module, symbolic_expr_context_)
+                             &llvm_module, mlir_context_)
                    .status());
 }
 
@@ -2017,14 +1987,13 @@ ENTRY e {
       optin_shmem_module_and_metadata.computation->FusionInstruction());
   llvm::LLVMContext llvm_ctx;
   llvm::Module llvm_module("module", llvm_ctx);
-  mlir::MLIRContext mlir_context;
 
   TF_ASSERT_OK_AND_ASSIGN(
       const auto result,
       TritonWrapper("test_fn", triton_dot_fusion, GpuComputeCapability(),
                     dev_info,
                     optin_shmem_module_and_metadata.block_level_parameters,
-                    &llvm_module, symbolic_expr_context_));
+                    &llvm_module, mlir_context_));
   // The config is chosen so that the used memory size is slightly above the
   // 48 kB boundary of standard / opt-in shared memory so that any GPU that
   // has the opt-in one should be able to execute the test.

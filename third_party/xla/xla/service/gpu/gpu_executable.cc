@@ -40,14 +40,21 @@ limitations under the License.
 #include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "xla/backends/gpu/collectives/gpu_clique_key.h"
+#include "xla/backends/gpu/collectives/gpu_collectives.h"
 #include "xla/backends/gpu/runtime/annotation.h"
+#include "xla/backends/gpu/runtime/collective_clique_requests.h"
+#include "xla/backends/gpu/runtime/collective_cliques.h"
+#include "xla/backends/gpu/runtime/collective_params.h"
 #include "xla/backends/gpu/runtime/command_buffer_conversion_pass.h"
 #include "xla/backends/gpu/runtime/nvshmem_collective_thunk.h"
 #include "xla/backends/gpu/runtime/sequential_thunk.h"
 #include "xla/backends/gpu/runtime/thunk.h"
-#include "xla/backends/gpu/runtime/thunk_checksum_tracing_pass.h"
+#include "xla/backends/gpu/runtime/thunk_buffer_debug_pass.h"
 #include "xla/backends/gpu/runtime/thunk_pass_pipeline.h"
+#include "xla/backends/gpu/runtime/thunk_proto_deserialization.h"
+#include "xla/client/executable_build_options.h"
 #include "xla/core/collectives/clique_key.h"
+#include "xla/core/collectives/communicator.h"
 #include "xla/executable_run_options.h"
 #include "xla/hlo/ir/hlo_input_output_alias_config.h"
 #include "xla/hlo/ir/hlo_instruction.h"
@@ -60,7 +67,7 @@ limitations under the License.
 #include "xla/service/gpu/buffer_allocations.h"
 #include "xla/service/gpu/gpu_constants.h"
 #include "xla/service/gpu/gpu_executable_run_options.h"
-#include "xla/service/gpu/resource_requests.h"
+#include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/service/gpu/stream_executor_util.h"
 #include "xla/service/hlo_value.h"
 #include "xla/service/maybe_owning_device_memory.h"
@@ -177,7 +184,20 @@ static absl::Status RunThunkPasses(const DebugOptions& debug_options,
                                    ThunkPassBufferAllocator& allocator) {
   ThunkPassPipeline pipeline("thunk-passes");
   if (debug_options.xla_gpu_experimental_enable_checksum_tracing_on_thunks()) {
-    pipeline.AddPass(std::make_unique<ThunkChecksumTracingPass>());
+    pipeline.AddPass(std::make_unique<ThunkBufferDebugPass>(
+        ThunkBufferDebugPass::Mode::kChecksum));
+  }
+  if (debug_options.xla_gpu_experimental_enable_buffer_saver_on_thunks()) {
+    pipeline.AddPass(std::make_unique<ThunkBufferDebugPass>(
+        ThunkBufferDebugPass::Mode::kBufferSaver));
+  }
+  if ((debug_options.xla_gpu_detect_nan() !=
+       DebugOptions::DETECTION_MODE_NONE) ||
+      (debug_options.xla_gpu_detect_inf() !=
+       DebugOptions::DETECTION_MODE_NONE)) {
+    LOG(ERROR) << "Adding ThunkBufferDebugPass for nan/inf checking";
+    pipeline.AddPass(std::make_unique<ThunkBufferDebugPass>(
+        ThunkBufferDebugPass::Mode::kFloatChecker));
   }
   if (debug_options.xla_gpu_experimental_enable_command_buffer_on_thunks()) {
     pipeline.AddPass(std::make_unique<CommandBufferConversionPass>(
@@ -404,37 +424,36 @@ absl::Status ExecuteThunksImpl(
   }
 
   // Parameters for executing collective operations.
-  TF_ASSIGN_OR_RETURN(Thunk::CollectiveExecuteParams collective_params,
-                      Thunk::CollectiveExecuteParams::Create(
-                          *run_options, async_comms_streams,
-                          main_stream->parent()->device_ordinal(),
-                          collective_max_nchannels, p2p_max_nchannels));
+  TF_ASSIGN_OR_RETURN(
+      CollectiveParams collective_params,
+      CollectiveParams::Create(*run_options, async_comms_streams,
+                               main_stream->parent()->device_ordinal(),
+                               collective_max_nchannels, p2p_max_nchannels));
 
-  ResourceRequests resource_requests;
+  CollectiveCliqueRequests clique_requests;
 
-  {  // Collect resource requirements from thunks.
-    Thunk::PrepareParams prepare_params{&collective_params};
+  {  // Prepare thunks for execution and collect requested GPU cliques.
+    Thunk::PrepareParams prepare_params{&collective_params, &clique_requests};
 
     tsl::profiler::TraceMe trace_prepare("Thunks::Prepare");
-    TF_RETURN_IF_ERROR(
-        thunk_sequence.Prepare(prepare_params, resource_requests));
+    TF_RETURN_IF_ERROR(thunk_sequence.Prepare(prepare_params));
   }
 
   std::vector<std::unique_ptr<CliqueKey>>* clique_keys =
       run_options->run_options().clique_keys();
   if (clique_keys != nullptr) {
-    for (const GpuCliqueKey& clique_key : resource_requests.CliqueKeys()) {
+    for (const GpuCliqueKey& clique_key : clique_requests.RequestedCliques()) {
       clique_keys->push_back(std::make_unique<GpuCliqueKey>(clique_key));
     }
   }
 
   // Acquire collective cliques requested by thunks.
-  Thunk::CollectiveCliques collective_cliques;
+  CollectiveCliques collective_cliques;
   if (!mock_collectives) {
     TF_ASSIGN_OR_RETURN(
         collective_cliques,
-        resource_requests.AcquireCollectiveCliques(
-            collective_params,
+        AcquireCollectiveCliques(
+            collective_params, clique_requests,
             debug_options
                 ? debug_options->xla_gpu_collectives_use_persistent_cliques()
                 : false));
@@ -1104,8 +1123,8 @@ GetOutputInfo(const HloModule& hlo_module, const BufferAssignment& assignment) {
   return output;
 }
 
-OutputInfoProto GpuExecutable::OutputInfo::ToProto() const {
-  OutputInfoProto proto;
+GpuExecutableProto::OutputInfoProto GpuExecutable::OutputInfo::ToProto() const {
+  GpuExecutableProto::OutputInfoProto proto;
   proto.set_allocation_index(allocation_index);
   proto.set_passthrough(passthrough);
 
@@ -1130,7 +1149,7 @@ OutputInfoProto GpuExecutable::OutputInfo::ToProto() const {
 }
 
 absl::StatusOr<GpuExecutable::OutputInfo> GpuExecutable::OutputInfo::FromProto(
-    const OutputInfoProto& proto) {
+    const GpuExecutableProto::OutputInfoProto& proto) {
   OutputInfo output_info;
   output_info.allocation_index = proto.allocation_index();
   output_info.passthrough = proto.passthrough();
@@ -1155,5 +1174,183 @@ absl::StatusOr<GpuExecutable::OutputInfo> GpuExecutable::OutputInfo::FromProto(
   }
   return output_info;
 }
+
+GpuExecutableProto::ConstantInfoProto GpuExecutable::ConstantInfo::ToProto()
+    const {
+  GpuExecutableProto::ConstantInfoProto proto;
+  proto.set_symbol_name(symbol_name);
+  *proto.mutable_content() = content.ToProto();
+  proto.set_allocation_index(allocation_index);
+  return proto;
+}
+
+GpuExecutable::ConstantInfo GpuExecutable::ConstantInfo::FromProto(
+    const GpuExecutableProto::ConstantInfoProto& proto) {
+  return ConstantInfo{
+      /*symbol_name=*/proto.symbol_name(),
+      /*content=*/DenseDataIntermediate::FromProto(proto.content()),
+      /*allocation_index=*/static_cast<int>(proto.allocation_index())};
+}
+
+absl::StatusOr<GpuExecutableProto> GpuExecutable::ToProto() const {
+  GpuExecutableProto proto;
+  proto.set_binary(binary_.data(), binary_.size());
+  proto.set_asm_text(text_);
+  proto.mutable_dnn_compiled_graphs()->insert(dnn_compiled_graphs_.cbegin(),
+                                              dnn_compiled_graphs_.cend());
+
+  *proto.mutable_gpu_compute_capability() = gpu_version_.ToProto();
+
+  TF_ASSIGN_OR_RETURN(*proto.mutable_thunk(), thunks_->ToProto());
+
+  proto.set_module_name(module_name_);
+  *proto.mutable_program_shape() = program_shape_.ToProto();
+
+  absl::Span<const BufferAllocation* const> allocations = GetAllocations();
+  proto.mutable_buffer_allocations()->mutable_values()->Reserve(
+      allocations.size());
+  for (const auto& allocation : allocations) {
+    proto.mutable_buffer_allocations()->mutable_values()->Add(
+        allocation->ToProto());
+  }
+
+  if (hlo_module_ != nullptr) {
+    *proto.mutable_hlo_module_with_config() = hlo_module_->ToProtoWithConfig();
+  }
+
+  proto.mutable_output_info_map()->Reserve(output_info_.size());
+  for (const auto& [shape_index, output_info] : output_info_) {
+    auto map_entry = proto.add_output_info_map();
+    *map_entry->mutable_shape_index() = shape_index.ToProto();
+    *map_entry->mutable_output_info() = output_info.ToProto();
+  }
+
+  proto.mutable_constants()->Reserve(constants_.size());
+  for (const auto& constant : constants_) {
+    *proto.add_constants() = constant.ToProto();
+  }
+
+  return proto;
+}
+
+absl::StatusOr<std::unique_ptr<GpuExecutable>> GpuExecutable::FromProto(
+    const GpuExecutableProto& proto,
+    const se::DeviceDescription& device_description,
+    absl::string_view platform_name) {
+  Params params;
+  params.enable_debug_info_manager = false;
+  params.asm_text = proto.asm_text();
+  const std::string& binary = proto.binary();
+  params.binary.assign(binary.begin(), binary.end());
+  params.buffer_assignment = nullptr;
+  if (proto.has_hlo_module_with_config()) {
+    TF_ASSIGN_OR_RETURN(
+        params.debug_module,
+        HloModule::CreateFromProtoWithConfig(proto.hlo_module_with_config()));
+  }
+
+  params.mlir_allocations.emplace();
+  params.mlir_allocations->reserve(proto.buffer_allocations().values_size());
+  for (const BufferAllocationProto& allocation_proto :
+       proto.buffer_allocations().values()) {
+    params.mlir_allocations->push_back(
+        BufferAllocation::FromProto(allocation_proto));
+  }
+
+  for (const auto& [key, value] : proto.dnn_compiled_graphs()) {
+    params.dnn_compiled_graphs.emplace(key, value);
+  }
+
+  TF_ASSIGN_OR_RETURN(
+      stream_executor::GpuComputeCapability gpu_compute_capability,
+      stream_executor::GpuComputeCapability::FromProto(
+          proto.gpu_compute_capability()));
+
+  if (gpu_compute_capability != device_description.gpu_compute_capability()) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "GPU compute capability of serialized executable doesn't match target "
+        "device capability. (serialized: %s, target: %s)",
+        gpu_compute_capability.ToString(),
+        device_description.gpu_compute_capability().ToString()));
+  }
+
+  params.device_description = device_description;
+
+  TF_ASSIGN_OR_RETURN(
+      std::unique_ptr<Thunk> thunk,
+      DeserializeThunkProto(proto.thunk(), params.mlir_allocations.value(),
+                            params.debug_module.get(), platform_name));
+
+  if (dynamic_cast<const SequentialThunk*>(thunk.get()) == nullptr) {
+    return absl::InvalidArgumentError(
+        "The top-most serialized thunk in the GPU Executable is not a "
+        "SequentialThunk!");
+  }
+
+  params.executable = unique_ptr_down_cast<SequentialThunk>(std::move(thunk));
+
+  params.constants.reserve(proto.constants().size());
+  for (const auto& constant_proto : proto.constants()) {
+    params.constants.push_back(ConstantInfo::FromProto(constant_proto));
+  }
+
+  params.output_info.reserve(proto.output_info_map().size());
+  for (const auto& output_info_proto : proto.output_info_map()) {
+    ShapeIndex shape_index =
+        ShapeIndex::FromProto(output_info_proto.shape_index());
+    TF_ASSIGN_OR_RETURN(OutputInfo output_info,
+                        OutputInfo::FromProto(output_info_proto.output_info()));
+    params.output_info.emplace(std::move(shape_index), std::move(output_info));
+  }
+
+  params.module_name = proto.module_name();
+  TF_ASSIGN_OR_RETURN(params.program_shape,
+                      ProgramShape::FromProto(proto.program_shape()));
+
+  return Create(std::move(params));
+}
+
+static absl::StatusOr<ExecutableBuildOptionsProto>
+CreateSerializableBuildOptionsProto(const ExecutableBuildOptions& options) {
+  ExecutableBuildOptions serializable_opts = options;
+  // These fields are not serializable, and the toProto will fail if they are
+  // set, but we also don't need them for the dump so just clear them.
+  serializable_opts.set_layout_canonicalization_callback(nullptr);
+  serializable_opts.set_compile_thread_pool(nullptr);
+
+  return serializable_opts.ToProto();
+}
+
+absl::Status GpuExecutable::DumpExecutableIfEnabled(
+    const ExecutableBuildOptions& options,
+    const DebugOptions& debug_options) const {
+  if (!debug_options.has_xla_dump_to() ||
+      !debug_options.xla_gpu_experimental_dump_gpu_executable()) {
+    return absl::OkStatus();
+  }
+
+  TF_ASSIGN_OR_RETURN(GpuExecutableProto gpu_executable_proto, ToProto());
+  std::string serialized_proto = gpu_executable_proto.SerializeAsString();
+  if (serialized_proto.empty()) {
+    return absl::InternalError("Failed to serialize GPU executable proto");
+  }
+
+  ExecutableAndOptionsProto dump_proto;
+  *dump_proto.mutable_serialized_executable() = std::move(serialized_proto);
+  TF_ASSIGN_OR_RETURN(
+      *dump_proto.mutable_compile_options()->mutable_executable_build_options(),
+      CreateSerializableBuildOptionsProto(options));
+
+  constexpr absl::string_view kDumpFilename = "gpu_executable";
+  if (has_module()) {
+    DumpPerModuleProtobufToFile(module(), dump_proto, debug_options,
+                                kDumpFilename);
+  } else {
+    DumpProtobufToFile(dump_proto, debug_options, kDumpFilename);
+  }
+
+  return absl::OkStatus();
+}
+
 }  // namespace gpu
 }  // namespace xla

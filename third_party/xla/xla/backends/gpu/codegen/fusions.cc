@@ -38,7 +38,6 @@ limitations under the License.
 #include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/hlo_fusion_analysis.h"
 #include "xla/service/gpu/ir_emission_utils.h"
-#include "xla/service/gpu/model/experimental/symbolic_expr.h"
 #include "xla/shape.h"
 
 namespace xla {
@@ -78,8 +77,7 @@ bool HloFusionInfo::CanEmitDynamicUpdateSliceInPlace() const {
 }
 
 std::unique_ptr<FusionInterface> GetFusionEmitter(
-    const FusionInfo& fusion_info,
-    gpu::SymbolicExprContext* symbolic_expr_context) {
+    const FusionInfo& fusion_info, mlir::MLIRContext* mlir_context) {
   const auto& analysis = fusion_info.analysis();
   const FusionBackendConfig& backend_config = analysis.fusion_backend_config();
 
@@ -110,16 +108,16 @@ std::unique_ptr<FusionInterface> GetFusionEmitter(
           fusion_info.CanEmitDynamicUpdateSliceInPlace()) {
         return std::make_unique<InPlaceDynamicUpdateSliceFusion>(analysis);
       }
-      return std::make_unique<LoopFusion>(analysis, symbolic_expr_context);
+      return std::make_unique<LoopFusion>(analysis, mlir_context);
     }
     case HloFusionAnalysis::EmitterFusionKind::kReduction: {
-      return CreateReductionFusion(analysis, symbolic_expr_context);
+      return CreateReductionFusion(analysis, mlir_context);
     }
     case HloFusionAnalysis::EmitterFusionKind::kScatter: {
-      return CreateScatterFusion(analysis, symbolic_expr_context);
+      return CreateScatterFusion(analysis, mlir_context);
     }
     case HloFusionAnalysis::EmitterFusionKind::kTranspose: {
-      return CreateTransposeFusion(analysis, symbolic_expr_context);
+      return CreateTransposeFusion(analysis, mlir_context);
     }
     case HloFusionAnalysis::EmitterFusionKind::kConcatenate: {
       return std::make_unique<ConcatenateFusion>(analysis);

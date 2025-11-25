@@ -25,7 +25,6 @@ limitations under the License.
 #include <string>
 #include <tuple>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -35,12 +34,14 @@ limitations under the License.
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/log/scoped_mock_log.h"
+#include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_replace.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/substitute.h"
+#include "google/protobuf/text_format.h"
 #include "xla/autotune_results.pb.h"
 #include "xla/backends/gpu/runtime/sequential_thunk.h"
 #include "xla/backends/gpu/runtime/thunk.h"
@@ -48,7 +49,6 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
-#include "xla/hlo/ir/hlo_module_group.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/ir/hlo_print_options.h"
 #include "xla/hlo/testlib/filecheck.h"
@@ -87,11 +87,12 @@ limitations under the License.
 #include "xla/tsl/platform/statusor.h"
 #include "xla/tsl/platform/test.h"
 #include "xla/tsl/platform/threadpool.h"
+#include "xla/tsl/testing/temporary_directory.h"
+#include "xla/util.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/platform/casts.h"
 #include "tsl/platform/path.h"
 #include "tsl/platform/platform.h"
-#include "tsl/platform/protobuf.h"
 #include "tsl/platform/regexp.h"
 
 namespace xla {
@@ -107,9 +108,11 @@ using ::testing::IsEmpty;
 using ::testing::IsSupersetOf;
 using ::testing::Matches;
 using ::testing::Not;
+using ::testing::SizeIs;
 using ::testing::StartsWith;
 using ::testing::TempDir;
 using ::tsl::gtl::ValueOrDie;
+using ::tsl::testing::TemporaryDirectory;
 
 class GpuCompilerTest : public HloTestBase {
  public:
@@ -121,7 +124,7 @@ class GpuCompilerTest : public HloTestBase {
     std::unique_ptr<GpuAliasInfo> alias_info =
         gpu_compiler->GetAliasInfo(gpu_device_info);
     TF_RETURN_IF_ERROR(ScheduleGpuModule(module, 4, gpu_device_info,
-                                         gpu_compiler->symbolic_expr_context(),
+                                         gpu_compiler->mlir_context(),
                                          alias_info.get())
                            .status());
     return gpu_compiler->RunPostSchedulingPipelines(
@@ -151,6 +154,17 @@ class GpuCompilerTest : public HloTestBase {
     return executor->GetDeviceDescription().cuda_compute_capability();
   }
 };
+
+absl::StatusOr<std::string> ReadNonEmptyFile(absl::string_view file_path) {
+  std::string str;
+  tsl::Env* env = tsl::Env::Default();
+  TF_RETURN_IF_ERROR(tsl::ReadFileToString(env, std::string(file_path), &str));
+  if (str.empty()) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("File is empty: ", file_path));
+  }
+  return str;
+}
 
 TEST_F(GpuCompilerTest, CompiledProgramsCount) {
   const char* hlo_text = R"(
@@ -410,14 +424,6 @@ ENTRY e {
     return filename;
   }
 
-  std::string ExpectToReadNonEmptyFile(absl::string_view file_path) {
-    std::string str;
-    tsl::Env* env = tsl::Env::Default();
-    TF_EXPECT_OK(tsl::ReadFileToString(env, std::string(file_path), &str));
-    EXPECT_THAT(str, Not(IsEmpty()));
-    return str;
-  }
-
   DebugOptions GetDebugOptionsForTest() const override {
     DebugOptions options = HloTestBase::GetDebugOptionsForTest();
     options.set_xla_gpu_dump_autotune_results_to(
@@ -438,8 +444,9 @@ TEST_F(PersistedAutotuningTest, WriteResultsOnEachCompilation) {
   // Check that it writes the results on the first compilation.
   TF_EXPECT_OK(GetOptimizedModule(kHloText).status());
   {
-    std::string autotune_results_str =
-        ExpectToReadNonEmptyFile(xla_gpu_dump_autotune_results_to_);
+    TF_ASSERT_OK_AND_ASSIGN(
+        std::string autotune_results_str,
+        ReadNonEmptyFile(xla_gpu_dump_autotune_results_to_));
     AutotuneResults results;
     EXPECT_TRUE(tsl::protobuf::TextFormat::ParseFromString(autotune_results_str,
                                                            &results));
@@ -453,8 +460,9 @@ TEST_F(PersistedAutotuningTest, WriteResultsOnEachCompilation) {
   // Check that it writes the results on the second compilation.
   TF_EXPECT_OK(GetOptimizedModule(kHloText).status());
   {
-    std::string autotune_results_str =
-        ExpectToReadNonEmptyFile(xla_gpu_dump_autotune_results_to_);
+    TF_ASSERT_OK_AND_ASSIGN(
+        std::string autotune_results_str,
+        ReadNonEmptyFile(xla_gpu_dump_autotune_results_to_));
     AutotuneResults results;
     EXPECT_TRUE(tsl::protobuf::TextFormat::ParseFromString(autotune_results_str,
                                                            &results));
@@ -899,6 +907,117 @@ ENTRY main {
                      fallback_convert_to_f16));
     EXPECT_TRUE(filecheck_matched);
   }
+}
+
+class AotCompilationTest : public GpuCompilerTest,
+                           public ::testing::WithParamInterface<bool> {
+ protected:
+  void SetUp() override {
+    stream_exec_ = backend().default_stream_executor();
+    compiler_ = backend().compiler();
+    aot_options_ =
+        std::make_unique<AotCompilationOptions>(compiler_->PlatformId());
+    aot_options_->set_executor(stream_exec_);
+  }
+
+  DebugOptions GetDebugOptionsForTest() const override {
+    DebugOptions debug_options = GpuCompilerTest::GetDebugOptionsForTest();
+    debug_options.set_xla_gpu_experimental_aot_compiled_thunks(GetParam());
+    return debug_options;
+  }
+
+  se::StreamExecutor* stream_exec_;
+  Compiler* compiler_;
+  std::unique_ptr<AotCompilationOptions> aot_options_;
+};
+
+INSTANTIATE_TEST_SUITE_P(NewAotFlow, AotCompilationTest, ::testing::Bool(),
+                         [](const ::testing::TestParamInfo<bool>& info) {
+                           return info.param ? "NewAotFlowEnabled"
+                                             : "NewAotFlowDisabled";
+                         });
+
+TEST_P(AotCompilationTest, CompileAndLoadAotResult) {
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<HloModule> add_1_hlo,
+      ParseAndReturnVerifiedModule(R"hlo(
+    add1 {
+      p = s32[] parameter(0)
+      c = s32[] constant(1)
+      ROOT a = s32[] add(p, c)
+    }
+
+    ENTRY e {
+      p = s32[] parameter(0)
+      ROOT r = s32[] fusion(p), kind=kLoop, calls=add1
+    })hlo",
+                                   GetModuleConfigForTest()));
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::vector<std::unique_ptr<AotCompilationResult>> aot_results,
+      compiler_->CompileAheadOfTime(std::move(add_1_hlo), *aot_options_));
+  ASSERT_THAT(aot_results, SizeIs(1));
+
+  TF_ASSERT_OK_AND_ASSIGN(std::string serialized_aot_result,
+                          std::move(aot_results[0])->SerializeAsString());
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<AotCompilationResult> aot_result,
+      compiler_->LoadAotCompilationResult(serialized_aot_result));
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<Executable> executable,
+      std::move(*aot_result).LoadExecutable(compiler_, stream_exec_));
+  std::unique_ptr<OpaqueExecutable> wrapped_executable =
+      test_runner_as_hlo_runner().WrapExecutable(std::move(executable));
+
+  const xla::Literal literal_input = xla::LiteralUtil::CreateR0<int32_t>(1);
+  const xla::Literal literal_expected_result =
+      xla::LiteralUtil::CreateR0<int32_t>(2);
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          test_runner_as_hlo_runner().ExecuteWithExecutable(
+                              wrapped_executable.get(), {&literal_input}));
+  EXPECT_TRUE(LiteralTestUtil::Equal(result, literal_expected_result));
+}
+
+TEST_P(AotCompilationTest, ExportAndImportAotResult) {
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<HloModule> add_1_hlo,
+      ParseAndReturnVerifiedModule(R"hlo(
+    add1 {
+      p = s32[] parameter(0)
+      c = s32[] constant(1)
+      ROOT a = s32[] add(p, c)
+    }
+
+    ENTRY e {
+      p = s32[] parameter(0)
+      ROOT r = s32[] fusion(p), kind=kLoop, calls=add1
+    })hlo",
+                                   GetModuleConfigForTest()));
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<Executable> executable,
+      compiler_->RunBackend(std::move(add_1_hlo), stream_exec_,
+                            {/*device_allocator=*/nullptr,
+                             /*thread_pool=*/nullptr,
+                             /*layout_canonicalization_callback=*/{},
+                             /*is_autotuning_compilation=*/false}));
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<AotCompilationResult> aot_result,
+                          compiler_->Export(executable.get()));
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<Executable> new_executable,
+      std::move(*aot_result).LoadExecutable(compiler_, stream_exec_));
+  std::unique_ptr<OpaqueExecutable> wrapped_executable =
+      test_runner_as_hlo_runner().WrapExecutable(std::move(new_executable));
+
+  const xla::Literal literal_input = xla::LiteralUtil::CreateR0<int32_t>(1);
+  const xla::Literal literal_expected_result =
+      xla::LiteralUtil::CreateR0<int32_t>(2);
+  TF_ASSERT_OK_AND_ASSIGN(Literal result,
+                          test_runner_as_hlo_runner().ExecuteWithExecutable(
+                              wrapped_executable.get(), {&literal_input}));
+  EXPECT_TRUE(LiteralTestUtil::Equal(result, literal_expected_result));
 }
 
 class KernelCacheTest : public HloTestBase {
@@ -1708,10 +1827,6 @@ TEST_F(PassOrderTest, GemmRewriterRunsAfterDotNormalizer) {
 TEST_F(PassOrderTest, NestGemmFusionRunsAfterGemmFusionAutotuner) {
   // NestGemmFusion expect to see __triton_gemm custom call with a backend
   // config created by gemm_fusion_autotuner.
-  DebugOptions options = GetDebugOptionsForTest();
-  options.add_xla_gpu_unsupported_generic_triton_emitter_features(
-      DebugOptions::GENERIC_TRITON_EMITTER_ENABLE_NESTED_GEMM);
-  SetDebugOptions(options);
   VerifyPassOrder("gemm-fusion-autotuner", "nest_gemm_fusion");
 }
 
@@ -1956,7 +2071,8 @@ ENTRY %main {
   ASSERT_TRUE(tsl::Env::Default()->LocalTempFilename(&target_file));
   TF_ASSERT_OK(tsl::WriteTextProto(
       tsl::Env::Default(), target_file,
-      Compiler::TargetConfig(backend().default_stream_executor()).ToProto()));
+      Compiler::GpuTargetConfig(backend().default_stream_executor())
+          .ToProto()));
   debug_options.set_xla_gpu_target_config_filename(target_file);
   config.set_debug_options(debug_options);
 
@@ -1993,7 +2109,8 @@ TEST_F(GpuCompilerTest, CompilingAndCollectingMetadata) {
   ASSERT_TRUE(tsl::Env::Default()->LocalTempFilename(&target_file));
   TF_ASSERT_OK(tsl::WriteTextProto(
       tsl::Env::Default(), target_file,
-      Compiler::TargetConfig(backend().default_stream_executor()).ToProto()));
+      Compiler::GpuTargetConfig(backend().default_stream_executor())
+          .ToProto()));
   debug_options.set_xla_gpu_target_config_filename(target_file);
   config.set_debug_options(debug_options);
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,

@@ -36,7 +36,6 @@ limitations under the License.
 #include "xla/stream_executor/platform_manager.h"
 #include "xla/stream_executor/semantic_version.h"
 #include "xla/stream_executor/stream_executor.h"
-#include "xla/tsl/platform/status_matchers.h"
 #include "xla/tsl/platform/statusor.h"
 
 namespace stream_executor::gpu {
@@ -48,9 +47,6 @@ using ::testing::HasSubstr;
 using testing::IsEmpty;
 using testing::Not;
 using testing::VariantWith;
-using ::tsl::testing::IsOk;
-using ::tsl::testing::IsOkAndHolds;
-using ::tsl::testing::StatusIs;
 
 TEST(CudaExecutorTest, CreateDeviceDescription) {
   CudaPlatform platform;
@@ -64,6 +60,7 @@ TEST(CudaExecutorTest, CreateDeviceDescription) {
   EXPECT_NE(result->driver_version(), kNullVersion);
   EXPECT_NE(result->compile_time_toolkit_version(), kNullVersion);
 
+  EXPECT_GT(result->pcie_bandwidth(), 1024 * 1024);
   EXPECT_THAT(result->platform_version(), Not(IsEmpty()));
   EXPECT_THAT(result->name(), Not(IsEmpty()));
   EXPECT_THAT(result->model_str(), Not(IsEmpty()));
@@ -71,6 +68,15 @@ TEST(CudaExecutorTest, CreateDeviceDescription) {
 
   EXPECT_THAT(*result->gpu_compute_capability().cuda_compute_capability(),
               ::testing::Field("major", &CudaComputeCapability::major, Ge(1)));
+
+  DeviceInterconnectInfo info = result->device_interconnect_info();
+  if (result->cuda_compute_capability().IsAtLeastBlackwell() &&
+      info.active_links) {
+    EXPECT_GE(info.active_links, 18);
+
+    EXPECT_THAT(info.clique_id, Not(IsEmpty()));
+    EXPECT_THAT(info.cluster_uuid, Not(IsEmpty()));
+  }
 }
 
 TEST(CudaExecutorTest, GetCudaKernel) {
@@ -184,7 +190,7 @@ TEST(CudaExecutorTest, GetPointerMemorySpaceWorksWithUnifiedMemory) {
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<MemoryAllocation> allocation,
                           unified_memory_allocator->Allocate(256));
   EXPECT_THAT(executor->GetPointerMemorySpace(allocation->opaque()),
-              IsOkAndHolds(MemoryType::kUnified));
+              absl_testing::IsOkAndHolds(MemoryType::kUnified));
 }
 
 TEST(CudaExecutorTest, GetPointerMemorySpaceWorksWithHostMemory) {
@@ -196,7 +202,7 @@ TEST(CudaExecutorTest, GetPointerMemorySpaceWorksWithHostMemory) {
   TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<MemoryAllocation> allocation,
                           executor->HostMemoryAllocate(256));
   EXPECT_THAT(executor->GetPointerMemorySpace(allocation->opaque()),
-              IsOkAndHolds(MemoryType::kHost));
+              absl_testing::IsOkAndHolds(MemoryType::kHost));
 }
 
 TEST(CudaExecutorTest, GetPointerMemorySpaceWorksWithDeviceMemory) {

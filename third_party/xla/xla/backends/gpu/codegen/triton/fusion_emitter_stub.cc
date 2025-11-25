@@ -27,7 +27,6 @@ limitations under the License.
 #include "xla/backends/gpu/codegen/triton/fusion_emitter.h"
 #include "xla/hlo/ir/hlo_clone_context.h"
 #include "xla/hlo/ir/hlo_instructions.h"
-#include "xla/service/gpu/model/experimental/symbolic_expr.h"
 #include "xla/service/hlo_module_config.h"
 #include "xla/stream_executor/device_description.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -50,7 +49,7 @@ absl::StatusOr<TritonWrapperResult> TritonWrapper(
     const se::GpuComputeCapability& cc,
     const se::DeviceDescription& device_info,
     const BlockLevelParameters& block_level_parameters,
-    llvm::Module* llvm_module, SymbolicExprContext& symbolic_expr_context) {
+    llvm::Module* llvm_module, mlir::MLIRContext& mlir_context) {
   return absl::UnimplementedError("not supported for this build configuration");
 }
 
@@ -58,7 +57,7 @@ absl::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>> CreateTritonModule(
     absl::string_view fn_name, const HloFusionInstruction* fusion,
     const se::DeviceDescription& device_info,
     const BlockLevelParameters& block_level_parameters,
-    SymbolicExprContext& symbolic_expr_context) {
+    mlir::MLIRContext& mlir_context) {
   return absl::UnimplementedError("not supported for this build configuration");
 }
 

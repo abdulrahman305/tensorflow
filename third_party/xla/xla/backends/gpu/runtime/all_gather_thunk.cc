@@ -21,14 +21,12 @@ limitations under the License.
 
 #include "absl/status/status.h"
 #include "absl/strings/str_format.h"
-#include "xla/backends/gpu/collectives/gpu_clique_key.h"
 #include "xla/backends/gpu/collectives/gpu_collectives.h"
 #include "xla/backends/gpu/collectives/gpu_communicator.h"
 #include "xla/backends/gpu/runtime/collective_thunk.h"
 #include "xla/backends/gpu/runtime/thunk.h"
 #include "xla/core/collectives/communicator.h"
 #include "xla/future.h"
-#include "xla/hlo/ir/collective_op_group_mode.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/service/gpu/backend_configs.pb.h"
@@ -78,7 +76,7 @@ AllGatherStartThunk::AllGatherStartThunk(ThunkInfo thunk_info,
                       AsyncStreamKind::ASYNC_STREAM_KIND_COLLECTIVE),
       config_(impl::GetAllGatherConfig(inst)),
       buffers_(std::move(buffers)) {
-  CHECK_EQ(config_.config.operand_count, buffers_.size());
+  CHECK_EQ(config_.config.operand_element_type.size(), buffers_.size());
 }
 
 /*static*/ absl::Status AllGatherStartThunk::CheckImplementable(

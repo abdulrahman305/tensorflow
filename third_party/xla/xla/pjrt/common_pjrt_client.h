@@ -40,7 +40,6 @@ limitations under the License.
 #include "xla/pjrt/async_work_runner.h"
 #include "xla/pjrt/device_event.h"
 #include "xla/pjrt/pjrt_client.h"
-#include "xla/pjrt/pjrt_future.h"
 #include "xla/pjrt/raw_buffer.h"
 #include "xla/shape.h"
 #include "xla/tsl/concurrency/async_value.h"
@@ -100,7 +99,7 @@ class CommonPjRtClient : public PjRtClient {
 
   // Defines a pjrt buffer from a shape, raw_buffer and definition events.
   virtual absl::StatusOr<std::unique_ptr<PjRtBuffer>> DefineBuffer(
-      const Shape& on_device_shape,
+      const Shape& on_device_shape, PjRtMemorySpace* memory_space,
       tsl::RCReference<CommonPjRtRawBuffer> raw_buffer,
       absl::InlinedVector<tsl::RCReference<PjRtDeviceEvent>, 4>
           definition_device_events,
@@ -187,15 +186,12 @@ class CommonPjRtClient : public PjRtClient {
   // Creates a raw buffer channel. Returns a tuple containing:
   // 1.  A tsl::RCReference<CommonPjRtRawBuffer> which is an alias for a future
   //     raw buffer.
-  // 2.  A tsl::RCReference<PjRtDeviceEvent> which is the definition event
-  //     for the alias raw buffer.
-  // 3.  A PjRtFulfillAliasBufferCallback to fulfill the alias.
-  // TODO(b/447164755 jparkerh): Rework this API to share a bit more code
-  // between children of this class.
-  virtual absl::StatusOr<std::tuple<tsl::RCReference<CommonPjRtRawBuffer>,
-                                    tsl::RCReference<PjRtDeviceEvent>,
-                                    PjRtFulfillAliasBufferCallback>>
-  CreateRawBufferChannel(const Shape& shape, PjRtMemorySpace* memory_space) {
+  // 3.  A PjRtFulfillAliasRawBufferCallback to fulfill the alias.
+  using PjRtFulfillAliasRawBufferCallback = absl::AnyInvocable<absl::Status(
+      absl::StatusOr<tsl::RCReference<CommonPjRtRawBuffer>>) &&>;
+  virtual absl::StatusOr<std::pair<tsl::RCReference<CommonPjRtRawBuffer>,
+                                   PjRtFulfillAliasRawBufferCallback>>
+  CreateRawBufferChannel(PjRtMemorySpace* memory_space) {
     return absl::UnimplementedError("CreateRawBufferChannel is not supported");
   }
 

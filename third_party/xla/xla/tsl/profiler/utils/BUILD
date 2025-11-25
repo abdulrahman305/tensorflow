@@ -480,9 +480,22 @@ cc_library(
         "//xla/tsl/platform:status",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@local_tsl//tsl/profiler/lib:profiler_session",
         "@local_tsl//tsl/profiler/protobuf:profiler_options_proto_cc",
+    ],
+)
+
+tsl_cc_test(
+    name = "session_manager_test",
+    srcs = ["session_manager_test.cc"],
+    deps = [
+        ":session_manager",
+        "//xla/tsl/platform:test",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 

@@ -4,7 +4,7 @@ load("//third_party/compute_library:build_defs.bzl", "if_enable_acl")
 # copybara:uncomment load("@rules_python//python:proto.bzl", "py_proto_library")
 load("//xla:package_groups.bzl", "xla_package_groups")
 load("//xla:xla.default.bzl", "xla_bzl_library", "xla_cc_test", "xla_py_proto_library")
-load("//xla/tsl:tsl.bzl", "if_google", "internal_visibility")
+load("//xla/tsl:tsl.bzl", "if_google", "if_oss", "internal_visibility")
 load("//xla/tsl:tsl.default.bzl", "filegroup", "get_compatible_with_portable")
 load(
     "//xla/tsl/platform:build_config.bzl",
@@ -402,6 +402,7 @@ cc_library(
         "//xla/tsl/platform:errors",
         "@com_google_absl//absl/hash",
         "@com_google_absl//absl/status",
+        "@com_google_protobuf//:protobuf",
         "@local_tsl//tsl/platform:path",
         "@local_tsl//tsl/platform:protobuf",
     ],
@@ -557,6 +558,7 @@ xla_cc_test(
         "//xla/tsl/platform:test_benchmark",
         "//xla/tsl/platform:test_main",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
@@ -602,9 +604,7 @@ xla_cc_test(
         ":xla_data_proto_cc",
         "//xla/hlo/testlib:test",
         "//xla/hlo/testlib:test_helpers",
-        "//xla/tsl/platform:errors",
         "//xla/tsl/platform:logging",
-        "//xla/tsl/platform:status_matchers",
         "//xla/tsl/platform:test_main",
         "@com_google_absl//absl/types:span",
         "@com_google_googletest//:gtest",
@@ -1212,10 +1212,16 @@ cc_library(
     name = "debug_options_flags",
     srcs = [
         "debug_options_flags.cc",
+        "debug_options_parsers.cc",
         "debug_options_parsers.h",
     ],
     hdrs = ["debug_options_flags.h"],
-    copts = if_enable_acl(["-DXLA_CPU_USE_ACL=1"]),
+    copts = if_enable_acl([
+        "-DXLA_CPU_USE_ACL=1",
+    ]) + if_oss([
+        "-DHAS_SUPPORT_FOR_LLD_AS_A_LIBRARY=1",
+        "-DHAS_SUPPORT_FOR_EMBEDDED_LIB_DEVICE=1",
+    ]),
     visibility = internal_visibility([":friends"]),
     deps =
         [
@@ -1272,6 +1278,7 @@ xla_cc_test(
             "//xla/tsl/platform:env",
             "//xla/tsl/platform:test",
             "//xla/tsl/util:command_line_flags",
+            "@com_google_absl//absl/base:nullability",
             "@com_google_absl//absl/container:flat_hash_map",
             "@com_google_absl//absl/status",
             "@com_google_absl//absl/status:status_matchers",
@@ -1415,7 +1422,6 @@ xla_cc_test(
     srcs = ["sort_json_test.cc"],
     deps = [
         ":sort_json",
-        "//xla/tsl/platform:status_matchers",
         "//xla/tsl/platform:test",
         "//xla/tsl/platform:test_main",
         "@com_google_absl//absl/status:status_matchers",

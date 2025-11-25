@@ -2974,7 +2974,7 @@ std::optional<IotaReplicaGroupList> GetIotaPartitionGroupsAcrossTargetDims(
   }
 
   std::vector<int> transpose_dims(reshape_dimensions.size());
-  std::iota(transpose_dims.begin(), transpose_dims.end(), 0);
+  absl::c_iota(transpose_dims, 0);
   for (int64_t loc : target_dim_locations) {
     if (auto it = absl::c_find(transpose_dims, loc);
         it != transpose_dims.end()) {
@@ -3037,13 +3037,13 @@ std::optional<IotaReplicaGroupList> GetIotaPartitionGroupsForReplication(
   // into a tile assignment with dims [M, N], where M is the number of replica
   // groups and N is the size of each replica group.
   std::vector<int> transpose_dims(sharding.tile_assignment().num_dimensions());
-  std::iota(transpose_dims.begin(), transpose_dims.end(), 0);
+  absl::c_iota(transpose_dims, 0);
 
   // Sorting is not necessary but is done to match the non-optimized equivalent
   // function.
   std::vector<int> replication_dims_sorted(replication_dims.begin(),
                                            replication_dims.end());
-  std::sort(replication_dims_sorted.begin(), replication_dims_sorted.end());
+  absl::c_sort(replication_dims_sorted);
   for (int64_t i : replication_dims_sorted) {
     if (auto it = absl::c_find(transpose_dims, i); it != transpose_dims.end()) {
       transpose_dims.erase(it);
@@ -3161,6 +3161,37 @@ DynamicUpdateSliceAnalysis AnalyzeDynamicUpdateSlice(
   } else {
     analysis.method =
         DynamicUpdateSliceMethod::kAllPartitionedSliceDimsHaveConstantIndices;
+  }
+
+  // For now, only enable Method 3 if enzyme optimization is enabled.
+  bool is_enzyme_opt_enabled = hlo->parent()
+                                   ->parent()
+                                   ->config()
+                                   .debug_options()
+                                   .xla_enable_enzyme_comms_opt();
+  if (!is_enzyme_opt_enabled &&
+      analysis.method == DynamicUpdateSliceMethod::
+                             kAllPartitionedSliceDimsHaveConstantIndices) {
+    analysis.method = DynamicUpdateSliceMethod::kDefault;
+    return analysis;
+  }
+
+  // Extra check for out-of-bounds indexing
+  const HloInstruction* update_tensor = hlo->operand(1);
+  if (analysis.method ==
+      DynamicUpdateSliceMethod::kAllPartitionedSliceDimsHaveConstantIndices) {
+    for (int64_t dim = 0; dim < hlo->shape().dimensions().size(); ++dim) {
+      const HloInstruction* dus_index = hlo->operand(dim + 2);
+      CHECK(dus_index->IsConstant());
+
+      int64_t start_index = dus_index->literal().GetIntegralAsS64({}).value();
+      int64_t end_index = start_index + update_tensor->shape().dimensions(dim);
+      int64_t padding_high = hlo->shape().dimensions(dim) - end_index;
+      if (start_index < 0 || padding_high < 0) {
+        analysis.method = DynamicUpdateSliceMethod::kDefault;
+        return analysis;
+      }
+    }
   }
 
   return analysis;

@@ -19,12 +19,12 @@ limitations under the License.
 #include <utility>
 
 #include "mlir/IR/MLIRContext.h"
+#include "xla/hlo/analysis/symbolic_expr.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/pass/hlo_pass_fix.h"
 #include "xla/hlo/pass/hlo_pass_pipeline.h"
 #include "xla/hlo/transforms/simplifiers/hlo_dce.h"
 #include "xla/service/cpu_gpu_shape_verifier.h"
-#include "xla/service/gpu/model/experimental/symbolic_expr.h"
 #include "xla/service/gpu/model/gpu_hlo_cost_analysis.h"
 #include "xla/service/gpu/transforms/multi_output_fusion.h"
 #include "xla/service/gpu/transforms/priority_fusion.h"
@@ -45,7 +45,7 @@ HloPassPipeline FusionPipeline(
     HloCostAnalysis::ShapeSizeFunction shape_size_bytes_function,
     tsl::thread::ThreadPool* thread_pool,
     const se::DeviceDescription& gpu_device_info,
-    SymbolicExprContext* symbolic_expr_context) {
+    mlir::MLIRContext* mlir_context) {
   HloPassFix<HloPassPipeline> fusion("fusion");
   // We try to split variadic ops with many parameters into several such ops
   // to avoid exceeding the parameter space.
@@ -64,7 +64,7 @@ HloPassPipeline FusionPipeline(
       /*count_multiple_input_accesses=*/true};
   fusion.AddPass<PriorityFusion>(thread_pool, gpu_device_info,
                                  std::move(cost_analysis_options),
-                                 symbolic_expr_context);
+                                 mlir_context);
 
   // Running CSE affects how many users an op has. This plays a role in what
   // we detect as a tiled transpose fusion.
@@ -73,7 +73,7 @@ HloPassPipeline FusionPipeline(
       /*should_eliminate_computation=*/&HloComputation::IsFusionComputation);
   fusion.AddPass<HloDCE>();
   fusion.AddPass<MultiOutputFusion>(gpu_device_info, shape_size_bytes_function,
-                                    symbolic_expr_context);
+                                    mlir_context);
   fusion.AddPass<HloCSE>(
       /*is_layout_sensitive=*/true, /*ignore_control_dependencies=*/false,
       /*should_eliminate_computation=*/&HloComputation::IsFusionComputation);

@@ -47,14 +47,12 @@ xla_cc_test(
         "//xla/backends/gpu/codegen/triton:fusion_emitter",
         "//xla/hlo/testlib:filecheck",
         "//xla/hlo/testlib:hlo_hardware_independent_test_base",
-        "//xla/service/gpu/model/experimental:symbolic_expr",
         "//xla/service/llvm_ir:llvm_util",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/strings:string_view",
         "@com_google_googletest//:gtest_main",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:IR",
-        "@local_tsl//tsl/platform:status_matchers",
     ],
 )
 
@@ -63,8 +61,10 @@ cc_library(
     hdrs = ["kernel_emitter.h"],
     deps = [
         ":kernel_definition",
+        ":kernel_source",
         "//xla/tsl/platform:statusor",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
     ],
 )
 
@@ -81,14 +81,17 @@ cc_library(
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/types:span",
     ],
 )
 
 cc_library(
-    name = "llvm_ir_kernel_source",
-    srcs = ["llvm_ir_kernel_source.cc"],
-    hdrs = ["llvm_ir_kernel_source.h"],
+    name = "llvm_kernel_source",
+    srcs = ["llvm_kernel_source.cc"],
+    hdrs = ["llvm_kernel_source.h"],
     deps = [
+        ":kernel_definition",
+        ":kernel_emitter",
         ":kernel_source",
         "//xla/service/llvm_ir:llvm_util",
         "@llvm-project//llvm:Core",
@@ -116,53 +119,18 @@ cc_library(
     srcs = ["mlir_kernel_source.cc"],
     hdrs = ["mlir_kernel_source.h"],
     deps = [
+        ":kernel_definition",
+        ":kernel_emitter",
         ":kernel_source",
         "//xla:util",
-        "//xla/service/gpu/model/experimental:symbolic_expr",
+        "//xla/hlo/analysis:symbolic_expr",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:string_view",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Support",
-    ],
-)
-
-cc_library(
-    name = "mlir_kernel_definition",
-    hdrs = ["mlir_kernel_definition.h"],
-    deps = [
-        ":kernel_definition",
-        ":kernel_source",
-        ":kernel_spec",
-        ":mlir_kernel_source",
-    ],
-)
-
-cc_library(
-    name = "mlir_kernel_emitter",
-    hdrs = ["mlir_kernel_emitter.h"],
-    deps = [
-        ":kernel_emitter",
-        ":mlir_kernel_definition",
-    ],
-)
-
-cc_library(
-    name = "llvm_kernel_emitter",
-    hdrs = ["llvm_kernel_emitter.h"],
-    deps = [
-        ":kernel_emitter",
-        ":llvm_kernel_definition",
-    ],
-)
-
-cc_library(
-    name = "llvm_kernel_definition",
-    hdrs = ["llvm_kernel_definition.h"],
-    deps = [
-        ":kernel_definition",
-        ":llvm_ir_kernel_source",
     ],
 )
 

@@ -20,27 +20,26 @@ limitations under the License.
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "mlir/IR/MLIRContext.h"
 #include "xla/backends/gpu/codegen/fusion_emitter.h"
 #include "xla/backends/gpu/codegen/fusions.h"
+#include "xla/hlo/analysis/symbolic_expr.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/testlib/hlo_hardware_independent_test_base.h"
 #include "xla/service/gpu/gpu_device_info_for_tests.h"
 #include "xla/service/gpu/hlo_fusion_analysis.h"
-#include "xla/service/gpu/model/experimental/symbolic_expr.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/stream_executor/launch_dim.h"
-#include "tsl/platform/status_matchers.h"
-#include "tsl/platform/statusor.h"
+#include "xla/tsl/platform/statusor.h"
 
 namespace xla {
 namespace gpu {
 namespace {
 
 using ::testing::ElementsAre;
-using ::tsl::testing::StatusIs;
 
 class TritonFusionTest : public HloHardwareIndependentTestBase {};
 
@@ -69,9 +68,8 @@ ENTRY entry_computation {
   HloFusionAnalysis analysis = HloFusionAnalysis::Create(*root, device_info);
 
   mlir::MLIRContext mlir_context;
-  SymbolicExprContext symbolic_expr_context(&mlir_context);
-  std::unique_ptr<FusionInterface> emitter = GetFusionEmitter(
-      PreBufferAssignmentFusionInfo{analysis}, &symbolic_expr_context);
+  std::unique_ptr<FusionInterface> emitter =
+      GetFusionEmitter(PreBufferAssignmentFusionInfo{analysis}, &mlir_context);
   auto triton_fusion = dynamic_cast<TritonFusion*>(emitter.get());
   ASSERT_NE(triton_fusion, nullptr);
   std::optional<TritonFusion::LaunchConfig> launch_config =
@@ -108,9 +106,8 @@ ENTRY entry_computation {
   HloFusionAnalysis analysis = HloFusionAnalysis::Create(*root, device_info);
 
   mlir::MLIRContext mlir_context;
-  SymbolicExprContext symbolic_expr_context(&mlir_context);
-  std::unique_ptr<FusionInterface> emitter = GetFusionEmitter(
-      PreBufferAssignmentFusionInfo{analysis}, &symbolic_expr_context);
+  std::unique_ptr<FusionInterface> emitter =
+      GetFusionEmitter(PreBufferAssignmentFusionInfo{analysis}, &mlir_context);
   auto triton_fusion_emitter = dynamic_cast<TritonFusion*>(emitter.get());
   ASSERT_NE(triton_fusion_emitter, nullptr);
   EXPECT_EQ(triton_fusion_emitter->GetLaunchConfig(), std::nullopt);
@@ -118,7 +115,7 @@ ENTRY entry_computation {
   // Ensure that the emitter fails gracefully when the launch config is not set.
   EXPECT_THAT(triton_fusion_emitter->GenerateTritonKernelAndWrapper(
                   *::xla::Cast<HloFusionInstruction>(root), "random_name",
-                  device_info, /*llvm_module=*/nullptr, &symbolic_expr_context),
+                  device_info, /*llvm_module=*/nullptr, &mlir_context),
               absl_testing::StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
@@ -148,9 +145,8 @@ ENTRY entry_computation {
   HloFusionAnalysis analysis = HloFusionAnalysis::Create(*root, device_info);
 
   mlir::MLIRContext mlir_context;
-  SymbolicExprContext symbolic_expr_context(&mlir_context);
-  std::unique_ptr<FusionInterface> emitter = GetFusionEmitter(
-      PreBufferAssignmentFusionInfo{analysis}, &symbolic_expr_context);
+  std::unique_ptr<FusionInterface> emitter =
+      GetFusionEmitter(PreBufferAssignmentFusionInfo{analysis}, &mlir_context);
   auto triton_fusion = dynamic_cast<TritonFusion*>(emitter.get());
 
   ASSERT_NE(triton_fusion, nullptr);

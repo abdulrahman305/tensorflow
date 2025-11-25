@@ -3,6 +3,7 @@ load(
     "//xla/tsl/platform:build_config_root.bzl",
     "if_llvm_aarch64_available",
     "if_llvm_powerpc_available",
+    "if_llvm_riscv_available",
     "if_llvm_system_z_available",
     "if_llvm_x86_available",
 )
@@ -41,10 +42,10 @@ xla_cc_test(
     name = "intrinsic_test",
     srcs = ["intrinsic_test.cc"],
     deps = [
-        ":intrinsic",
+        ":type",
         "//xla:xla_data_proto_cc",
         "//xla/tsl/lib/core:status_test_util",
-        "//xla/tsl/platform:status_matchers",
+        "@com_google_absl//absl/status:status_matchers",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -126,8 +127,6 @@ cc_library(
     deps = [
         "//xla:shape_util",
         "//xla:xla_data_proto_cc",
-        "//xla/backends/cpu/codegen:contiguous_section_memory_manager",
-        "//xla/service/cpu:orc_jit_memory_mapper",
         "//xla/service/llvm_ir:llvm_util",
         "//xla/tsl/util:safe_reinterpret_cast",
         "@com_google_absl//absl/base",
@@ -149,6 +148,9 @@ cc_library(
     ]) + if_llvm_powerpc_available([
         "@llvm-project//llvm:PowerPCAsmParser",  # fixdeps: keep
         "@llvm-project//llvm:PowerPCCodeGen",  # fixdeps: keep
+    ]) + if_llvm_riscv_available([
+        "@llvm-project//llvm:RISCVAsmParser",  # fixdeps: keep
+        "@llvm-project//llvm:RISCVCodeGen",  # fixdeps: keep
     ]) + if_llvm_system_z_available([
         "@llvm-project//llvm:SystemZAsmParser",  # fixdeps: keep
         "@llvm-project//llvm:SystemZCodeGen",  # fixdeps: keep
@@ -356,6 +358,7 @@ xla_cc_test(
         ":intrinsic",
         ":simple_jit_runner",
         ":test_matchers",
+        "//xla:xla_data_proto_cc",
         "@com_google_googletest//:gtest_main",
         "@llvm-project//llvm:JITLink",
         "@llvm-project//llvm:ir_headers",
@@ -458,6 +461,7 @@ xla_cc_test(
     srcs = ["type_test.cc"],
     deps = [
         ":type",
+        "//xla:xla_data_proto_cc",
         "//xla/tsl/lib/core:status_test_util",
         "@com_google_googletest//:gtest_main",
         "@llvm-project//llvm:Support",

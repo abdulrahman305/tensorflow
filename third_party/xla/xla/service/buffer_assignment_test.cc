@@ -27,6 +27,7 @@ limitations under the License.
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
@@ -76,7 +77,6 @@ using memory_space_assignment::PresetAssignments;
 using ::testing::HasSubstr;
 using ::testing::UnorderedElementsAre;
 using ::tsl::proto_testing::EqualsProto;
-using tsl::testing::StatusIs;
 
 // DFS visitor that collects the instructions referenced by a computation
 // without descending into nested computations, i.e., only from the operands.
@@ -2215,6 +2215,14 @@ TEST_F(BufferAssignmentTest, PeakBuffers) {
   EXPECT_FALSE(buffer.IsInputOrOutput());
   EXPECT_TRUE(buffer.IsPreallocatedTempBuffer());
   ASSERT_EQ(buffer.assigned_buffers().size(), 4);
+  const char* const kExpectedMemoryUsageReport =
+      R"(cumulative_size;       size;       offset; used_by_n_values; shapes_list
+------------------------------------------------------------
+     800B( 50%);       800B;            0;                2; f32[100], f32[200]
+   1.2KiB( 75%);       400B;          800;                1; f32[100]
+   1.6KiB(100%);       400B;         1200;                1; f32[100]
+)";
+  EXPECT_EQ(buffer.MemoryUsageReport(""), kExpectedMemoryUsageReport);
 
   const std::vector<const HloValue*>& peak_buffers =
       buffer.PeakMemoryLogicalBuffers();

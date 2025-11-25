@@ -38,15 +38,15 @@ load("@local_xla//third_party/stablehlo:workspace.bzl", stablehlo = "repo")
 load("@local_xla//third_party/tensorrt:tensorrt_configure.bzl", "tensorrt_configure")
 load("@local_xla//third_party/tensorrt:workspace.bzl", tensorrt = "repo")
 load("@local_xla//third_party/triton:workspace.bzl", triton = "repo")
+load("@local_xla//tools/def_file_filter:def_file_filter_configure.bzl", "def_file_filter_configure")
+load("@local_xla//tools/toolchains:cpus/aarch64/aarch64_compiler_configure.bzl", "aarch64_compiler_configure")
+load("@local_xla//tools/toolchains:cpus/arm/arm_compiler_configure.bzl", "arm_compiler_configure")
+load("@local_xla//tools/toolchains/clang6:repo.bzl", "clang6_configure")
+load("@local_xla//tools/toolchains/embedded/arm-linux:arm_linux_toolchain_configure.bzl", "arm_linux_toolchain_configure")
+load("@local_xla//tools/toolchains/remote:configure.bzl", "remote_execution_configure")
+load("@local_xla//tools/toolchains/remote_config:configs.bzl", "initialize_rbe_configs")
 load("@rules_jvm_external//:defs.bzl", "maven_install")
 load("@tf_runtime//:dependencies.bzl", "tfrt_dependencies")
-load("//tensorflow/tools/def_file_filter:def_file_filter_configure.bzl", "def_file_filter_configure")
-load("//tensorflow/tools/toolchains:cpus/aarch64/aarch64_compiler_configure.bzl", "aarch64_compiler_configure")
-load("//tensorflow/tools/toolchains:cpus/arm/arm_compiler_configure.bzl", "arm_compiler_configure")
-load("//tensorflow/tools/toolchains/clang6:repo.bzl", "clang6_configure")
-load("//tensorflow/tools/toolchains/embedded/arm-linux:arm_linux_toolchain_configure.bzl", "arm_linux_toolchain_configure")
-load("//tensorflow/tools/toolchains/remote:configure.bzl", "remote_execution_configure")
-load("//tensorflow/tools/toolchains/remote_config:configs.bzl", "initialize_rbe_configs")
 load("//third_party:repo.bzl", "tf_http_archive", "tf_mirror_urls")
 load("//third_party/flatbuffers:workspace.bzl", flatbuffers = "repo")
 load("//third_party/hexagon:workspace.bzl", hexagon_nn = "repo")
@@ -137,7 +137,7 @@ def _tf_toolchains():
     # Point //external/local_config_arm_compiler to //external/arm_compiler
     arm_compiler_configure(
         name = "local_config_arm_compiler",
-        build_file = "//tensorflow/tools/toolchains/cpus/arm:template.BUILD",
+        build_file = "@local_xla//tools/toolchains/cpus/arm:template.BUILD",
         remote_config_repo_arm = "../arm_compiler",
         remote_config_repo_aarch64 = "../aarch64_compiler",
     )
@@ -148,7 +148,7 @@ def _tf_toolchains():
     # TFLite crossbuild toolchain for embeddeds Linux
     arm_linux_toolchain_configure(
         name = "local_config_embedded_arm",
-        build_file = "//tensorflow/tools/toolchains/embedded/arm-linux:template.BUILD",
+        build_file = "@local_xla//tools/toolchains/embedded/arm-linux:template.BUILD",
         aarch64_repo = "../aarch64_linux_toolchain",
         armhf_repo = "../armhf_linux_toolchain",
     )
@@ -168,18 +168,18 @@ def _tf_repositories():
     # LINT.IfChange(xnnpack)
     tf_http_archive(
         name = "XNNPACK",
-        sha256 = "e03c64b59e633944026356524f3862bb7a3809200a76cdd2bfb98758bd0378ee",
-        strip_prefix = "XNNPACK-2f108e3efda443ac9f233671cfacf2b3183b7e94",
-        urls = tf_mirror_urls("https://github.com/google/XNNPACK/archive/2f108e3efda443ac9f233671cfacf2b3183b7e94.zip"),
+        sha256 = "a633a48ba393211771204d25ebc5f35359b71bfbefaa6e955aa92570caede727",
+        strip_prefix = "XNNPACK-fa0fd6471a39a5d66a59d4cd8f8cc4a93a4bd470",
+        urls = tf_mirror_urls("https://github.com/google/XNNPACK/archive/fa0fd6471a39a5d66a59d4cd8f8cc4a93a4bd470.zip"),
     )
     # LINT.ThenChange(//tensorflow/lite/tools/cmake/modules/xnnpack.cmake)
 
     # XNNPack dependency.
     tf_http_archive(
         name = "KleidiAI",
-        sha256 = "42155cfc084bf1f80e9ef486470f949502ea8d1b845b2f1bebd58978a1b540aa",
-        strip_prefix = "kleidiai-8ca226712975f24f13f71d04cda039a0ee9f9e2f",
-        urls = tf_mirror_urls("https://github.com/ARM-software/kleidiai/archive/8ca226712975f24f13f71d04cda039a0ee9f9e2f.zip"),
+        sha256 = "fb4f8180171d035a08432b086194121f627d00a76d58cebaad57d7a87ad40dbd",
+        strip_prefix = "kleidiai-7a3a609a3278106df7157bdd27b8f0e75ab00b60",
+        urls = tf_mirror_urls("https://github.com/ARM-software/kleidiai/archive/7a3a609a3278106df7157bdd27b8f0e75ab00b60.zip"),
     )
 
     tf_http_archive(
@@ -210,9 +210,9 @@ def _tf_repositories():
         name = "cudnn_frontend_archive",
         build_file = "@local_xla//third_party:cudnn_frontend.BUILD",
         patch_file = ["@local_xla//third_party:cudnn_frontend_header_fix.patch"],
-        sha256 = "34dfe01057e43e799af207522aa0c863ad3177f8c1568b6e7a7e4ccf1cbff769",
-        strip_prefix = "cudnn-frontend-1.11.0",
-        urls = tf_mirror_urls("https://github.com/NVIDIA/cudnn-frontend/archive/refs/tags/v1.11.0.zip"),
+        sha256 = "257b3b7f8a99abc096094abc9e5011659117b647d55293bcd2c5659f9181b99e",
+        strip_prefix = "cudnn-frontend-1.13.0",
+        urls = tf_mirror_urls("https://github.com/NVIDIA/cudnn-frontend/archive/refs/tags/v1.13.0.zip"),
     )
 
     tf_http_archive(
@@ -288,7 +288,7 @@ def _tf_repositories():
 
     tf_http_archive(
         name = "aarch64_linux_toolchain",
-        build_file = "//tensorflow/tools/toolchains/embedded/arm-linux:aarch64-linux-toolchain.BUILD",
+        build_file = "@local_xla//tools/toolchains/embedded/arm-linux:aarch64-linux-toolchain.BUILD",
         sha256 = "50cdef6c5baddaa00f60502cc8b59cc11065306ae575ad2f51e412a9b2a90364",
         strip_prefix = "arm-gnu-toolchain-11.3.rel1-x86_64-aarch64-none-linux-gnu",
         urls = tf_mirror_urls("https://developer.arm.com/-/media/Files/downloads/gnu/11.3.rel1/binrel/arm-gnu-toolchain-11.3.rel1-x86_64-aarch64-none-linux-gnu.tar.xz"),
@@ -296,7 +296,7 @@ def _tf_repositories():
 
     tf_http_archive(
         name = "armhf_linux_toolchain",
-        build_file = "//tensorflow/tools/toolchains/embedded/arm-linux:armhf-linux-toolchain.BUILD",
+        build_file = "@local_xla//tools/toolchains/embedded/arm-linux:armhf-linux-toolchain.BUILD",
         sha256 = "3f76650b1d048036473b16b647b8fd005ffccd1a2869c10994967e0e49f26ac2",
         strip_prefix = "arm-gnu-toolchain-11.3.rel1-x86_64-arm-none-linux-gnueabihf",
         urls = tf_mirror_urls("https://developer.arm.com/-/media/Files/downloads/gnu/11.3.rel1/binrel/arm-gnu-toolchain-11.3.rel1-x86_64-arm-none-linux-gnueabihf.tar.xz"),

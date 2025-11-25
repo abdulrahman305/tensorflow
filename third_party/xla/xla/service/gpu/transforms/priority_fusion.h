@@ -22,12 +22,12 @@ limitations under the License.
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
+#include "mlir/IR/MLIRContext.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/pass/hlo_pass_interface.h"
 #include "xla/service/gpu/fusion_process_dump.pb.h"
-#include "xla/service/gpu/model/experimental/symbolic_expr.h"
 #include "xla/service/gpu/model/fusion_analysis_cache.h"
 #include "xla/service/gpu/model/gpu_hlo_cost_analysis.h"
 #include "xla/service/hlo_cost_analysis.h"
@@ -44,19 +44,14 @@ class PriorityFusion : public HloModulePass {
   PriorityFusion(tsl::thread::ThreadPool* thread_pool,
                  const se::DeviceDescription& device,
                  GpuHloCostAnalysis::Options cost_analysis_options,
-                 SymbolicExprContext* symbolic_expr_context)
+                 mlir::MLIRContext* mlir_context)
       : thread_pool_(thread_pool),
         device_info_(device),
         cost_analysis_options_(std::move(cost_analysis_options)),
         fusion_analysis_cache_(device_info_),
-        symbolic_expr_context_(symbolic_expr_context) {}
+        mlir_context_(mlir_context) {}
 
   absl::string_view name() const override { return "priority-fusion"; }
-
-  using HloPassInterface::Run;
-  absl::StatusOr<bool> Run(
-      HloModule* module,
-      const absl::flat_hash_set<absl::string_view>& execution_threads) override;
 
  protected:
   HloInstruction::FusionKind ChooseKind(const HloInstruction* producer,
@@ -64,6 +59,10 @@ class PriorityFusion : public HloModulePass {
 
   HloInstruction* Fuse(HloInstruction* producer, HloInstruction* consumer,
                        bool use_multi_output_fusion = false);
+
+  absl::StatusOr<bool> RunImpl(
+      HloModule* module,
+      const absl::flat_hash_set<absl::string_view>& execution_threads) override;
 
  private:
   // Consumes a unit of compiler fuel and returns true if we should
@@ -86,7 +85,7 @@ class PriorityFusion : public HloModulePass {
 
   HloFusionAnalysisCache fusion_analysis_cache_;
 
-  SymbolicExprContext* symbolic_expr_context_;
+  mlir::MLIRContext* mlir_context_;
 };
 
 }  // namespace gpu

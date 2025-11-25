@@ -34,6 +34,7 @@ limitations under the License.
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Casting.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -42,6 +43,7 @@ limitations under the License.
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
@@ -59,6 +61,7 @@ limitations under the License.
 #include "xla/codegen/emitters/ir/xla_ops.h"
 #include "xla/permutation_util.h"
 #include "xla/stream_executor/gpu/tma_metadata.h"
+#include "triton/Dialect/Triton/IR/Types.h"
 
 namespace mlir::triton::xla {
 
@@ -69,6 +72,17 @@ namespace xg = ::xla::gpu;
 namespace xgt = xg::triton;
 
 namespace {
+
+bool HasBroadcastConsumer(Operation* op) {
+  llvm::SetVector<Operation*> slice;
+  mlir::getForwardSlice(op, &slice);
+  for (Operation* sliced_op : slice) {
+    if (llvm::isa<triton::BroadcastOp>(sliced_op)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 PointerType GetTensorPtrType(Type type) {
   return PointerType::get(
@@ -81,7 +95,7 @@ SmallVector<Value> IndexCast(::xla::EmitterLocOpBuilder& builder, Type type,
   SmallVector<Value> result;
   result.reserve(values.size());
   for (auto value : values) {
-    result.push_back(builder.create<arith::IndexCastOp>(type, value));
+    result.push_back(arith::IndexCastOp::create(builder, type, value));
   }
   return result;
 }
@@ -149,7 +163,8 @@ bool IsOffsetDivisibilityGuaranteed(mlir::Value offset_val,
 //      minor tile dimension (in bytes) must be divisible by 16, it is
 //      sufficient to check that the offset in the minor dimension (in bytes) is
 //      divisible by 16.
-bool CanUseTma(bool allow_tma, const ArrayRef<int64_t>& original_shape,
+bool CanUseTma(Operation* op, bool allow_tma, int num_stages,
+               const ArrayRef<int64_t>& original_shape,
                const ArrayRef<int64_t>& tile_shape,
                const ArrayRef<int64_t>& tile_strides, ValueRange offsets,
                const TypedValue<PointerType>& pointer,
@@ -166,6 +181,15 @@ bool CanUseTma(bool allow_tma, const ArrayRef<int64_t>& original_shape,
   auto func_op =
       mlir::dyn_cast<func::FuncOp>(block_arg.getOwner()->getParentOp());
   if (!func_op) {
+    return false;
+  }
+
+  // TODO(b/421858850): CUDA_ERROR_MISALIGNED_ADDRESS errors are
+  // happening for some cases when pipelining stages are > 2. The pattern
+  // observed is that these happen in the presence of a broadcast.
+  // This is a temporary solution. We should remove this once we have a fix for
+  // the error.
+  if (num_stages > 2 && HasBroadcastConsumer(op)) {
     return false;
   }
 
@@ -285,30 +309,25 @@ class RewriteFuncOp : public mlir::OpRewritePattern<func::FuncOp> {
 
     SmallVector<Type> new_operand_types(input_types);
     for (auto&& [index, operand_type] : llvm::enumerate(new_operand_types)) {
+      auto attr = op.getArgAttr(index, "tt.tma_descriptor");
+      if (!attr) {
+        continue;
+      }
       mlir::BlockArgument func_arg = op.getArgument(index);
       auto element_type =
           mlir::cast<PointerType>(operand_type).getPointeeType();
+      auto tma_descriptor = mlir::cast<TmaDescriptorAttr>(attr);
+      auto layout = tma_descriptor.getLayout();
+      auto block_shape = tma_descriptor.getTileShape();
+      SmallVector<int64_t> ordered_block_shape =
+          GetMajorToMinorOrder(block_shape, layout);
 
-      mlir::UnrealizedConversionCastOp cast_to_orig_type;
-      if (auto attr = op.getArgAttr(index, "tt.tma_descriptor")) {
-        auto tma_descriptor = mlir::cast<TmaDescriptorAttr>(attr);
-        auto layout = tma_descriptor.getLayout();
-        auto block_shape = tma_descriptor.getTileShape();
-        SmallVector<int64_t> ordered_block_shape =
-            GetMajorToMinorOrder(block_shape, layout);
-
-        operand_type = TensorDescType::get(
-            builder.getContext(),
-            RankedTensorType::get(ordered_block_shape, element_type));
-        // !tt.tensordesc<tensor<block_shape x element_type>> -> !tt.ptr<>
-        cast_to_orig_type = builder.create<mlir::UnrealizedConversionCastOp>(
-            operand_type, func_arg);
-      } else {
-        // !tt.ptr<> -> !tt.ptr<>
-        cast_to_orig_type = builder.create<mlir::UnrealizedConversionCastOp>(
-            operand_type, func_arg);
-        operand_type = GetTensorPtrType(element_type);
-      }
+      operand_type = TensorDescType::get(
+          builder.getContext(),
+          RankedTensorType::get(ordered_block_shape, element_type));
+      // !tt.tensordesc<tensor<block_shape x element_type>> -> !tt.ptr<>
+      auto cast_to_orig_type = mlir::UnrealizedConversionCastOp::create(
+          builder, operand_type, func_arg);
       func_arg.replaceAllUsesExcept(cast_to_orig_type.getResult(0),
                                     cast_to_orig_type);
     }
@@ -335,8 +354,8 @@ class RewriteFuncOp : public mlir::OpRewritePattern<func::FuncOp> {
 
     // Currently not propagating any function attributes to the new function.
     ArrayRef<NamedAttribute> attrs;
-    auto new_func = builder.create<triton::FuncOp>(
-        op.getName(), new_function_type, attrs, arg_attrs);
+    auto new_func = triton::FuncOp::create(builder, op.getName(),
+                                           new_function_type, attrs, arg_attrs);
 
     for (int i = 0; i < new_func.getNumArguments(); ++i) {
       // TMA arguments don't require tt.divisibility.
@@ -353,7 +372,7 @@ class RewriteFuncOp : public mlir::OpRewritePattern<func::FuncOp> {
 
     auto terminator = new_func.getBody().front().getTerminator();
     rewriter.setInsertionPoint(terminator);
-    rewriter.create<triton::ReturnOp>(new_func.getLoc());
+    triton::ReturnOp::create(rewriter, new_func.getLoc());
     rewriter.eraseOp(terminator);
 
     return mlir::success();
@@ -395,7 +414,7 @@ Value ExpandAndBroadcastValue(::xla::EmitterLocOpBuilder& builder, Value value,
                               int dim, RankedTensorType tile_type) {
   for (int i = 0; i < tile_type.getRank(); ++i) {
     if (i != dim) {
-      value = builder.create<ExpandDimsOp>(value, i);
+      value = ExpandDimsOp::create(builder, value, i);
     }
   }
   return BroadcastOp::create(builder, tile_type, value);
@@ -496,8 +515,10 @@ static std::pair<Value, Value> CreateTensorOfPointersAndMask(
 
 class RewriteExtract : public mlir::OpRewritePattern<ExtractOp> {
  public:
-  RewriteExtract(mlir::MLIRContext* context, bool allow_tma)
-      : OpRewritePattern(context), allow_tma_(allow_tma) {}
+  RewriteExtract(mlir::MLIRContext* context, bool allow_tma, int num_stages)
+      : OpRewritePattern(context),
+        allow_tma_(allow_tma),
+        num_stages_(num_stages) {}
   using OpRewritePattern::OpRewritePattern;
 
  private:
@@ -524,8 +545,8 @@ class RewriteExtract : public mlir::OpRewritePattern<ExtractOp> {
     auto sizes = op.getStaticSizes();
     auto strides = to_vector(op.getStaticStrides());
 
-    if (CanUseTma(allow_tma_, src_shape, sizes, strides, offsets, op.getSrc(),
-                  src_layout)) {
+    if (CanUseTma(op, allow_tma_, num_stages_, src_shape, sizes, strides,
+                  offsets, op.getSrc(), src_layout)) {
       if (auto result = CanonicalizeTileStrides(strides, sizes, src_shape);
           !result.ok()) {
         return rewriter.notifyMatchFailure(op, result.message());
@@ -576,23 +597,27 @@ class RewriteExtract : public mlir::OpRewritePattern<ExtractOp> {
         reduced_dims, tile_shape);
     Value other;
     if (mask) {
-      other = builder.create<arith::ConstantOp>(builder.getZeroAttr(
-          RankedTensorType::get(tile_shape, tile_type.getElementType())));
+      other = arith::ConstantOp::create(
+          builder, builder.getZeroAttr(RankedTensorType::get(
+                       tile_shape, tile_type.getElementType())));
     }
-    auto load = builder.create<LoadOp>(ptr, mask, other, CacheModifier::NONE,
-                                       EvictionPolicy::NORMAL,
-                                       /*isVolatile=*/false);
+    auto load = LoadOp::create(builder, ptr, mask, other, CacheModifier::NONE,
+                               EvictionPolicy::NORMAL,
+                               /*isVolatile=*/false);
     rewriter.replaceOp(op, load);
     return mlir::success();
   }
 
   const bool allow_tma_;
+  const int num_stages_;
 };
 
 class RewriteInsert : public mlir::OpRewritePattern<InsertOp> {
  public:
-  RewriteInsert(mlir::MLIRContext* context, bool allow_tma)
-      : OpRewritePattern(context), allow_tma_(allow_tma) {}
+  RewriteInsert(mlir::MLIRContext* context, bool allow_tma, int num_stages)
+      : OpRewritePattern(context),
+        allow_tma_(allow_tma),
+        num_stages_(num_stages) {}
   using OpRewritePattern::OpRewritePattern;
 
  private:
@@ -627,8 +652,8 @@ class RewriteInsert : public mlir::OpRewritePattern<InsertOp> {
     SmallVector<unsigned> reduced_dims = to_vector(*reduction_mask);
     absl::c_sort(reduced_dims);
 
-    if (CanUseTma(allow_tma_, dst_shape, sizes, strides, offsets, op.getDst(),
-                  dst_layout)) {
+    if (CanUseTma(op, allow_tma_, num_stages_, dst_shape, sizes, strides,
+                  offsets, op.getDst(), dst_layout)) {
       if (auto result = CanonicalizeTileStrides(strides, sizes, dst_shape);
           !result.ok()) {
         return rewriter.notifyMatchFailure(op, result.message());
@@ -654,7 +679,7 @@ class RewriteInsert : public mlir::OpRewritePattern<InsertOp> {
         // Transpose to a major-to-minor tensor by simply reversing the layout.
         auto transpose_order = llvm::to_vector_of<int32_t>(dst_layout);
         std::reverse(transpose_order.begin(), transpose_order.end());
-        src = builder.create<TransOp>(src, transpose_order);
+        src = TransOp::create(builder, src, transpose_order);
       }
 
       auto ordered_offsets = GetMajorToMinorOrder(offsets, dst_layout);
@@ -673,6 +698,7 @@ class RewriteInsert : public mlir::OpRewritePattern<InsertOp> {
   }
 
   const bool allow_tma_;
+  const int num_stages_;
 };
 
 // Rewriting tensor::InsertOp as tt.store.
@@ -688,9 +714,9 @@ class RewriteScalarInsert : public mlir::OpRewritePattern<tensor::InsertOp> {
     }
     ::xla::EmitterLocOpBuilder builder(op.getLoc(), rewriter);
     auto ptr_type = GetTensorPtrType(op.getScalar().getType());
-    auto cast_dst_to_tensor_ptr_type =
-        builder.create<mlir::UnrealizedConversionCastOp>(ptr_type, op.getDest())
-            .getResult(0);
+    auto cast_dst_to_tensor_ptr_type = mlir::UnrealizedConversionCastOp::create(
+                                           builder, ptr_type, op.getDest())
+                                           .getResult(0);
     StoreOp::create(builder, cast_dst_to_tensor_ptr_type, op.getScalar(),
                     /*boundary_checks=*/std::vector<int32_t>{},
                     CacheModifier::NONE, EvictionPolicy::NORMAL);
@@ -733,8 +759,8 @@ class TritonXLAExtractInsertToTritonPass
   void runOnOperation() override {
     mlir::MLIRContext* mlir_context = &getContext();
     mlir::RewritePatternSet patterns(mlir_context);
-    patterns.add<RewriteExtract, RewriteInsert>(mlir_context,
-                                                allow_tma_.getValue());
+    patterns.add<RewriteExtract, RewriteInsert>(
+        mlir_context, allow_tma_.getValue(), num_stages_.getValue());
     patterns.add<RewriteScalarExtract, RewriteScalarInsert>(mlir_context);
     if (mlir::failed(
             mlir::applyPatternsGreedily(getOperation(), std::move(patterns)))) {
@@ -757,9 +783,9 @@ std::unique_ptr<mlir::Pass> CreateTritonXLAExtractInsertToTritonPass() {
 }
 
 std::unique_ptr<mlir::Pass> CreateTritonXLAExtractInsertToTritonPass(
-    bool allow_tma) {
+    bool allow_tma, int num_stages) {
   return std::make_unique<TritonXLAExtractInsertToTritonPass>(
-      TritonXLAExtractInsertToTritonPassOptions{allow_tma});
+      TritonXLAExtractInsertToTritonPassOptions{allow_tma, num_stages});
 }
 
 }  // namespace mlir::triton::xla

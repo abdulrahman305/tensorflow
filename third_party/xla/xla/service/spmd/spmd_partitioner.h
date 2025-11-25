@@ -314,10 +314,6 @@ class SpmdPartitioner : public HloModulePass {
         options_(std::move(options)),
         collective_ops_creator_(std::move(collective_ops_creator)) {}
   absl::string_view name() const override { return "spmd-partitioning"; }
-  using HloPassInterface::Run;
-  absl::StatusOr<bool> Run(
-      HloModule* module,
-      const absl::flat_hash_set<absl::string_view>& execution_threads) override;
 
   // Transforms the given computation with SPMD instructions, replacing it with
   // a new computation.
@@ -375,6 +371,10 @@ class SpmdPartitioner : public HloModulePass {
   int64_t num_replicas() const { return num_replicas_; }
 
  protected:
+  absl::StatusOr<bool> RunImpl(
+      HloModule* module,
+      const absl::flat_hash_set<absl::string_view>& execution_threads) override;
+
   // This is the internal implementation for AllGatherShards(), returns a pair
   // of hlo instructions whose first element is the result of the all-gather
   // shard(which might not be the all-gather itself and it could go through
@@ -795,15 +795,19 @@ class SpmdPartitioningVisitor : public DfsHloVisitorWithDefault {
   void SetPartitionedHlo(const HloInstruction* hlo,
                          PartitionedHlo&& partitioned_hlo);
 
-  // Convenient wrapper that creates PartitionedHlo from the result of the func
-  // and maps it to the given original hlo.
-  void SetPartitionedHlo(const HloInstruction* hlo,
-                         absl::FunctionRef<HloInstruction*()> func) {
-    HloInstruction* new_hlo = func();
+  // Convenient wrapper that creates PartitionedHlo from `new_hlo`.
+  void SetPartitionedHlo(const HloInstruction* hlo, HloInstruction* new_hlo) {
     new_hlo->set_sharding(hlo->sharding());
     SetPartitionedHlo(
         hlo, PartitionedHlo(new_hlo, hlo->shape(), MakePartitioningState()));
     changed_ = true;
+  }
+
+  // Convenient wrapper that creates PartitionedHlo from the result of the func
+  // and maps it to the given original hlo.
+  void SetPartitionedHlo(const HloInstruction* hlo,
+                         absl::FunctionRef<HloInstruction*()> func) {
+    return SetPartitionedHlo(hlo, func());
   }
 
   int64_t NewChannel() { return (*next_channel_id_)++; }
@@ -909,6 +913,30 @@ class SpmdPartitioningVisitor : public DfsHloVisitorWithDefault {
   std::vector<PartitionedHlo::PartitioningState> visiting_state_;
   std::optional<hlo_sharding_util::DeviceGroupTileAssignment> device_groups_;
   const CallGraph& call_graph_;
+
+  // Dispatches DUS handler to one of the three implementations based on
+  // analysis.
+
+  // Method 1. Replicate the slice dimensions for all involved
+  // tensors.
+  absl::Status HandleDUSDefault(HloInstruction* hlo,
+                                const HloInstruction* input_tensor,
+                                const HloInstruction* update_tensor,
+                                std::vector<HloInstruction*>& new_indices,
+                                std::vector<int64_t> slice_dims);
+  // Method 2. Keep the sharding for input and output since the update is fully
+  // contained in a single partition.
+  absl::Status HandleDUSSinglePartitionUpdate(
+      HloInstruction* hlo, const HloInstruction* input_tensor,
+      const HloInstruction* update_tensor,
+      std::vector<HloInstruction*>& new_indices,
+      std::vector<int64_t> slice_dims,
+      std::vector<int64_t> partitioned_slice_dims);
+  // Method 3: All partitioned slice dimensions have compile-time constant
+  // indices.
+  absl::Status HandleDUSAllPartitionedSliceDimsHaveConstantIndices(
+      HloInstruction* hlo, const HloInstruction* input_tensor,
+      const HloInstruction* update_tensor);
 };
 
 }  // namespace spmd

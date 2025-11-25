@@ -2477,13 +2477,13 @@ equivalent to setting:
   }];
 
   let arguments = (ins
-    TFL_TensorOf<[F32, I32, I64, I8, UI8, UI32, I1, TFL_Str, QI8, QUI8, TFL_Quint8, QI16]>:$input,
+    TFL_TensorOf<[F32, I32, I64, QI4, I8, UI8, UI32, I1, TFL_Str, QI8, QUI8, TFL_Quint8, QI16]>:$input,
     TFL_I32OrI64Tensor:$begin,
     TFL_I32OrI64Tensor:$size
   );
 
   let results = (outs
-    TFL_TensorOf<[F32, I32, I64, I8, UI8, UI32, I1, TFL_Str, QI8, QUI8, TFL_Quint8, QI16]>:$output
+    TFL_TensorOf<[F32, I32, I64, QI4, I8, UI8, UI32, I1, TFL_Str, QI8, QUI8, TFL_Quint8, QI16]>:$output
   );
 
   let hasVerifier = 1;
@@ -3575,6 +3575,8 @@ def TFL_TanhOp: TFL_Op<"tanh", [
         /*scale=*/1.0 / (1<<(bit_width-1)), /*zero_point=*/0);
   }
   }];
+
+  let hasFolder = 1;
 }
 
 def TFL_TileOp: TFL_Op<"tile", [

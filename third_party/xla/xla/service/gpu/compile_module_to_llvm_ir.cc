@@ -61,7 +61,6 @@ limitations under the License.
 #include "xla/service/gpu/ir_emitter_context.h"
 #include "xla/service/gpu/ir_emitter_unnested.h"
 #include "xla/service/gpu/metrics.h"
-#include "xla/service/gpu/model/experimental/symbolic_expr.h"
 #include "xla/service/logical_buffer.h"
 #include "xla/shape.h"
 #include "xla/status_macros.h"
@@ -80,8 +79,9 @@ limitations under the License.
 #include "tsl/profiler/lib/traceme.h"
 
 namespace xla::gpu {
-
 namespace {
+
+using ::mlir::MLIRContext;
 
 using tsl::profiler::ScopedAnnotation;
 
@@ -196,8 +196,7 @@ absl::StatusOr<std::unique_ptr<SequentialThunk>> LowerHlo(
     XLA_SCOPED_LOGGING_TIMER(absl::StrCat(
         "GpuCompiler::RunBackend - IR emission for ", hlo_module->name()));
 
-    TF_RETURN_IF_ERROR(
-        ir_emitter->EmitHloComputation(hlo_module->entry_computation()));
+    TF_RETURN_IF_ERROR(ir_emitter->EmitHloEntryComputation(hlo_module));
 
     RemoveUnusedAndUninitializedGlobals(
         platform_id, options, ir_emitter_context.llvm_module_constants(),
@@ -308,12 +307,10 @@ absl::StatusOr<CompileModuleResults> CompileModuleToLlvmIr(
           << ": " << hlo_module->GetFingerprint128();
 
   std::unique_ptr<mlir::MLIRContext> mlir_context = CreateMlirContext();
-  auto symbolic_expr_context =
-      std::make_unique<SymbolicExprContext>(mlir_context.get());
   IrEmitterContext ir_emitter_context(
       hlo_module, results.buffer_assignment.get(),
       results.execution_stream_assignment.get(), platform->Name(), device_desc,
-      symbolic_expr_context.get(), results.llvm_module.get(),
+      mlir_context.get(), results.llvm_module.get(),
       results.llvm_module_constants.get(),
       /*emit_kernels=*/true);
 
