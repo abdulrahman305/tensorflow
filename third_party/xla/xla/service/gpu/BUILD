@@ -480,6 +480,7 @@ cc_library(
         "//xla/backends/gpu/codegen:fusion_emitter",
         "//xla/backends/gpu/codegen:fusions",
         "//xla/backends/gpu/codegen/triton:fusion_emitter",
+        "//xla/backends/gpu/codegen/triton:xtile_compiler",
         "//xla/backends/gpu/collectives:gpu_clique_key",
         "//xla/backends/gpu/runtime:all_gather_thunk",
         "//xla/backends/gpu/runtime:all_reduce_thunk",
@@ -1589,6 +1590,7 @@ cc_library(
     srcs = ["fusion_pipeline.cc"],
     hdrs = ["fusion_pipeline.h"],
     deps = [
+        ":alias_info",
         "//xla:xla_proto_cc",
         "//xla/hlo/analysis:symbolic_expr",
         "//xla/hlo/ir:hlo",
@@ -1605,6 +1607,7 @@ cc_library(
         "//xla/service/gpu/transforms:priority_fusion",
         "//xla/service/gpu/transforms:variadic_op_splitter",
         "//xla/stream_executor:device_description",
+        "//xla/tsl/platform:env",
         "@llvm-project//mlir:IR",
         "@local_tsl//tsl/platform:env",
     ],
@@ -2852,6 +2855,7 @@ cc_library(
     name = "alias_info",
     srcs = ["alias_info.cc"],
     hdrs = ["alias_info.h"],
+    compatible_with = get_compatible_with_portable(),
     deps = [
         ":backend_configs_cc",
         ":hlo_fusion_analysis",
@@ -2929,6 +2933,7 @@ cc_library(
     hdrs = ["gpu_fusible.h"],
     compatible_with = get_compatible_with_portable(),
     deps = [
+        ":alias_info",
         ":backend_configs_cc",
         ":hlo_fusion_analysis",
         ":ir_emission_utils",
@@ -2964,6 +2969,7 @@ xla_cc_test(
         "nomsan",
     ],
     deps = [
+        ":alias_info",
         ":gpu_device_info_for_tests",
         ":gpu_fusible",
         ":hlo_fusion_analysis",
