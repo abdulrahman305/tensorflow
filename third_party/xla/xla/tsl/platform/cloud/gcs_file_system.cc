@@ -17,13 +17,40 @@ limitations under the License.
 
 #include <stdio.h>
 
+#include <cstdint>
+#include <iosfwd>
+#include <limits>
 #include <memory>
+#include <set>
+#include <unordered_set>
 
+#include "absl/base/attributes.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/strings/ascii.h"
+#include "absl/strings/match.h"
+#include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
+#include "absl/strings/str_split.h"
+#include "absl/strings/string_view.h"
+#include "absl/strings/strip.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
+#include "absl/types/span.h"
+#include "xla/tsl/platform/cloud/auth_provider.h"
+#include "xla/tsl/platform/cloud/compute_engine_metadata_client.h"
+#include "xla/tsl/platform/cloud/compute_engine_zone_provider.h"
+#include "xla/tsl/platform/cloud/expiring_lru_cache.h"
+#include "xla/tsl/platform/cloud/gcs_dns_cache.h"
+#include "xla/tsl/platform/cloud/gcs_throttle.h"
+#include "xla/tsl/platform/cloud/http_request.h"
+#include "xla/tsl/platform/cloud/zone_provider.h"
+#include "xla/tsl/platform/file_system.h"
+#include "xla/tsl/platform/status.h"
+#include "xla/tsl/platform/types.h"
 #include "tsl/platform/retrying_file_system.h"
 
 #ifndef _WIN32
@@ -45,7 +72,6 @@ limitations under the License.
 #ifdef _WIN32
 #include <io.h>  // for _mktemp
 #endif
-#include "absl/base/macros.h"
 #include "json/json.h"
 #include "xla/tsl/platform/cloud/curl_http_request.h"
 #include "xla/tsl/platform/cloud/file_block_cache.h"
@@ -56,7 +82,6 @@ limitations under the License.
 #include "xla/tsl/platform/errors.h"
 #include "tsl/platform/numbers.h"
 #include "tsl/platform/path.h"
-#include "tsl/platform/protobuf.h"
 #include "tsl/platform/retrying_utils.h"
 #include "tsl/platform/str_util.h"
 #include "tsl/platform/stringprintf.h"
@@ -660,9 +685,9 @@ class GcsWritableFile : public WritableFile {
     if (absl::IsNotFound(upload_status)) {
       // GCS docs recommend retrying the whole upload. We're relying on the
       // RetryingFileSystem to retry the Sync() call.
-      return errors::Unavailable(
-          strings::StrCat("Upload to gs://", bucket_, "/", object_,
-                          " failed, caused by: ", upload_status.message()));
+      return absl::UnavailableError(
+          absl::StrCat("Upload to gs://", bucket_, "/", object_,
+                       " failed, caused by: ", upload_status.message()));
     }
     if (upload_status.ok()) {
       if (should_compose) {
@@ -1986,7 +2011,7 @@ absl::Status GcsFileSystem::CreateDir(const string& dirname,
   if (FileExists(dirname_with_slash, token).ok()) {
     // Use the original name for a correct error here.
     VLOG(3) << "CreateDir: directory already exists, not uploading " << dirname;
-    return errors::AlreadyExists(dirname);
+    return absl::AlreadyExistsError(dirname);
   }
 
   std::unique_ptr<HttpRequest> request;
