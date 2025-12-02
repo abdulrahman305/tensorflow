@@ -54,33 +54,17 @@ class CollectiveOpsE2ETestBase : public HloHardwareIndependentTestBase {
     const HloModule* optimized_module;
   };
 
-  absl::StatusOr<std::vector<Literal>> ExecuteReplicated(
-      absl::AnyInvocable<OpaqueExecutable*(int64_t)> executable_provider,
-      absl::AnyInvocable<int64_t(int64_t)> argument_count_provider,
-      absl::AnyInvocable<const Literal*(int64_t, int64_t)> argument_provider,
-      int64_t num_replicas, bool run_hlo_passes,
-      DeviceAssignment* device_assignment);
-
-  absl::StatusOr<std::vector<Literal>> ExecuteReplicated(
-      std::unique_ptr<HloModule> module,
-      absl::Span<const Literal* const> arguments, int64_t num_replicas,
-      DeviceAssignment* vice_assignment, bool run_hlo_passes, bool use_threads);
-
-  absl::StatusOr<std::vector<Literal>> ExecuteReplicated(
-      std::unique_ptr<HloModule> module,
-      std::vector<std::vector<Literal*>> arguments,
-      DeviceAssignment* device_assignment, int64_t num_replicas,
-      bool run_hlo_passes);
-
-  absl::StatusOr<std::vector<Literal>> ExecuteReplicated(
-      OpaqueExecutable* executable, int64_t num_replicas);
-
   absl::StatusOr<ExecutionResult> ExecuteReplicated(
       std::unique_ptr<HloModule> module);
 
   absl::StatusOr<ExecutionResult> ExecuteReplicated(
+      std::unique_ptr<HloModule> module, const std::vector<Literal*>& arguments,
+      bool run_hlo_passes = true);
+
+  absl::StatusOr<ExecutionResult> ExecuteReplicated(
       std::unique_ptr<HloModule> module,
-      std::vector<std::vector<Literal*>> arguments, bool run_hlo_passes = true);
+      const std::vector<std::vector<Literal*>>& arguments,
+      bool run_hlo_passes = true);
 
   const se::GpuComputeCapability& Capability() {
     return hlo_runner_->backend()
