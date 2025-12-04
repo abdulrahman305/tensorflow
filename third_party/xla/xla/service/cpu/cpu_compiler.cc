@@ -483,7 +483,6 @@ std::unique_ptr<HloPassFix<HloPassPipeline>> CreateSimplificationPipeline(
   options.set_executing_on_cpu(true);
   options.set_enable_onednn_support(use_onednn_custom_call);
   options.set_rewrite_no_op_bitcast_convert_to_bitcast(true);
-  options.set_enable_conditional_simplification(true);
   pipeline->AddPass<AlgebraicSimplifier>(options);
   pipeline->AddPass<SortSimplifier>();
   pipeline->AddPass<HloDCE>();
@@ -1060,7 +1059,6 @@ absl::Status CpuCompiler::RunHloPassesAfterLayoutAssn(
     // oneDNN support is currently enabled only when thunk runtime is turned off
     options.set_enable_onednn_support(use_onednn_custom_call);
     options.set_rewrite_no_op_bitcast_convert_to_bitcast(true);
-    options.set_enable_conditional_simplification(true);
     pipeline.AddPass<AlgebraicSimplifier>(options);
     pipeline.AddPass<HloDCE>();
     pipeline.AddPass<HloCSE>(/*is_layout_sensitive=*/true);
@@ -2356,10 +2354,13 @@ CpuCompiler::CreateBufferAssignment(const HloModule& module) const {
   AliasInfo alias_info;
   BufferAssigner::Options opts;
   opts.allocate_buffers_for_constants = true;
-  return BufferAssigner::Run(
-      &module, std::make_unique<SequentialHloOrdering>(module.schedule()),
-      BufferSizeBytesFunction(), &alias_info, memory_alignment,
-      std::move(opts));
+  opts.buffer_order = BufferAssigner::BufferOrder::kTopological;
+  // We use a DependencyHloOrdering rather than a SequentialHloOrdering to
+  // increase the amount of concurrency the program can execute with.
+  return BufferAssigner::Run(&module,
+                             std::make_unique<DependencyHloOrdering>(&module),
+                             BufferSizeBytesFunction(), &alias_info,
+                             memory_alignment, std::move(opts));
 }
 
 }  // namespace cpu

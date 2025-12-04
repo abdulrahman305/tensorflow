@@ -49,6 +49,10 @@ namespace {
 // E2E tests comparing the results of sharded and unsharded execution.
 class CollectiveOpsTestE2EShardedUnsharded : public CollectiveOpsE2ETestBase {
  public:
+  CollectiveOpsTestE2EShardedUnsharded()
+      : CollectiveOpsE2ETestBase(/*memory_size=*/64 * kMB,
+                                 /*collectives_memory_size=*/0) {}
+
   void CollectiveOpsCompareShardedUnsharded(
       const std::string& hlo_text, const int64_t num_partitions = 2,
       bool enable_enzyme_comms_opt = false) {
@@ -236,7 +240,7 @@ class CollectiveOpsTestE2EShardedUnsharded : public CollectiveOpsE2ETestBase {
                            std::vector<int64_t>& sharded_dims,
                            const HloSharding& sharding) {
     if (!sharding.IsReplicated()) {
-      for (int k = 0; k < sharding.tile_assignment().num_dimensions(); ++k) {
+      for (int k = 0; k < sharding.num_dimensions(); ++k) {
         if (sharding.dimension(k) > 1) {
           dims_per_shard[k] /= sharding.dimension(k);
           sharded_dims.push_back(k);
