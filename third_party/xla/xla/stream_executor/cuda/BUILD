@@ -1035,7 +1035,6 @@ xla_cc_test(
         "notsan",
     ],
     deps = [
-        ":compilation_provider",
         ":cuda_compute_capability",
         ":nvjitlink",
         ":nvjitlink_support",
@@ -1248,7 +1247,6 @@ xla_test(
     backend_tags = {
         "gpu": [
             "multi_gpu",
-            "no_oss",
         ],
     },
     backends = ["gpu"],
