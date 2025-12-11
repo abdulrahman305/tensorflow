@@ -1,4 +1,4 @@
-/* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2025 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -12,23 +12,25 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#include "tensorflow/c/experimental/ops/gen/cpp/renderers/cpp_config.h"
+#ifndef XLA_CODEGEN_EMITTERS_TRANSFORMS_LOWER_TO_LLVM_CPU_H_
+#define XLA_CODEGEN_EMITTERS_TRANSFORMS_LOWER_TO_LLVM_CPU_H_
 
-#include <string>
+#include <memory>
 
-#include "absl/strings/ascii.h"
-#include "absl/strings/str_split.h"
-#include "tensorflow/core/platform/types.h"
+#include "mlir/Pass/Pass.h"
 
-namespace tensorflow {
-namespace generator {
-namespace cpp {
+namespace xla {
+namespace emitters {
 
-CppConfig::CppConfig(const std::string& category, const std::string& name_space)
-    : category(category),
-      unit(absl::AsciiStrToLower(category)),
-      namespaces(absl::StrSplit(name_space, "::")) {}
+#define GEN_PASS_DECL
+#include "xla/codegen/emitters/transforms/lower_to_llvm_cpu.h.inc"
 
-}  // namespace cpp
-}  // namespace generator
-}  // namespace tensorflow
+std::unique_ptr<mlir::Pass> CreateLowerToLLVMCPUPass();
+
+#define GEN_PASS_REGISTRATION
+#include "xla/codegen/emitters/transforms/lower_to_llvm_cpu.h.inc"
+
+}  // namespace emitters
+}  // namespace xla
+
+#endif  // XLA_CODEGEN_EMITTERS_TRANSFORMS_LOWER_TO_LLVM_CPU_H_
