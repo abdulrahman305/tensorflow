@@ -1,4 +1,4 @@
-/* Copyright 2024 The OpenXLA Authors.
+/* Copyright 2025 The OpenXLA Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -13,19 +13,26 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef XLA_BACKENDS_CPU_XNN_EMITTER_H_
-#define XLA_BACKENDS_CPU_XNN_EMITTER_H_
+#ifndef XLA_STREAM_EXECUTOR_MEMORY_SPACE_H_
+#define XLA_STREAM_EXECUTOR_MEMORY_SPACE_H_
 
-#include "absl/functional/any_invocable.h"
-#include "absl/status/statusor.h"
-#include "xla/backends/cpu/runtime/xnnpack/xnn_interop.h"
-#include "xla/hlo/ir/hlo_computation.h"
+#include <cstdint>
 
-namespace xla::cpu {
+#include "absl/base/macros.h"
 
-absl::StatusOr<absl::AnyInvocable<absl::StatusOr<XnnSubgraph>()>>
-EmitXnnFusionBuilder(const HloComputation* computation);
+namespace stream_executor {
 
-}  // namespace xla::cpu
+// Identifies the memory space where a physical allocation resides.
+enum class MemorySpace : uint8_t {
+  kDevice = 0,
+  kUnified,
+  kCollective,
+  kP2P,
+  kHost = 5,
+};
 
-#endif  // XLA_BACKENDS_CPU_XNN_EMITTER_H_
+using MemoryType ABSL_DEPRECATE_AND_INLINE() = MemorySpace;
+
+}  // namespace stream_executor
+
+#endif  // XLA_STREAM_EXECUTOR_MEMORY_SPACE_H_
