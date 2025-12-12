@@ -69,6 +69,7 @@ namespace xla {
 // computation.
 using ObjectFileData = std::vector<char>;
 
+class Compiler;
 class AotCompilationOptions;
 
 // Abstract superclass describing the result of an ahead-of-time compilation.
@@ -88,6 +89,12 @@ class AotCompilationResult {
     return Unimplemented("LoadExecutable unimplemented.");
   }
 
+  ABSL_DEPRECATE_AND_INLINE()
+  absl::StatusOr<std::unique_ptr<Executable>> LoadExecutable(
+      Compiler*, const se::StreamExecutor* executor) && {
+    return std::move(*this).LoadExecutable(executor);
+  }
+
   virtual absl::StatusOr<std::unique_ptr<BufferAssignment>> buffer_assignment()
       const {
     return Unimplemented("buffer_assignment unimplemented.");
@@ -96,7 +103,7 @@ class AotCompilationResult {
   // Returns the optimized HLO module if one was computed and the implementation
   // supports it.
   virtual const HloModule* optimized_module() const = 0;
-  virtual std::unique_ptr<HloModule> consume_optimized_module() = 0;
+  virtual std::shared_ptr<HloModule> shared_optimized_module() = 0;
 
  protected:
   AotCompilationResult() = default;
